@@ -1,0 +1,8 @@
+# source|observed_ns|sequence|kind|symbol|payload
+sim|1000000000|1|tick|AAPL|price_cents=18940,size=100
+sim|1000001200|2|tick|AAPL|price_cents=18945,size=250
+sim|1000002400|3|news|AAPL|headline=Supplier guidance revised lower
+sim|1000003600|4|tick|MSFT|price_cents=42110,size=80
+sim|1000004800|5|filing|AAPL|form=8-K,event=CFO transition
+sim|1000006000|6|tick|AAPL|price_cents=18930,size=400
+sim|1000007200|7|alt_data|TSLA|source=inventory_watch,observation=regional backlog down
