@@ -79,6 +79,35 @@ docs/                    Problem framing, architecture, and success criteria
 examples/                Stand-alone replay fixtures
 ```
 
+## Current Commands
+
+```sh
+cargo run -p crossover-cli -- replay examples/events.pipe
+```
+
+Replays fixture events through the deterministic pipeline and prints feature
+updates, placement decisions, and latency summaries.
+
+```sh
+cargo run -p crossover-cli -- bench 100000
+```
+
+Generates synthetic tick events and measures deterministic pipeline throughput.
+
+```sh
+cargo run -p crossover-cli -- generate-scenario \
+  examples/binance_btcusdt_aggtrades_2025-01-02_1k.pipe \
+  data/generated/scenarios/binance_btcusdt_1k_messy.pipe \
+  messy \
+  1000 \
+  42
+```
+
+Derives a deterministic real-ish scenario from an existing pipe fixture. The
+rollup profiles are `ordered`, `messy`, and `adversarial`. Targeted failure-mode
+profiles include `capacity_exhaustion`, `out_of_order_burst`, `sequence_gap`,
+`late_arrival`, `correction`, `clock_skew`, and `stale_source`.
+
 ## What This Is Not
 
 Crossover is not:
