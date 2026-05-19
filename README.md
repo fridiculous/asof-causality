@@ -1,122 +1,159 @@
-# Crossover
+# asof-replay
 
-Crossover is a real-time financial event triage experiment.
+asof-replay is a point-in-time backtest engine for late-arriving data. It
+prevents lookahead bias by processing events in received-time order and verifies
+correctness with adversarial replay tests.
 
-It answers one practical systems question:
-
-> When a financial event arrives, what work should happen immediately, what work
-> can happen later, and what should be skipped?
-
-The goal is not to build a trading bot or an AI analyst. The goal is to build a
-small, measured system that keeps the fast path deterministic and low-latency
-while deciding which optional GPU-shaped or LLM-shaped work is worth admitting
-to background workers.
+Most backtests ask, "Did the signal work?" asof-replay asks the prior question:
+"Could the signal have known what it used at the time?" The engine enforces a
+two-clock event model, restricts signals to as-of state, records immutable
+prediction logs, and checks that future data cannot affect past predictions.
 
 ## What This Builds
 
-The current baseline contains:
+- a Rust workspace with a reusable core crate and CLI
+- a pipe-delimited event format with `observed_time` and `received_time`
+- deterministic replay by `(received_time, sequence)`
+- a restricted signal API that receives only an opaque `AsOfView`
+- immutable `PredictionRecord` output with input-event provenance
+- adversarial leakage checks for late arrivals, corrections, labels, and
+  shuffled physical input
+- property tests for the universal leakage invariants over random bitemporal
+  event streams
+- a synthetic throughput benchmark comparing string-keyed state with interned
+  symbol IDs
+- a leakage contract that is type-enforced for Rust signals; Python strategy
+  integration would be channel-enforced by sending only as-of snapshots, not the
+  full dataset
 
-- a Rust workspace with core pipeline and CLI crates
-- normalized events for ticks, news, filings, and alternative data
-- deterministic fixture replay
-- simple tick-derived features
-- explicit placement decisions for CPU, GPU batch, AI/LLM sidecar, and offline
-- latency summaries for replay and synthetic benchmark runs
-- docs for the larger Decision Integrity project goal
-
-The next step is an admission controller that produces auditable decision
-records while proving that slow background work cannot block the hot path.
-
-## Why It Matters
-
-Financial event systems often benefit from expensive enrichment:
-
-- explain why an alert fired
-- summarize a filing
-- classify breaking news
-- compute large numeric batches
-- run offline research or backtests
-
-Those tasks are useful, but they do not all belong in the same runtime path.
-Crossover treats placement as a measured decision. It keeps urgent,
-replayable work on the fast path and routes optional work only when the system
-can afford it.
+The built-in signal is intentionally simple: the last received per-symbol news
+or correction sentiment maps to `-1`, `0`, or `+1`. The non-trivial part is the
+correctness cage around the signal. See [docs/extensions.md](docs/extensions.md)
+for the intended Python and API-growth path.
 
 ## Quick Start
 
+Install Rust 1.78+ if needed, then:
+
 ```sh
-cargo run -p crossover-cli -- replay examples/events.pipe
-cargo run -p crossover-cli -- bench 100000
+cargo run -p asof-replay-cli -- replay examples/late-arrival.pipe
+cargo run -p asof-replay-cli -- check examples/late-arrival.pipe
+cargo run -p asof-replay-cli -- replay examples/lookahead-negative-control.pipe
+cargo run -p asof-replay-cli -- compare-leaky examples/lookahead-negative-control.pipe
+cargo run -p asof-replay-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
+cargo run -p asof-replay-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
+cargo run -p asof-replay-cli -- bench --events 1000000 --symbols 1024
 cargo test
 ```
 
-No network, LLM provider, market data feed, GPU, or API key is required for the
-baseline.
+This repository has no runtime network dependency and uses only synthetic local
+fixtures. It does not require market data, an LLM key, CUDA, or a database.
 
-## Commit Style
-
-This repo uses Conventional Commits. See [CONTRIBUTING.md](CONTRIBUTING.md) for
-the commit message format.
-
-## Project Goal
-
-The first-pass project goal is documented in
-[docs/project-outline.md](docs/project-outline.md).
-
-In short:
-
-> Build a clear Decision Integrity layer for real-time financial events. For
-> each event, emit an audit record explaining what happened, what work was
-> admitted or skipped, why that decision was made, and whether the fast path
-> stayed within its latency budget.
-
-## Repository Layout
+## Event Format
 
 ```text
-crates/crossover-core/   Deterministic event, policy, replay, and feature logic
-crates/crossover-cli/    Command-line entry point for replay and benchmarking
-docs/                    Problem framing, architecture, and success criteria
-examples/                Stand-alone replay fixtures
+event_id|observed_time|received_time|sequence|kind|symbol|payload
 ```
+
+Events are replayed by `(received_time, sequence)`, not by physical file order
+or observed time. A late event may influence future predictions, but it cannot
+mutate old predictions.
 
 ## Current Commands
 
 ```sh
-cargo run -p crossover-cli -- replay examples/events.pipe
+cargo run -p asof-replay-cli -- replay examples/late-arrival.pipe
 ```
 
-Replays fixture events through the deterministic pipeline and prints feature
-updates, placement decisions, and latency summaries.
+Prints deterministic prediction records and a transcript hash.
 
 ```sh
-cargo run -p crossover-cli -- bench 100000
+cargo run -p asof-replay-cli -- check examples/late-arrival.pipe
 ```
 
-Generates synthetic tick events and measures deterministic pipeline throughput.
+Runs the adversarial replay suite against the fixture.
+
+For large generated files, `check` samples 32 replay-key cutoffs by default
+for the expensive prefix-equivalence and future-mutation checks. Use
+`--exhaustive` for the full adversarial sweep on small fixtures, or
+`--max-cutoffs N` to set the deterministic cutoff sample size.
 
 ```sh
-cargo run -p crossover-cli -- generate-scenario \
-  examples/binance_btcusdt_aggtrades_2025-01-02_1k.pipe \
-  data/generated/scenarios/binance_btcusdt_1k_messy.pipe \
-  messy \
-  1000 \
-  42
+cargo run -p asof-replay-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 ```
 
-Derives a deterministic real-ish scenario from an existing pipe fixture. The
-rollup profiles are `ordered`, `messy`, and `adversarial`. Targeted failure-mode
-profiles include `capacity_exhaustion`, `out_of_order_burst`, `sequence_gap`,
-`late_arrival`, `correction`, `clock_skew`, and `stale_source`.
+Generates a deterministic pipe fixture with a fixed seed. The `late-heavy`
+scenario intentionally shuffles physical file order; replay still sorts by
+`(received_time, sequence)`. Every generated file includes a small sentinel
+late-arrival sequence so the contrast checks have a known adversarial case even
+when random rates are low.
 
-## What This Is Not
+```sh
+cargo run -p asof-replay-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
+```
 
-Crossover is not:
+Runs the start-to-finish path: generate an adversarial fixture, replay it, run
+the checks, and write `events.pipe`, `predictions.pipe`, `checks.txt`, and
+`summary.md`.
 
-- a trading strategy
-- a stock predictor
-- a portfolio optimizer
-- a live market data connector
-- a wrapper around an LLM
+```sh
+cargo run -p asof-replay-cli -- replay examples/lookahead-negative-control.pipe
+```
 
-It is a systems artifact for protecting a low-latency financial event path while
-admitting useful background work with clear evidence.
+Replays a negative-control fixture: a late positive news event and a late
+negative correction are observed before some predictions but received after
+them. The correct output keeps the earlier predictions on the older state; a
+backtester ordered by observed time would leak here.
+
+```sh
+cargo run -p asof-replay-cli -- compare-leaky examples/lookahead-negative-control.pipe
+```
+
+Runs the same fixture through the correct received-time replay and a deliberately
+broken observed-time baseline. The expected demonstration is:
+
+```text
+received-time replay: PASS
+observed-time replay (leaky baseline): FAIL
+```
+
+The leaky baseline is intentionally included as a negative control; it shows the
+class of impossible prediction that the normal engine prevents.
+
+```sh
+cargo run -p asof-replay-cli -- bench --events 1000000 --symbols 1024
+```
+
+Generates synthetic events and reports replay throughput for two state
+representations: string-keyed map state and interned symbol-ID vector state.
+
+## Why It Is Non-Trivial
+
+The project does not try to find alpha. It builds the infrastructure required
+before alpha research can be trusted:
+
+- predictions are immutable audit records
+- every prediction records the event IDs it used
+- prediction provenance is stored as compact inline event keys and rendered to
+  human-readable IDs outside the replay path
+- `max_input_replay_key <= prediction_replay_key` is checked, where a replay key
+  is `(received_time, sequence)`
+- labels are computed after predictions and cannot affect emitted predictions
+- prefix-equivalence and future-mutation tests make leakage falsifiable
+- seven universal leakage invariants are property-tested over randomly generated
+  bitemporal streams; the eighth check, `on_time_vs_late_contrast`, is a
+  positive control exercised against curated and generated adversarial streams,
+  with generator coverage tests requiring multiple late-contrast opportunities
+- replay is deterministic even when the physical input file is shuffled
+
+See [docs/architecture.md](docs/architecture.md),
+[docs/threat-model.md](docs/threat-model.md), and
+[docs/measurements.md](docs/measurements.md) for the implementation shape,
+boundary limits, and measurement notes.
+
+## Scope Of Conclusions
+
+Synthetic fixtures prove point-in-time replay semantics and make leakage tests
+repeatable. They do not prove market predictiveness, production data quality, or
+exchange-grade latency. The benchmark is a single-node throughput measurement,
+not a claim of HFT suitability.

@@ -1,0 +1,13 @@
+# Negative-control fixture for lookahead bias.
+# A broken engine that replays by observed_time would use n_late_positive
+# before p_before_late_news, and c_late_negative before p_before_correction.
+# asof-replay must not: both events are received later than those predictions.
+# event_id|observed_time|received_time|sequence|kind|symbol|payload
+n_seed|90|90|1|news|XYZ|sentiment=negative
+p_before_late_news|120|120|2|predict|XYZ|
+n_late_positive|100|150|3|news|XYZ|sentiment=positive
+p_after_late_news|160|160|4|predict|XYZ|
+c_late_negative|165|180|5|correction|XYZ|sentiment=negative,corrects=n_late_positive
+p_before_correction|170|170|6|predict|XYZ|
+p_after_correction|190|190|7|predict|XYZ|
+l_future|300|300|8|label|XYZ|return_bps=99

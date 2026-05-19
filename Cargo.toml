@@ -1,12 +1,12 @@
 [workspace]
 members = [
-    "crates/crossover-core",
-    "crates/crossover-cli",
+    "crates/asof-replay-core",
+    "crates/asof-replay-cli",
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/fridiculous/crossover"
+repository = "https://github.com/fridiculous/asof-replay"
 rust-version = "1.78"

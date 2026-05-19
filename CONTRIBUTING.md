@@ -2,7 +2,7 @@
 
 ## Commit Style
 
-Use [Conventional Commits](https://www.conventionalcommits.org/) for all commit
+Use [Conventional Commits](https://www.conventionalcommits.org/) for commit
 messages.
 
 Format:
@@ -25,10 +25,10 @@ Common types:
 Examples:
 
 ```text
-feat: initialize decision integrity baseline
-docs: clarify admission controller goals
-test: cover replay hash stability
-perf: avoid hot-path packet allocation
+feat: add leakage comparison baseline
+docs: clarify point-in-time replay scope
+test: cover observed-time leakage fixture
+perf: compare symbol representation costs
 ```
 
 Use an imperative, lowercase description and avoid trailing punctuation. For

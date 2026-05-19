@@ -1,0 +1,9 @@
+# event_id|observed_time|received_time|sequence|kind|symbol|payload
+# Physical order is intentionally not replay order.
+p1|580|580|3|predict|AAPL|
+n1|572|585|2|news|AAPL|sentiment=positive
+p2|590|590|4|predict|AAPL|
+p3|610|610|5|predict|AAPL|
+c1|600|615|6|correction|AAPL|sentiment=negative,corrects=n1
+p4|620|620|7|predict|AAPL|
+l1|640|640|8|label|AAPL|return_bps=12

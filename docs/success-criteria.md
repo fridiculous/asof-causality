@@ -1,52 +1,57 @@
 # Success Criteria
 
-Crossover succeeds when it produces useful event decision records and proves
-that optional enrichment cannot compromise the fast path.
+asof-replay succeeds when it can prove that identical replay-key prefixes
+produce identical predictions. A replay key is `(received_time, sequence)`.
 
-## Baseline
+## Required Checks
 
-- The repo builds with a stock Rust toolchain.
-- `cargo run -p crossover-cli -- replay examples/events.pipe` processes fixture
-  events end to end.
-- `cargo run -p crossover-cli -- bench 100000` reports throughput and latency.
-- `cargo test` covers parsing, latency summaries, policy decisions, and feature
-  updates.
+- Prefix equivalence: full replay and replay-key prefix replay produce the same
+  predictions at or before that key.
+- Future mutation: mutating every event after a replay key cannot change
+  predictions at or before that key.
+- Late arrival: an event observed before prediction time but received after it
+  is not used by that prediction.
+- On-time vs late contrast: moving the same event from received-before to
+  received-after prediction time can change the prediction.
+- Correction handling: corrections are append-only and cannot rewrite old
+  prediction records.
+- Label separation: removing label computation does not change predictions.
+- Deterministic replay: shuffled physical input produces the same transcript
+  hash.
+- Audit invariant: every prediction has
+  `max_input_replay_key <= prediction_replay_key`.
 
-## Decision Integrity Goal
+The core test suite runs these checks exhaustively against the small adversarial
+fixture. The CLI uses deterministic replay-key cutoff sampling for large
+generated files so the same checks remain practical on six-figure event streams;
+`--exhaustive` keeps the full sweep available when the input size is
+appropriate.
 
-The larger project should emit clear records showing:
+Seven universal leakage checks are also property-tested over randomly generated
+bitemporal-valid event streams. The eighth check, `on_time_vs_late_contrast`,
+is a positive control on the test material itself: it asserts that curated and
+generated adversarial streams contain late events whose receipt order can change
+a prediction. The generator has its own property test requiring every
+`late-heavy` seed to emit multiple structural late-contrast opportunities.
 
-- what event arrived
-- which deterministic features changed
-- what optional work was considered
-- what was admitted, skipped, deferred, or marked offline
-- why that decision was made
-- whether background work completed before its deadline
-- how much useful value was retained or lost
+## End-To-End Evidence
 
-## Fast Path Invariants
+`run-suite` succeeds when it can generate an adversarial fixture from a seed,
+replay it, emit prediction records, run the checks, and write a summary report
+with the transcript hash. This makes the submission a complete workflow rather
+than only a library API.
 
-- Same replay input and configuration produce the same decisions.
-- The fast path does not require network access, an LLM, a GPU, or external
-  market data.
-- Optional worker failure does not stop event processing.
-- Queues are bounded.
-- Full queues produce explicit drop, defer, or offline decisions instead of
-  blocking.
+`compare-leaky` succeeds as a demonstration when the received-time engine emits
+zero impossible predictions and the observed-time baseline emits at least one on
+the negative-control fixture. This is the visible proof that the checks catch a
+real class of naive backtest error.
 
-## Evidence
+## Performance Evidence
 
-Reports should include:
+The benchmark should report single-node replay throughput for:
 
-- event count and throughput
-- p50, p95, p99, and max latency
-- decision counts by placement/action
-- background worker queue depth, drops, timeouts, and lag once workers exist
-- retained urgent value once admission control exists
-- replay hash for deterministic replay mode
+- string-keyed map state
+- interned symbol-ID vector state
 
-## Seriousness Test
-
-The project should avoid claims such as "AI predicts markets" or "GPU is always
-faster." It should instead show when optional work is worth doing, when it should
-be skipped, and what evidence proves the fast path stayed protected.
+These measurements show how representation choices affect point-in-time replay
+cost without claiming production trading latency.

@@ -1,9 +1,9 @@
 /target/
-data/external/
-data/generated/
+runs/
 *.log
 *.tmp
 .DS_Store
 .env
 .env.*
 !.env.example
+.claude/
