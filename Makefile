@@ -1,4 +1,4 @@
-.PHONY: check test replay bench
+.PHONY: check test replay check-fixture bench
 
 check:
 	cargo fmt --check
@@ -8,7 +8,10 @@ test:
 	cargo test
 
 replay:
-	cargo run -p crossover-cli -- replay examples/events.pipe
+	cargo run -p asof-replay-cli -- replay examples/late-arrival.pipe
+
+check-fixture:
+	cargo run -p asof-replay-cli -- check examples/late-arrival.pipe
 
 bench:
-	cargo run -p crossover-cli -- bench 100000
+	cargo run -p asof-replay-cli -- bench --events 1000000 --symbols 1024

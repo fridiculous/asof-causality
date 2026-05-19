@@ -1,33 +1,24 @@
 # Problem
 
-Modern financial data systems are under pressure to enrich every event:
-classify news, summarize filings, explain alerts, repair messy records, compute
-large feature batches, and route human attention.
+Backtests often fail before strategy quality is even relevant: they accidentally
+allow future data to influence past predictions.
 
-The failure mode is simple: slow or unreliable work creeps into the path that
-must stay fast. Once that happens, real-time ingest becomes harder to explain,
-harder to replay, and easier to break under load.
+The common leak is subtle. A row may have an economic `observed_time`, but the
+research system only learned about it at a later `received_time`. If a backtest
+sorts by observed time, rewrites old rows, or gives the signal function access
+to the full dataset, it can produce predictions that could not have existed in
+the real world.
 
-Crossover treats this as a decision integrity problem.
+asof-replay treats "what was knowable when" as the central correctness boundary.
 
-## Research Question
+## Goal
 
-When a financial event arrives, what work should:
+Implement a point-in-time replay engine that:
 
-- run immediately on the deterministic fast path
-- run later on a GPU-shaped background worker
-- run later on an LLM-shaped background worker
-- be marked offline, deferred, or dropped
+- processes events by `(received_time, sequence)`
+- emits immutable predictions
+- restricts signal code to as-of state
+- proves future rows cannot affect past predictions
 
-## Design Principle
-
-The fast path must stay:
-
-- deterministic
-- replayable
-- measurable
-- protected from optional dependency failure
-
-Optional enrichment is allowed only when the system can explain why the work is
-worth doing and why it will not violate latency, deadline, or capacity
-constraints.
+The signal is deliberately simple so the correctness properties remain the
+center of the artifact.

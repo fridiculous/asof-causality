@@ -1,0 +1,13 @@
+[package]
+name = "asof-replay-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "asof_replay_core"
+path = "src/lib.rs"
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }

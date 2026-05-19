@@ -1,73 +1,79 @@
 # Architecture
 
-Crossover is organized around a small deterministic fast path and optional
-background workers.
-
 ```text
-event trace
-  -> parser / normalizer
-  -> sequencer
-  -> deterministic feature engine
-  -> admission decision
-  -> decision record
-  -> latency report
-
-future:
-  -> bounded GPU-style worker queue
-  -> bounded LLM-style worker queue
-  -> logger worker
-  -> offline merger/report
+generator or pipe fixture
+  -> parse Event
+  -> sort by (received_time, sequence)
+  -> apply data events to internal StateStore
+  -> call Signal::predict(AsOfView, prediction_time)
+  -> append PredictionRecord
+  -> hash deterministic transcript
 ```
 
-The current repo implements the baseline event model, replay parser, feature
-engine, placement policy, and CLI. The larger project goal is to turn placement
-decisions into an admission-control runtime with auditable decision records.
+## Core Concepts
 
-## Current Components
-
-| Component | Crate | Responsibility |
-|---|---|---|
-| Event model | `crossover-core` | Represents raw and normalized stream events |
-| Replay parser | `crossover-core` | Loads deterministic fixture streams |
-| Feature engine | `crossover-core` | Maintains simple rolling tick-derived state |
-| Placement policy | `crossover-core` | Classifies candidate work by constraints |
-| Latency report | `crossover-core` | Produces p50, p95, p99 summaries |
-| CLI | `crossover-cli` | Runs replay and synthetic benchmark commands |
-
-## Intended Runtime Shape
-
-The fast path should do only the work needed for immediate event handling:
-
-```text
-parse -> normalize -> sequence -> features -> admission decision -> record
-```
-
-It should not:
-
-- call an LLM
-- call a GPU
-- write files or print per event
-- wait for a background worker
-- use an unbounded queue
-
-Optional work moves to bounded background workers. If a queue is full or a task
-is too stale, the system records a drop, defer, or offline decision instead of
-slowing down ingest.
-
-## Placement Classes
-
-| Placement | Meaning |
+| Concept | Responsibility |
 |---|---|
-| `HotPathCpu` | Deterministic work safe to run immediately |
-| `GpuBatch` | Large numeric work that may benefit from batching |
-| `AiSidecar` | Human-facing LLM/model work that must not block ingest |
-| `Offline` | Research, reporting, or stale work outside the real-time path |
+| `Event` | Two-clock input row with stable `event_id`, symbol, kind, and payload |
+| `StateStore` | Internal mutable state created from received events |
+| `AsOfView` | Public opaque read-only view exposed to signal code |
+| `Signal` | Restricted API over `AsOfView`, never the full event list |
+| `PredictionRecord` | Immutable audit record with input event provenance |
+| `PredictionLog` | Append-only prediction transcript plus deterministic hash |
+| `ReplayEngine` | Orders events, updates state, emits predictions, and computes labels later |
+| `Generator` | Creates deterministic late-arrival/correction fixtures from a seed |
 
-## Replay And Benchmark Modes
+`StateStore` and `StateWriter` are crate-private. Signal authors can query
+`AsOfView`, but cannot construct it, mutate it, or access the full event list
+through the signal API.
 
-Replay and performance measurement are separate claims.
+## Event Kinds
 
-- Replay mode should prove that fixed input and configuration produce the same
-  decisions.
-- Benchmark mode should measure real latency and queue pressure. Benchmark
-  timings may vary by machine.
+| Kind | Behavior |
+|---|---|
+| `news` | Updates per-symbol sentiment state from payload |
+| `correction` | Append-only correction event with its own received time |
+| `predict` | Emits a prediction for the symbol at this received time |
+| `label` | Optional future label data; excluded from prediction state |
+
+## Correctness Boundary
+
+For each prediction:
+
+```text
+max_input_replay_key <= prediction_replay_key
+where replay_key = (received_time, sequence)
+```
+
+Late events may create new future predictions, but they cannot mutate old
+prediction records. Corrections are also append-only events; a correction
+received at 10:15 cannot affect a prediction emitted at 09:45.
+
+## Start-To-Finish Flow
+
+`run-suite` wires the artifact together:
+
+```text
+GenerateConfig(seed, scenario, late_rate, correction_rate)
+  -> GeneratedStream(events.pipe)
+  -> ReplayEngine(predictions.pipe)
+  -> adversarial checks(checks.txt)
+  -> summary.md with transcript hash and check results
+```
+
+Generated fixtures are deterministic for a fixed seed. The `late-heavy`
+scenario also shuffles physical file order so deterministic replay is exercised
+against out-of-order input rather than only a hand-written toy fixture.
+
+## Negative Control
+
+The CLI also exposes a deliberately broken replay order:
+
+```text
+received-time replay: sort by (received_time, sequence)
+observed-time baseline: sort by (observed_time, sequence)
+```
+
+The observed-time baseline is not a production mode. It exists so
+`compare-leaky` can run the same fixture through both engines and show the exact
+impossible prediction a naive backtest would emit.
