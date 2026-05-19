@@ -1,4 +1,6 @@
 /target/
+data/external/
+data/generated/
 *.log
 *.tmp
 .DS_Store
