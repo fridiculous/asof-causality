@@ -108,14 +108,17 @@ cargo run -p asof-causality-cli -- audit examples/late-arrival.pipe
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
+cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
 cargo test
 ```
 
-This repository has no runtime network dependency and uses only synthetic local
-fixtures. It does not require market data, an LLM key, CUDA, or a database.
+This repository has no runtime network dependency. Most fixtures are synthetic;
+`examples/alfred-dgs10-sp500.pipe` is a small checked-in real-data fixture
+derived from public ALFRED/FRED CSV downloads. It does not require an API key,
+an LLM key, CUDA, or a database.
 
 ## Event Format
 
@@ -183,7 +186,8 @@ include `signal_value` plus `feature_recipe_hash`. Use
 `--allow-missing-recipe-hash` only for legacy stored predictions that can be
 matched on `signal_value` alone. Outcomes are attached only when they explicitly
 name `prediction_replay_key`; the audit record carries `return_bps` but does not
-compute PnL or scoring metrics.
+compute PnL or scoring metrics. Use `--outcomes path` to attach outcome
+attributions without supplying stored predictions.
 
 ```sh
 cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
@@ -243,6 +247,16 @@ The numeric fixture exercises the same boundary with continuous inputs. In the
 broken observed-time baseline, `p_before_late_score` can see `px_late_spike`
 before it was received. The received-time engine cannot, and the audit invariant
 marks the spike as a future input.
+
+```sh
+cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
+```
+
+The real-data fixture uses ALFRED DGS10 Treasury-rate vintages as daily
+features and FRED SP500 closes as next-day outcomes. It demonstrates that a
+daily SP500 prediction cannot use a same-day DGS10 observation until that row
+appears in the next ALFRED vintage. See
+[docs/real-data-demo.md](docs/real-data-demo.md) for source URLs and mapping.
 
 ```sh
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
