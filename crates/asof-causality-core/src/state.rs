@@ -257,13 +257,13 @@ fn zscore_signal_value(observations: &[FeatureObservation], threshold: f64) -> i
     let count = observations.len() as f64;
     let mean = observations
         .iter()
-        .map(|observation| observation.score.unwrap())
+        .map(score_from_filtered_observation)
         .sum::<f64>()
         / count;
     let variance = observations
         .iter()
         .map(|observation| {
-            let delta = observation.score.unwrap() - mean;
+            let delta = score_from_filtered_observation(observation) - mean;
             delta * delta
         })
         .sum::<f64>()
@@ -273,7 +273,11 @@ fn zscore_signal_value(observations: &[FeatureObservation], threshold: f64) -> i
         return 0;
     }
 
-    let latest = observations.last().unwrap().score.unwrap();
+    let latest = score_from_filtered_observation(
+        observations
+            .last()
+            .expect("observation length is checked before z-score calculation"),
+    );
     let zscore = (latest - mean) / stddev;
     if zscore >= threshold {
         1
@@ -282,6 +286,12 @@ fn zscore_signal_value(observations: &[FeatureObservation], threshold: f64) -> i
     } else {
         0
     }
+}
+
+fn score_from_filtered_observation(observation: &FeatureObservation) -> f64 {
+    observation
+        .score
+        .expect("score observations are filtered before z-score calculation")
 }
 
 fn empty_snapshot() -> SymbolSnapshot {

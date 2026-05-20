@@ -53,8 +53,21 @@ fn audit_cli_round_trips_stored_prediction_jsonl() {
         .lines()
         .map(|line| serde_json::from_str(line).expect("audit JSONL line should parse"))
         .collect();
+    let expected_records = fs::read_to_string(&events)
+        .expect("fixture should be readable")
+        .lines()
+        .filter(|line| {
+            let line = line.trim();
+            !line.is_empty()
+                && !line.starts_with('#')
+                && line
+                    .split('|')
+                    .nth(4)
+                    .is_some_and(|role| role == "prediction")
+        })
+        .count();
 
-    assert_eq!(records.len(), 4);
+    assert_eq!(records.len(), expected_records);
     for record in records {
         assert_eq!(record["schema_version"], 2);
         assert_eq!(record["causally_valid"], true);

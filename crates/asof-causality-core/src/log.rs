@@ -237,6 +237,7 @@ pub fn feature_recipe_hash(
     inputs: InputSet,
 ) -> FeatureRecipeHash {
     let mut recipe = String::new();
+    // Internal to the recipe-hash input; independent of audit JSON schema versions.
     let _ = writeln!(recipe, "schema_version=1");
     let _ = writeln!(recipe, "signal={signal_name}");
     let _ = writeln!(recipe, "config={config_descriptor}");

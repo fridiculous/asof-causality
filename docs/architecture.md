@@ -32,6 +32,9 @@ inline set of recent feature inputs, proving the provenance path is not limited
 to one-row examples. The `windowed-zscore` signal reads continuous `score=...`
 features through the same opaque view and buckets the latest rolling Z-score to
 `-1`, `0`, or `1`, showing that the kernel is not sentiment-coupled.
+Numeric signals currently use `f64` arithmetic; floating-point transcript
+determinism is guaranteed for a fixed toolchain and architecture, not as a
+cross-platform bit-identity promise.
 
 `InputSet::Many` stores up to eight event keys inline. That cap is deliberate:
 it keeps prediction records fixed-size and allocation-free in the replay path.
