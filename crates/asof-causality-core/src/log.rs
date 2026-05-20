@@ -236,13 +236,21 @@ pub fn feature_recipe_hash(
     config_descriptor: &str,
     inputs: InputSet,
 ) -> FeatureRecipeHash {
-    let mut recipe = String::new();
+    let mut hasher = blake3::Hasher::new();
     // Internal to the recipe-hash input; independent of audit JSON schema versions.
-    let _ = writeln!(recipe, "schema_version=1");
-    let _ = writeln!(recipe, "signal={signal_name}");
-    let _ = writeln!(recipe, "config={config_descriptor}");
+    hasher.update(b"schema_version");
+    hasher.update(&1_u32.to_le_bytes());
+    update_hash_field(&mut hasher, b"signal", signal_name.as_bytes());
+    update_hash_field(&mut hasher, b"config", config_descriptor.as_bytes());
     for input_key in inputs.iter() {
-        let _ = writeln!(recipe, "input_key:{:016x}", input_key.0);
+        hasher.update(b"input_key");
+        hasher.update(&input_key.0.to_le_bytes());
     }
-    blake3_digest(recipe.as_bytes())
+    *hasher.finalize().as_bytes()
+}
+
+fn update_hash_field(hasher: &mut blake3::Hasher, name: &[u8], value: &[u8]) {
+    hasher.update(name);
+    hasher.update(&(value.len() as u64).to_le_bytes());
+    hasher.update(value);
 }

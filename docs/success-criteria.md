@@ -35,14 +35,14 @@ fixture, signal, check output, toolchain, invocation, UTC run timestamp, source
 commit context, workspace dirty flag, transcript hash, and check counts. This
 makes the submission a complete workflow rather than only a library API.
 
-`audit` succeeds when it emits JSONL records matching `docs/audit.schema.json`
-and every record reports `causally_valid: true`. When a stored prediction JSONL
-file is supplied, every replay-derived prediction must match the stored
-prediction at `(symbol, prediction_replay_key)` and, by default, must match
-`feature_recipe_hash`. Explicit outcomes may be attached to audit records as
-values, but scoring remains downstream. The JSONL surface is the lean
-machine-readable audit contract; richer adapters such as Parquet are downstream
-exports.
+`audit` succeeds when it emits schema-versioned JSONL records described by
+`docs/audit.schema.json` and every record reports `causally_valid: true`. When a
+stored prediction JSONL file is supplied, every replay-derived prediction must
+match the stored prediction at `(symbol, prediction_replay_key)` and, by
+default, must match `feature_recipe_hash`. Explicit outcomes may be attached to
+audit records as values, but scoring remains downstream. The JSONL surface is
+the lean machine-readable audit contract; richer adapters such as Parquet are
+downstream exports.
 
 `negative-control` succeeds as a demonstration when the received-time engine emits
 zero impossible predictions and the observed-time baseline emits at least one on

@@ -82,7 +82,7 @@ predictions that could not have used them in live replay.
 - a restricted signal API that receives only an opaque `AsOfView`
 - built-in single-input, windowed multi-input, and numeric Z-score signals
 - immutable `PredictionRecord` output with input-event provenance
-- JSONL audit output with a checked schema in `docs/audit.schema.json`
+- JSONL audit output with its schema documented in `docs/audit.schema.json`
 - interned symbol IDs in replay state and prediction records, rendered back to
   human symbols in transcripts
 - adversarial leakage checks for late arrivals, feature corrections, outcomes, and

@@ -4,9 +4,8 @@ pub trait Signal {
     fn predict(&self, view: AsOfView<'_>, symbol: SymbolId, prediction_time: u64)
         -> SymbolSnapshot;
 
-    fn name(&self) -> &'static str {
-        "custom-signal"
-    }
+    /// Stable identifier included in `feature_recipe_hash`.
+    fn name(&self) -> &'static str;
 
     fn config_descriptor(&self) -> String {
         String::new()
