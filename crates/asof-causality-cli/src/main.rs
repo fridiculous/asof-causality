@@ -1,16 +1,17 @@
 use asof_causality_core::{
     generate_events, parse_pipe_events, run_adversarial_checks_with_options_for_signal,
-    run_representation_benchmark, CheckOptions, CheckReport, GenerateConfig, GeneratedStream,
-    LastFeatureSentimentSignal, ReplayEngine, ReplayOptions, ReplayOrder, ReplayOutput, Scenario,
-    WindowedFeatureSentimentSignal,
+    run_representation_benchmark, CheckOptions, CheckReport, Event, EventKey, EventRole,
+    GenerateConfig, GeneratedStream, LastFeatureSentimentSignal, ReplayEngine, ReplayOptions,
+    ReplayOrder, ReplayOutput, Scenario, SymbolId, WindowedFeatureSentimentSignal,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::error::Error;
 use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 fn main() {
     if let Err(error) = run() {
@@ -95,8 +96,15 @@ fn check(args: &[String]) -> Result<(), Box<dyn Error>> {
     let (path, options, signal) = parse_check_args(args)?;
     let events = load_events(path)?;
     let report = run_checks_with_signal(signal, &events, options);
+    let replay = replay_with_signal(
+        signal,
+        &events,
+        ReplayOptions::default(),
+        ReplayOrder::ReceivedTime,
+    )
+    .ok();
 
-    print!("{}", format_check_report(&report));
+    print_check_stdout(path, signal, options, &events, &report, replay.as_ref());
 
     if report.passed() {
         Ok(())
@@ -124,44 +132,21 @@ fn negative_control(args: &[String]) -> Result<(), Box<dyn Error>> {
         ReplayOptions::default(),
         ReplayOrder::ObservedTimeLeaky,
     )?;
-    let event_labels: BTreeMap<_, _> = events
-        .iter()
-        .map(|event| (event.event_key, event.event_id.clone()))
-        .collect();
-    let symbol_labels: BTreeMap<_, _> = events
-        .iter()
-        .map(|event| (event.symbol_key, event.symbol.clone()))
-        .collect();
+    let labels = EventLabels::new(&events);
 
-    println!(
-        "negative-control path={path} signal={} events={}",
-        signal.as_str(),
-        events.len()
-    );
-    print_engine_comparison(
-        "received-time replay",
+    print_negative_control_stdout(
+        &path,
+        signal,
+        &events,
         &received_time,
-        &event_labels,
-        &symbol_labels,
-    );
-    println!();
-    print_engine_comparison(
-        "observed-time replay (leaky baseline)",
         &observed_time,
-        &event_labels,
-        &symbol_labels,
+        &labels,
     );
 
     let correct_impossible = received_time.predictions.impossible_predictions();
-    let leaky_impossible = observed_time.predictions.impossible_predictions();
 
     if !correct_impossible.is_empty() {
         return Err("received-time replay produced impossible predictions".into());
-    }
-
-    if leaky_impossible.is_empty() {
-        println!();
-        println!("note: the leaky baseline did not violate the invariant on this fixture");
     }
 
     Ok(())
@@ -350,12 +335,14 @@ fn run_suite(args: &[String]) -> Result<(), Box<dyn Error>> {
     let events_output = stream.to_pipe_string();
     write_file(&events_path, &events_output)?;
 
+    let replay_start = Instant::now();
     let replay = replay_with_signal(
         signal,
         &stream.events,
         ReplayOptions::default(),
         ReplayOrder::ReceivedTime,
     )?;
+    let replay_elapsed = replay_start.elapsed();
     let report = run_checks_with_signal(signal, &stream.events, CheckOptions::sampled(32));
 
     let predictions_output = format_prediction_output(&replay);
@@ -377,21 +364,18 @@ fn run_suite(args: &[String]) -> Result<(), Box<dyn Error>> {
     write_file(&summary_path, &summary_output)?;
     write_file(&manifest_path, &manifest_output)?;
 
-    println!(
-        "suite out={} scenario={} signal={} seed={} rows={} predictions={} transcript_hash={:016x}",
-        out_dir.display(),
-        stream.stats.scenario.as_str(),
-        signal.as_str(),
-        stream.stats.seed,
-        stream.stats.rows,
-        replay.predictions.records().len(),
-        replay.predictions.transcript_hash()
-    );
-    println!("events={}", events_path.display());
-    println!("predictions={}", predictions_path.display());
-    println!("checks={}", checks_path.display());
-    println!("summary={}", summary_path.display());
-    println!("manifest={}", manifest_path.display());
+    print_run_suite_stdout(RunSuiteStdout {
+        out_dir: &out_dir,
+        manifest_path: &manifest_path,
+        stream: &stream,
+        signal,
+        replay: &replay,
+        replay_elapsed,
+        report: &report,
+        events_output: &events_output,
+        predictions_output: &predictions_output,
+        checks_output: &checks_output,
+    });
 
     if report.passed() {
         Ok(())
@@ -551,38 +535,328 @@ fn format_prediction_output(output: &ReplayOutput) -> String {
     text
 }
 
-fn print_engine_comparison(
-    name: &str,
-    output: &ReplayOutput,
-    event_labels: &BTreeMap<asof_causality_core::EventKey, String>,
-    symbol_labels: &BTreeMap<asof_causality_core::SymbolId, String>,
+struct EventLabels<'a> {
+    event_labels: BTreeMap<EventKey, String>,
+    symbol_labels: BTreeMap<SymbolId, String>,
+    events_by_key: BTreeMap<EventKey, &'a Event>,
+}
+
+impl<'a> EventLabels<'a> {
+    fn new(events: &'a [Event]) -> Self {
+        Self {
+            event_labels: events
+                .iter()
+                .map(|event| (event.event_key, event.event_id.clone()))
+                .collect(),
+            symbol_labels: events
+                .iter()
+                .map(|event| (event.symbol_key, event.symbol.clone()))
+                .collect(),
+            events_by_key: events
+                .iter()
+                .map(|event| (event.event_key, event))
+                .collect(),
+        }
+    }
+}
+
+fn print_check_stdout(
+    path: &str,
+    signal: SignalChoice,
+    options: CheckOptions,
+    events: &[Event],
+    report: &CheckReport,
+    replay: Option<&ReplayOutput>,
 ) {
+    println!("asof-causality check");
+    println!("  fixture    {path}");
+    println!("  events     {}", events.len());
+    println!("  signal     {}", signal.as_str());
+    println!("  cutoffs    {}", cutoff_summary(events, options));
+    println!();
+    print_check_section(report, true);
+    println!();
+    println!("PROVENANCE");
+    match replay {
+        Some(output) => {
+            println!(
+                "  transcript_hash      {:016x}",
+                output.predictions.transcript_hash()
+            );
+            println!(
+                "  predictions_emitted  {}",
+                output.predictions.records().len()
+            );
+            println!("  outcomes_separated   {}", output.outcomes_seen);
+        }
+        None => {
+            println!("  transcript_hash      unavailable");
+            println!("  predictions_emitted  unavailable");
+            println!("  outcomes_separated   unavailable");
+        }
+    }
+}
+
+fn print_negative_control_stdout(
+    path: &str,
+    signal: SignalChoice,
+    events: &[Event],
+    received_time: &ReplayOutput,
+    observed_time: &ReplayOutput,
+    labels: &EventLabels<'_>,
+) {
+    println!("asof-causality negative-control");
+    println!("  fixture  {path}");
+    println!("  events   {}", events.len());
+    println!("  signal   {}", signal.as_str());
+    println!();
+    print_engine_summary(
+        "ENGINE A: received-time replay (correct)",
+        "(received_time, sequence, event_id)",
+        received_time,
+    );
+    println!();
+    print_engine_summary(
+        "ENGINE B: observed-time replay (deliberately broken baseline)",
+        "(observed_time, sequence, event_id)",
+        observed_time,
+    );
+    println!();
+    print_leaked_predictions(observed_time, labels);
+    println!();
+    print_negative_control_diagnostic(received_time, observed_time, labels);
+}
+
+fn print_engine_summary(name: &str, ordering: &str, output: &ReplayOutput) {
     let impossible = output.predictions.impossible_predictions();
-    let status = if impossible.is_empty() {
+    let verdict = if impossible.is_empty() {
         "PASS"
     } else {
         "FAIL"
     };
 
-    println!("{name}: {status}");
+    println!("{name}");
+    println!("  ordering             {ordering}");
     println!(
-        "  transcript_hash={:016x}",
+        "  transcript_hash      {:016x}",
         output.predictions.transcript_hash()
     );
-    println!("  impossible_predictions={}", impossible.len());
+    println!("  impossible           {}", impossible.len());
+    println!("  VERDICT              {verdict}");
+}
 
-    for record in impossible.iter().take(8) {
-        println!("  {}", record.canonical_line(event_labels, symbol_labels));
+fn print_leaked_predictions(output: &ReplayOutput, labels: &EventLabels<'_>) {
+    println!("LEAKED PREDICTIONS (engine B)");
+    let impossible = output.predictions.impossible_predictions();
+
+    if impossible.is_empty() {
+        println!("  none");
+        return;
+    }
+
+    for record in impossible {
+        let prediction_event = labels.events_by_key.get(&record.prediction_event_key);
+        let input_event = record
+            .max_input_event_key
+            .and_then(|event_key| labels.events_by_key.get(&event_key).copied());
+
+        println!();
+        match (prediction_event, input_event) {
+            (Some(prediction), Some(input)) => {
+                println!(
+                    "  {} at {}",
+                    prediction.event_id,
+                    format_replay_key_for_event(prediction)
+                );
+                println!("    signal_value     {}", record.signal_value);
+                println!(
+                    "    leaked_input     {:<18} at {}",
+                    input.event_id,
+                    format_replay_key_for_event(input)
+                );
+                println!("    violation        {}", leak_violation(prediction, input));
+                println!(
+                    "    interpretation   {}",
+                    leak_interpretation(prediction, input)
+                );
+            }
+            _ => {
+                println!(
+                    "  {}",
+                    record.canonical_line(&labels.event_labels, &labels.symbol_labels)
+                );
+                println!("    violation        input replay key > prediction replay key");
+            }
+        }
+    }
+}
+
+fn print_negative_control_diagnostic(
+    received_time: &ReplayOutput,
+    observed_time: &ReplayOutput,
+    labels: &EventLabels<'_>,
+) {
+    let correct_impossible = received_time.predictions.impossible_predictions();
+    let leaky_impossible = observed_time.predictions.impossible_predictions();
+    let leak_classes = leaky_impossible
+        .iter()
+        .filter_map(|record| {
+            let prediction = labels.events_by_key.get(&record.prediction_event_key)?;
+            let input = record
+                .max_input_event_key
+                .and_then(|event_key| labels.events_by_key.get(&event_key).copied())?;
+            Some(leak_class(prediction, input))
+        })
+        .collect::<BTreeSet<_>>()
+        .len();
+
+    println!("DIAGNOSTIC");
+    if leaky_impossible.is_empty() {
+        println!("  the broken engine emitted 0 impossible predictions on this fixture");
+    } else {
         println!(
-            "  impossible: input replay key {} was used by prediction key {}",
-            record.max_input_replay_key(event_labels),
-            record
-                .canonical_line(event_labels, symbol_labels)
-                .split('|')
-                .next()
-                .unwrap_or("-")
+            "  the broken engine emitted {} impossible predictions across {} distinct leak classes",
+            leaky_impossible.len(),
+            leak_classes
         );
     }
+    println!("  the correct engine emitted {}", correct_impossible.len());
+    println!("  the audit invariant catches the failure mode the engine is designed to prevent");
+}
+
+fn format_replay_key_for_event(event: &Event) -> String {
+    format!(
+        "({}, {}, {})",
+        event.received_time, event.sequence, event.event_id
+    )
+}
+
+fn leak_class(prediction: &Event, input: &Event) -> &'static str {
+    if input.received_time == prediction.received_time {
+        "same-timestamp sequence"
+    } else if input.role == EventRole::FeatureCorrection {
+        "late correction"
+    } else {
+        "late arrival"
+    }
+}
+
+fn leak_violation(prediction: &Event, input: &Event) -> String {
+    if input.received_time == prediction.received_time {
+        "input sequence > prediction sequence at same received_time".to_string()
+    } else {
+        format!(
+            "input replay key > prediction replay key by delta={}",
+            input.received_time.saturating_sub(prediction.received_time)
+        )
+    }
+}
+
+fn leak_interpretation(prediction: &Event, input: &Event) -> String {
+    if input.received_time == prediction.received_time {
+        format!(
+            "prediction at t={} used same-timestamp event that sorts after it",
+            prediction.received_time
+        )
+    } else if input.role == EventRole::FeatureCorrection {
+        format!(
+            "prediction at t={} used correction received at t={}",
+            prediction.received_time, input.received_time
+        )
+    } else {
+        format!(
+            "prediction at t={} used event that arrived at t={}",
+            prediction.received_time, input.received_time
+        )
+    }
+}
+
+fn print_check_section(report: &CheckReport, include_details: bool) {
+    let passed = passed_check_count(report);
+    let total = report.results.len();
+    println!(
+        "{:<58} {}/{} {}",
+        "ADVERSARIAL CHECKS",
+        passed,
+        total,
+        overall_status(report)
+    );
+    for result in &report.results {
+        let status = if result.passed { "PASS" } else { "FAIL" };
+        if include_details {
+            println!(
+                "  [{status}]  {:<32} {}",
+                result.name,
+                shortened_check_detail(result.name, &result.detail)
+            );
+        } else {
+            println!("  [{status}]  {}", result.name);
+        }
+    }
+}
+
+fn passed_check_count(report: &CheckReport) -> usize {
+    report.results.iter().filter(|result| result.passed).count()
+}
+
+fn overall_status(report: &CheckReport) -> &'static str {
+    if report.passed() {
+        "PASS"
+    } else {
+        "FAIL"
+    }
+}
+
+fn shortened_check_detail<'a>(name: &str, detail: &'a str) -> &'a str {
+    if name == "deterministic_replay" && detail.starts_with("shuffled input produced transcript") {
+        "shuffled input produced same transcript hash"
+    } else {
+        detail
+    }
+}
+
+fn cutoff_summary(events: &[Event], options: CheckOptions) -> String {
+    let total = prediction_cutoff_count(events);
+    match options.max_cutoffs {
+        None => format!("exhaustive ({total})"),
+        Some(max_cutoffs) => {
+            let used = selected_cutoff_count(total, max_cutoffs);
+            if used == total {
+                format!("all {total} (max {max_cutoffs})")
+            } else {
+                format!("sampled {used} of {total} (max {max_cutoffs})")
+            }
+        }
+    }
+}
+
+fn prediction_cutoff_count(events: &[Event]) -> usize {
+    let mut cutoffs: Vec<u64> = events
+        .iter()
+        .filter(|event| event.role == EventRole::Prediction)
+        .map(|event| event.received_time)
+        .collect();
+    cutoffs.sort_unstable();
+    cutoffs.dedup();
+    cutoffs.len()
+}
+
+fn selected_cutoff_count(total: usize, max_cutoffs: usize) -> usize {
+    if total == 0 || max_cutoffs == 0 {
+        return 0;
+    }
+    if total <= max_cutoffs {
+        return total;
+    }
+    if max_cutoffs == 1 {
+        return 1;
+    }
+
+    let last = total - 1;
+    (0..max_cutoffs)
+        .map(|index| index * last / (max_cutoffs - 1))
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 fn format_check_report(report: &CheckReport) -> String {
@@ -629,6 +903,180 @@ fn format_suite_summary(
         let _ = writeln!(text, "- {status} {}: {}", result.name, result.detail);
     }
     text
+}
+
+struct RunSuiteStdout<'a> {
+    out_dir: &'a Path,
+    manifest_path: &'a Path,
+    stream: &'a GeneratedStream,
+    signal: SignalChoice,
+    replay: &'a ReplayOutput,
+    replay_elapsed: Duration,
+    report: &'a CheckReport,
+    events_output: &'a str,
+    predictions_output: &'a str,
+    checks_output: &'a str,
+}
+
+fn print_run_suite_stdout(inputs: RunSuiteStdout<'_>) {
+    println!("asof-causality run-suite");
+    println!("  scenario   {}", inputs.stream.stats.scenario.as_str());
+    println!("  seed       {}", inputs.stream.stats.seed);
+    println!("  signal     {}", inputs.signal.as_str());
+    println!();
+
+    println!("PHASE 1  GENERATE");
+    println!("  events            {}", inputs.stream.stats.data_events);
+    println!(
+        "  rows              {}  (includes corrections, predictions, outcomes)",
+        inputs.stream.stats.rows
+    );
+    println!("  symbols           {}", inputs.stream.stats.symbols);
+    println!(
+        "  late_updates      {}  ({})",
+        inputs.stream.stats.late_updates,
+        percent(
+            inputs.stream.stats.late_updates,
+            inputs.stream.stats.data_events
+        )
+    );
+    println!(
+        "  corrections       {}  ({})",
+        inputs.stream.stats.feature_corrections,
+        percent(
+            inputs.stream.stats.feature_corrections,
+            inputs.stream.stats.data_events
+        )
+    );
+    println!("  predictions       {}", inputs.stream.stats.predictions);
+    println!(
+        "  physical_order    {}",
+        if inputs.stream.stats.shuffled {
+            "shuffled  (replay order must reconstruct from replay key)"
+        } else {
+            "ordered"
+        }
+    );
+    println!();
+
+    println!("PHASE 2  REPLAY  ordered by (received_time, sequence, event_id)");
+    println!("  events_replayed   {}", inputs.replay.replayed_events);
+    println!(
+        "  predictions       {}",
+        inputs.replay.predictions.records().len()
+    );
+    println!("  outcomes_seen     {}", inputs.replay.outcomes_seen);
+    println!(
+        "  throughput        {} events/sec  (symbol-id state representation)",
+        format_rate(events_per_second(
+            inputs.replay.replayed_events,
+            inputs.replay_elapsed
+        ))
+    );
+    println!();
+
+    print_check_section(inputs.report, false);
+    let used_cutoffs = selected_cutoff_count(prediction_cutoff_count(&inputs.stream.events), 32);
+    let total_cutoffs = prediction_cutoff_count(&inputs.stream.events);
+    println!(
+        "  cutoffs_sampled   {} of {}  (deterministic sampling for large fixtures)",
+        used_cutoffs, total_cutoffs
+    );
+    println!();
+
+    let git_commit = current_git_commit();
+    let rust_toolchain = current_rustc_version();
+    let signal_version = format!(
+        "{}:{}",
+        git_commit.as_deref().unwrap_or("unknown-commit"),
+        inputs.signal.as_str()
+    );
+
+    println!("PROVENANCE  written to {}", inputs.manifest_path.display());
+    println!(
+        "  fixture_hash           {:016x}",
+        asof_causality_core::fnv1a64(inputs.events_output.as_bytes())
+    );
+    println!(
+        "  predictions_hash       {:016x}",
+        asof_causality_core::fnv1a64(inputs.predictions_output.as_bytes())
+    );
+    println!(
+        "  checks_hash            {:016x}",
+        asof_causality_core::fnv1a64(inputs.checks_output.as_bytes())
+    );
+    println!(
+        "  signal_version_hash    {:016x}",
+        asof_causality_core::fnv1a64(signal_version.as_bytes())
+    );
+    println!(
+        "  transcript_hash        {:016x}",
+        inputs.replay.predictions.transcript_hash()
+    );
+    println!(
+        "  git_commit             {}",
+        git_commit
+            .as_deref()
+            .map(short_hash)
+            .unwrap_or("unavailable")
+    );
+    println!(
+        "  rust_toolchain         {}",
+        rust_toolchain.as_deref().unwrap_or("unavailable")
+    );
+    println!();
+
+    println!("ARTIFACTS  {}", inputs.out_dir.display());
+    println!("  events.pipe        {} rows", inputs.stream.stats.rows);
+    println!(
+        "  predictions.pipe   {} records",
+        inputs.replay.predictions.records().len()
+    );
+    println!(
+        "  checks.txt         {} results",
+        inputs.report.results.len()
+    );
+    println!("  summary.md");
+    println!("  manifest.json      hash-linked run identity");
+    println!();
+
+    println!(
+        "RESULT     {}  ({}/{} checks)",
+        overall_status(inputs.report),
+        passed_check_count(inputs.report),
+        inputs.report.results.len()
+    );
+}
+
+fn events_per_second(events: usize, elapsed: Duration) -> f64 {
+    let seconds = elapsed.as_secs_f64();
+    if seconds > 0.0 {
+        events as f64 / seconds
+    } else {
+        0.0
+    }
+}
+
+fn format_rate(rate: f64) -> String {
+    if rate >= 1_000_000.0 {
+        format!("{:.1}M", rate / 1_000_000.0)
+    } else if rate >= 1_000.0 {
+        format!("{:.1}K", rate / 1_000.0)
+    } else {
+        format!("{rate:.0}")
+    }
+}
+
+fn percent(count: usize, total: usize) -> String {
+    if total == 0 {
+        "0.0%".to_string()
+    } else {
+        format!("{:.1}%", count as f64 * 100.0 / total as f64)
+    }
+}
+
+fn short_hash(hash: &str) -> &str {
+    hash.get(..12).unwrap_or(hash)
 }
 
 struct RunManifestInputs<'a> {

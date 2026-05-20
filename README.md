@@ -127,8 +127,14 @@ The windowed signal makes multi-input provenance visible. The expected
 demonstration is:
 
 ```text
-received-time replay: PASS
-observed-time replay (leaky baseline): FAIL
+ENGINE A: received-time replay (correct)
+  VERDICT              PASS
+
+ENGINE B: observed-time replay (deliberately broken baseline)
+  impossible           3
+  VERDICT              FAIL
+
+LEAKED PREDICTIONS (engine B)
 ```
 
 The leaky baseline is intentionally included as a negative control; it shows the

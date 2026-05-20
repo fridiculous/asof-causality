@@ -49,14 +49,26 @@ cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
 Result:
 
 ```text
-PASS prefix_equivalence - all received-time prefixes matched full replay
-PASS future_mutation - mutating future rows did not change past predictions
-PASS late_arrival - late events were not used before their replay key
-PASS on_time_vs_late_contrast - moving n1 earlier changed prediction at 580 from 0 to 1
-PASS feature_correction_append_only - feature corrections did not rewrite predictions emitted before receipt
-PASS outcome_separation - disabling outcomes did not change predictions
-PASS deterministic_replay - shuffled input produced transcript hash d959650f0492c42e
-PASS audit_invariant - all predictions satisfy max_input_replay_key <= prediction_replay_key
+asof-causality check
+  fixture    examples/late-arrival.pipe
+  events     7
+  signal     last-feature-sentiment
+  cutoffs    all 4 (max 32)
+
+ADVERSARIAL CHECKS                                         8/8 PASS
+  [PASS]  prefix_equivalence               all received-time prefixes matched full replay
+  [PASS]  future_mutation                  mutating future rows did not change past predictions
+  [PASS]  late_arrival                     late events were not used before their replay key
+  [PASS]  on_time_vs_late_contrast         moving n1 earlier changed prediction at 580 from 0 to 1
+  [PASS]  feature_correction_append_only   feature corrections did not rewrite predictions emitted before receipt
+  [PASS]  outcome_separation               disabling outcomes did not change predictions
+  [PASS]  deterministic_replay             shuffled input produced same transcript hash
+  [PASS]  audit_invariant                  all predictions satisfy max_input_replay_key <= prediction_replay_key
+
+PROVENANCE
+  transcript_hash      d959650f0492c42e
+  predictions_emitted  4
+  outcomes_separated   1
 ```
 
 The most important contrast is `on_time_vs_late_contrast`: moving event `n1`
@@ -97,20 +109,47 @@ cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-
 Expected interpretation:
 
 ```text
-negative-control path=examples/lookahead-negative-control.pipe signal=last-feature-sentiment events=12
-received-time replay: PASS
-  transcript_hash=643d89a73fb1a868
-  impossible_predictions=0
+asof-causality negative-control
+  fixture  examples/lookahead-negative-control.pipe
+  events   12
+  signal   last-feature-sentiment
 
-observed-time replay (leaky baseline): FAIL
-  transcript_hash=5e2b2c91fab15484
-  impossible_predictions=3
-  95:4:p_before_same_time_sequence|XYZ|1|n_same_time_later|95:5:n_same_time_later
-  impossible: input replay key 95:5:n_same_time_later was used by prediction key 95:4:p_before_same_time_sequence
-  120:6:p_before_late_feature|XYZ|1|n_late_positive|150:7:n_late_positive
-  impossible: input replay key 150:7:n_late_positive was used by prediction key 120:6:p_before_late_feature
-  170:10:p_before_correction|XYZ|-1|c_late_negative|180:9:c_late_negative
-  impossible: input replay key 180:9:c_late_negative was used by prediction key 170:10:p_before_correction
+ENGINE A: received-time replay (correct)
+  ordering             (received_time, sequence, event_id)
+  transcript_hash      643d89a73fb1a868
+  impossible           0
+  VERDICT              PASS
+
+ENGINE B: observed-time replay (deliberately broken baseline)
+  ordering             (observed_time, sequence, event_id)
+  transcript_hash      5e2b2c91fab15484
+  impossible           3
+  VERDICT              FAIL
+
+LEAKED PREDICTIONS (engine B)
+
+  p_before_same_time_sequence at (95, 4, p_before_same_time_sequence)
+    signal_value     1
+    leaked_input     n_same_time_later  at (95, 5, n_same_time_later)
+    violation        input sequence > prediction sequence at same received_time
+    interpretation   prediction at t=95 used same-timestamp event that sorts after it
+
+  p_before_late_feature at (120, 6, p_before_late_feature)
+    signal_value     1
+    leaked_input     n_late_positive    at (150, 7, n_late_positive)
+    violation        input replay key > prediction replay key by delta=30
+    interpretation   prediction at t=120 used event that arrived at t=150
+
+  p_before_correction at (170, 10, p_before_correction)
+    signal_value     -1
+    leaked_input     c_late_negative    at (180, 9, c_late_negative)
+    violation        input replay key > prediction replay key by delta=10
+    interpretation   prediction at t=170 used correction received at t=180
+
+DIAGNOSTIC
+  the broken engine emitted 3 impossible predictions across 3 distinct leak classes
+  the correct engine emitted 0
+  the audit invariant catches the failure mode the engine is designed to prevent
 ```
 
 The baseline intentionally sorts by `observed_time`. On the negative-control
