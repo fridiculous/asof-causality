@@ -1,19 +1,20 @@
 use crate::state::StateStore;
 use crate::{
-    Event, EventKind, LastSentimentSignal, ParseEventError, PredictionLog, PredictionRecord, Signal,
+    Event, EventRole, LastFeatureSentimentSignal, ParseEventError, PredictionLog, PredictionRecord,
+    Signal,
 };
 use std::error::Error;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReplayOptions {
-    pub compute_labels: bool,
+    pub compute_outcomes: bool,
 }
 
 impl Default for ReplayOptions {
     fn default() -> Self {
         Self {
-            compute_labels: true,
+            compute_outcomes: true,
         }
     }
 }
@@ -21,7 +22,7 @@ impl Default for ReplayOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayOutput {
     pub predictions: PredictionLog,
-    pub labels_seen: usize,
+    pub outcomes_seen: usize,
     pub replayed_events: usize,
 }
 
@@ -32,14 +33,14 @@ pub enum ReplayOrder {
 }
 
 #[derive(Debug, Default)]
-pub struct ReplayEngine<S = LastSentimentSignal> {
+pub struct ReplayEngine<S = LastFeatureSentimentSignal> {
     signal: S,
 }
 
-impl ReplayEngine<LastSentimentSignal> {
+impl ReplayEngine<LastFeatureSentimentSignal> {
     pub fn new() -> Self {
         Self {
-            signal: LastSentimentSignal,
+            signal: LastFeatureSentimentSignal,
         }
     }
 }
@@ -75,28 +76,32 @@ impl<S: Signal> ReplayEngine<S> {
 
         let mut state = StateStore::new();
         let mut predictions = PredictionLog::with_event_catalog(&ordered);
-        let mut labels_seen = 0;
+        let mut outcomes_seen = 0;
 
         for event in &ordered {
-            match event.kind {
-                EventKind::News | EventKind::Correction => state.writer().apply(event)?,
-                EventKind::Predict => {
-                    let snapshot =
-                        self.signal
-                            .predict(state.as_of_view(), &event.symbol, event.received_time);
+            match event.role {
+                EventRole::Feature | EventRole::FeatureCorrection => state.writer().apply(event)?,
+                EventRole::Prediction => {
+                    let snapshot = self.signal.predict(
+                        state.as_of_view(),
+                        event.symbol_key,
+                        event.received_time,
+                    );
                     predictions.append(PredictionRecord {
+                        prediction_event_key: event.event_key,
                         prediction_time: event.received_time,
                         prediction_sequence: event.sequence,
-                        symbol: event.symbol.clone(),
+                        symbol: event.symbol_key,
                         signal_value: snapshot.signal_value,
                         input_event_ids_used: snapshot.input_event_ids_used,
                         max_input_received_time: snapshot.max_input_received_time,
                         max_input_sequence: snapshot.max_input_sequence,
+                        max_input_event_key: snapshot.max_input_event_key,
                     });
                 }
-                EventKind::Label => {
-                    if options.compute_labels {
-                        labels_seen += 1;
+                EventRole::Outcome => {
+                    if options.compute_outcomes {
+                        outcomes_seen += 1;
                     }
                 }
             }
@@ -104,7 +109,7 @@ impl<S: Signal> ReplayEngine<S> {
 
         Ok(ReplayOutput {
             predictions,
-            labels_seen,
+            outcomes_seen,
             replayed_events: ordered.len(),
         })
     }
@@ -159,10 +164,11 @@ impl From<ParseEventError> for ReplayError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::WindowedFeatureSentimentSignal;
 
     #[test]
     fn ignores_comments_and_blank_lines() {
-        let input = "\n# comment\np1|1|1|1|predict|AAPL|\n";
+        let input = "\n# comment\np1|1|1|1|prediction|AAPL|\n";
         let events = parse_pipe_events(input).unwrap();
         assert_eq!(events.len(), 1);
     }
@@ -170,9 +176,9 @@ mod tests {
     #[test]
     fn replays_by_received_time_not_file_order() {
         let input = "\
-p1|580|580|3|predict|AAPL|
-n1|572|585|2|news|AAPL|sentiment=positive
-p2|590|590|4|predict|AAPL|
+p1|580|580|3|prediction|AAPL|
+n1|572|585|2|feature|AAPL|sentiment=positive
+p2|590|590|4|prediction|AAPL|
 ";
         let events = parse_pipe_events(input).unwrap();
         let output = ReplayEngine::new()
@@ -187,5 +193,31 @@ p2|590|590|4|predict|AAPL|
             .find(|event| event.event_id == "n1")
             .expect("fixture should contain n1");
         assert!(records[1].input_event_ids_used.contains_key(n1.event_key));
+    }
+
+    #[test]
+    fn windowed_signal_records_multiple_inputs() {
+        let input = "\
+f1|100|100|1|feature|XYZ|sentiment=positive
+f2|110|110|2|feature|XYZ|sentiment=negative
+f3|120|120|3|feature|XYZ|sentiment=positive
+p1|130|130|4|prediction|XYZ|
+";
+        let events = parse_pipe_events(input).unwrap();
+        let output = ReplayEngine::with_signal(WindowedFeatureSentimentSignal::new(5))
+            .replay(&events, ReplayOptions::default())
+            .unwrap();
+        let record = &output.predictions.records()[0];
+
+        assert_eq!(record.signal_value, 1);
+        assert_eq!(record.input_event_ids_used.len(), 3);
+        assert_eq!(record.max_input_received_time, 120);
+        assert_eq!(record.max_input_sequence, 3);
+        for event in events
+            .iter()
+            .filter(|event| event.role.updates_signal_state())
+        {
+            assert!(record.input_event_ids_used.contains_key(event.event_key));
+        }
     }
 }

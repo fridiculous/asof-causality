@@ -1,12 +1,12 @@
 [workspace]
 members = [
-    "crates/asof-replay-core",
-    "crates/asof-replay-cli",
+    "crates/asof-causality-core",
+    "crates/asof-causality-cli",
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/fridiculous/asof-replay"
+repository = "https://github.com/your-org/asof-causality"
 rust-version = "1.78"

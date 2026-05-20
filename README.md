@@ -1,48 +1,112 @@
-# asof-replay
+# asof-causality
 
-asof-replay is a point-in-time backtest engine for late-arriving data. It
-prevents lookahead bias by processing events in received-time order and verifies
-correctness with adversarial replay tests.
+asof-causality is a deterministic falsification harness for temporal leakage.
+It tests whether a historical prediction only used data that was knowable at
+the exact replay key when the prediction was made.
 
-Most backtests ask, "Did the signal work?" asof-replay asks the prior question:
-"Could the signal have known what it used at the time?" The engine enforces a
-two-clock event model, restricts signals to as-of state, records immutable
-prediction logs, and checks that future data cannot affect past predictions.
+Most backtests ask, "Did the signal work?" This repo asks the prior systems
+question: "Could the signal or training-data pipeline have known what it used
+at that time?" Temporal leakage shows up in backtests, time-series training
+data, and AI-assisted research workflows whenever historical code can see rows
+that were not actually available yet.
+
+The engine enforces a two-clock event model, restricts signal code to an opaque
+as-of view, records immutable prediction logs with input provenance, and ships
+a negative control that shows the exact impossible predictions a naive
+observed-time replay would emit. It evaluates causality, not predictive alpha.
+
+## 30-Second Demo
+
+```sh
+cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
+```
+
+Expected diagnostic:
+
+```text
+asof-causality negative-control
+  fixture  examples/lookahead-negative-control.pipe
+  events   12
+  signal   windowed-feature-sentiment
+
+ENGINE A: received-time replay (correct)
+  ordering             (received_time, sequence, event_id)
+  transcript_hash      ed03706f6f79c31f
+  impossible           0
+  VERDICT              PASS
+
+ENGINE B: observed-time replay (deliberately broken baseline)
+  ordering             (observed_time, sequence, event_id)
+  transcript_hash      f7b67d321cac694e
+  impossible           3
+  VERDICT              FAIL
+
+LEAKED PREDICTIONS (engine B)
+
+  p_before_same_time_sequence at (95, 4, p_before_same_time_sequence)
+    signal_value     0
+    leaked_input     n_same_time_later  at (95, 5, n_same_time_later)
+    violation        input sequence > prediction sequence at same received_time
+    interpretation   prediction at t=95 used same-timestamp event that sorts after it
+
+  p_before_late_feature at (120, 6, p_before_late_feature)
+    signal_value     1
+    leaked_input     n_late_positive    at (150, 7, n_late_positive)
+    violation        input replay key > prediction replay key by delta=30
+    interpretation   prediction at t=120 used event that arrived at t=150
+
+  p_before_correction at (170, 10, p_before_correction)
+    signal_value     1
+    leaked_input     c_late_negative    at (180, 9, c_late_negative)
+    violation        input replay key > prediction replay key by delta=10
+    interpretation   prediction at t=170 used correction received at t=180
+
+DIAGNOSTIC
+  the broken engine emitted 3 impossible predictions across 3 distinct leak classes
+  the correct engine emitted 0
+  the audit invariant catches the failure mode the engine is designed to prevent
+```
+
+The correct engine orders by `(received_time, sequence, event_id)`. The broken
+baseline orders by `(observed_time, sequence, event_id)`, so it leaks a
+same-timestamp later sequence, a late feature, and a late correction into
+predictions that could not have used them in live replay.
 
 ## What This Builds
 
 - a Rust workspace with a reusable core crate and CLI
 - a pipe-delimited event format with `observed_time` and `received_time`
-- deterministic replay by `(received_time, sequence)`
+- canonical event roles: `feature`, `feature_correction`, `prediction`, and
+  `outcome`
+- deterministic replay by `(received_time, sequence, event_id)`
 - a restricted signal API that receives only an opaque `AsOfView`
+- built-in single-input and windowed multi-input signals
 - immutable `PredictionRecord` output with input-event provenance
-- adversarial leakage checks for late arrivals, corrections, labels, and
+- interned symbol IDs in replay state and prediction records, rendered back to
+  human symbols in transcripts
+- adversarial leakage checks for late arrivals, feature corrections, outcomes, and
   shuffled physical input
-- property tests for the universal leakage invariants over random bitemporal
-  event streams
+- a `manifest.json` run certificate that links inputs, outputs, checks, signal
+  version, invocation, toolchain, and transcript hash
 - a synthetic throughput benchmark comparing string-keyed state with interned
   symbol IDs
-- a leakage contract that is type-enforced for Rust signals; Python strategy
-  integration would be channel-enforced by sending only as-of snapshots, not the
-  full dataset
 
-The built-in signal is intentionally simple: the last received per-symbol news
-or correction sentiment maps to `-1`, `0`, or `+1`. The non-trivial part is the
-correctness cage around the signal. See [docs/extensions.md](docs/extensions.md)
-for the intended Python and API-growth path.
+The built-in signals are intentionally simple: one reads the last received
+per-symbol feature sentiment, and one reads a bounded recent feature window. The
+non-trivial part is the correctness cage around the signal.
 
 ## Quick Start
 
 Install Rust 1.78+ if needed, then:
 
 ```sh
-cargo run -p asof-replay-cli -- replay examples/late-arrival.pipe
-cargo run -p asof-replay-cli -- check examples/late-arrival.pipe
-cargo run -p asof-replay-cli -- replay examples/lookahead-negative-control.pipe
-cargo run -p asof-replay-cli -- compare-leaky examples/lookahead-negative-control.pipe
-cargo run -p asof-replay-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
-cargo run -p asof-replay-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
-cargo run -p asof-replay-cli -- bench --events 1000000 --symbols 1024
+cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
+cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
+cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
+cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
+cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
+cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
+cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
 cargo test
 ```
 
@@ -52,76 +116,96 @@ fixtures. It does not require market data, an LLM key, CUDA, or a database.
 ## Event Format
 
 ```text
-event_id|observed_time|received_time|sequence|kind|symbol|payload
+event_id|observed_time|received_time|sequence|role|symbol|payload
 ```
 
-Events are replayed by `(received_time, sequence)`, not by physical file order
-or observed time. A late event may influence future predictions, but it cannot
-mutate old predictions.
+Events are replayed by `(received_time, sequence, event_id)`, not by physical
+file order or observed time. A late event may influence future predictions, but
+it cannot mutate old predictions.
+
+The canonical roles are:
+
+| Role | Meaning |
+|---|---|
+| `feature` | Source information the signal may use after `received_time` |
+| `feature_correction` | Append-only revision to earlier feature information |
+| `prediction` | Scheduled point where the signal emits a prediction |
+| `outcome` | Future evaluation data excluded from signal state |
 
 ## Current Commands
 
 ```sh
-cargo run -p asof-replay-cli -- replay examples/late-arrival.pipe
+cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
 ```
 
 Prints deterministic prediction records and a transcript hash.
 
+Use `--signal windowed-feature-sentiment` to run the same replay through the
+bounded multi-input signal. The default is `last-feature-sentiment`.
+
 ```sh
-cargo run -p asof-replay-cli -- check examples/late-arrival.pipe
+cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
 ```
 
 Runs the adversarial replay suite against the fixture.
 
-For large generated files, `check` samples 32 replay-key cutoffs by default
+For large generated files, `check` samples 32 received-time cutoffs by default
 for the expensive prefix-equivalence and future-mutation checks. Use
 `--exhaustive` for the full adversarial sweep on small fixtures, or
 `--max-cutoffs N` to set the deterministic cutoff sample size.
 
 ```sh
-cargo run -p asof-replay-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
+cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 ```
 
 Generates a deterministic pipe fixture with a fixed seed. The `late-heavy`
 scenario intentionally shuffles physical file order; replay still sorts by
-`(received_time, sequence)`. Every generated file includes a small sentinel
-late-arrival sequence so the contrast checks have a known adversarial case even
-when random rates are low.
+`(received_time, sequence, event_id)`. Every generated file includes a small
+sentinel late-arrival sequence so the contrast checks have a known adversarial
+case even when random rates are low.
 
 ```sh
-cargo run -p asof-replay-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
+cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
 ```
 
 Runs the start-to-finish path: generate an adversarial fixture, replay it, run
 the checks, and write `events.pipe`, `predictions.pipe`, `checks.txt`, and
 `summary.md`.
 
-```sh
-cargo run -p asof-replay-cli -- replay examples/lookahead-negative-control.pipe
-```
-
-Replays a negative-control fixture: a late positive news event and a late
-negative correction are observed before some predictions but received after
-them. The correct output keeps the earlier predictions on the older state; a
-backtester ordered by observed time would leak here.
+It also writes `manifest.json`, the run certificate for the output directory.
+The manifest links the fixture hash, signal-version hash, prediction-output
+hash, checks-output hash, transcript hash, hash algorithm, invocation, UTC run
+timestamp, check counts, Rust toolchain, and optional Git commit. A reviewer can
+compare the manifest and artifacts to verify that a run's predictions, checks,
+and reported transcript belong to the same execution.
 
 ```sh
-cargo run -p asof-replay-cli -- compare-leaky examples/lookahead-negative-control.pipe
+cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
 ```
 
-Runs the same fixture through the correct received-time replay and a deliberately
-broken observed-time baseline. The expected demonstration is:
+Runs a negative-control fixture through the correct received-time replay and a
+deliberately broken observed-time baseline. The fixture contains seed features,
+a late positive feature, and a late negative feature correction; a backtester
+ordered by observed time leaks both late records into earlier predictions.
+
+```sh
+cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
+```
+
+The windowed signal makes multi-input provenance visible. The expected
+demonstration is:
 
 ```text
-received-time replay: PASS
-observed-time replay (leaky baseline): FAIL
+95:4:p_before_same_time_sequence|XYZ|0|n_seed_negative,n_seed_positive,n_seed_negative_2,n_same_time_later|95:5:n_same_time_later
+120:6:p_before_late_feature|XYZ|1|n_seed_negative,n_seed_positive,n_seed_negative_2,n_same_time_later,n_late_positive|150:7:n_late_positive
+170:10:p_before_correction|XYZ|1|n_seed_positive,n_seed_negative_2,n_same_time_later,n_late_positive,c_late_negative|180:9:c_late_negative
 ```
 
 The leaky baseline is intentionally included as a negative control; it shows the
 class of impossible prediction that the normal engine prevents.
 
 ```sh
-cargo run -p asof-replay-cli -- bench --events 1000000 --symbols 1024
+cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
 ```
 
 Generates synthetic events and reports replay throughput for two state
@@ -134,22 +218,53 @@ before alpha research can be trusted:
 
 - predictions are immutable audit records
 - every prediction records the event IDs it used
+- multi-input signals record up to eight input event keys inline by design
 - prediction provenance is stored as compact inline event keys and rendered to
   human-readable IDs outside the replay path
-- `max_input_replay_key <= prediction_replay_key` is checked, where a replay key
-  is `(received_time, sequence)`
-- labels are computed after predictions and cannot affect emitted predictions
+- `max_input_replay_key <= prediction_replay_key` is checked
+- outcomes are computed after predictions and cannot affect emitted predictions
 - prefix-equivalence and future-mutation tests make leakage falsifiable
-- seven universal leakage invariants are property-tested over randomly generated
-  bitemporal streams; the eighth check, `on_time_vs_late_contrast`, is a
-  positive control exercised against curated and generated adversarial streams,
-  with generator coverage tests requiring multiple late-contrast opportunities
 - replay is deterministic even when the physical input file is shuffled
 
-See [docs/architecture.md](docs/architecture.md),
-[docs/threat-model.md](docs/threat-model.md), and
-[docs/measurements.md](docs/measurements.md) for the implementation shape,
-boundary limits, and measurement notes.
+See [docs/architecture.md](docs/architecture.md) and
+[docs/measurements.md](docs/measurements.md) for the implementation shape and
+measurement notes.
+
+## Compared To Backtesters
+
+Many backtesting tools focus on simulating a portfolio over economic time.
+asof-causality focuses on a narrower contract: whether a signal could have
+known every input it used at prediction time. The negative-control fixture is
+shipped with the repo so that the leak class is falsifiable, not just described.
+
+## Run Certificates
+
+`run-suite` writes a `manifest.json` beside the generated fixture, predictions,
+checks, and summary. The manifest is a compact linkage proof for the run: it
+records the invocation, run timestamp, optional Git commit, Rust toolchain,
+fixture hash, prediction-output hash, checks-output hash, signal-version hash,
+and final transcript hash.
+
+That means the result is not just "the CLI printed PASS." The output directory
+contains enough identity to answer: which data, which signal, which executable
+context, which checks, and which transcript produced this result?
+
+## Why Rust Here
+
+The causality boundary depends on hiding future state from signal code and
+making replay deterministic. Rust is useful for that narrow job: the core API
+keeps mutable replay state crate-private, exposes only an opaque `AsOfView`, and
+stores hot-path provenance in fixed-size values rather than heap-heavy records.
+The repo keeps the interface small enough that a Python or AI-assisted research
+pipeline could call this as an external verifier without moving all research
+logic into Rust.
+
+## AI-Ready Boundary
+
+An LLM-backed signal would need the same shape as the built-ins: opaque
+`AsOfView` in and `SymbolSnapshot` out. This repo does not ship an AI signal,
+but the causality boundary is the right one for AI-assisted signals too: the
+model cannot leak from data that never enters the view.
 
 ## Scope Of Conclusions
 

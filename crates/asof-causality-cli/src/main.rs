@@ -1,0 +1,1603 @@
+use asof_causality_core::{
+    generate_events, parse_pipe_events, run_adversarial_checks_with_options_for_signal,
+    run_representation_benchmark, CheckOptions, CheckReport, Event, EventKey, EventRole,
+    GenerateConfig, GeneratedStream, LastFeatureSentimentSignal, ReplayEngine, ReplayOptions,
+    ReplayOrder, ReplayOutput, Scenario, SymbolId, WindowedFeatureSentimentSignal,
+};
+use std::collections::{BTreeMap, BTreeSet};
+use std::env;
+use std::error::Error;
+use std::fmt::Write;
+use std::fs;
+use std::io::{self, Write as IoWrite};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+fn main() {
+    if let Err(error) = run() {
+        let _ = io::stdout().flush();
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), Box<dyn Error>> {
+    let args: Vec<String> = env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("replay") => replay(&args[2..]),
+        Some("check") => check(&args[2..]),
+        Some(command) if is_negative_control_command(command) => negative_control(&args[2..]),
+        Some("generate") => generate(&args[2..]),
+        Some("run-suite") => run_suite(&args[2..]),
+        Some("bench") => bench(&args[2..]),
+        _ => {
+            print_help();
+            Ok(())
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum SignalChoice {
+    #[default]
+    LastFeatureSentiment,
+    WindowedFeatureSentiment,
+}
+
+impl SignalChoice {
+    fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
+        match value {
+            "last-feature-sentiment" => Ok(Self::LastFeatureSentiment),
+            "windowed-feature-sentiment" => Ok(Self::WindowedFeatureSentiment),
+            other => Err(format!(
+                "unknown signal {other}; expected last-feature-sentiment or windowed-feature-sentiment"
+            )
+            .into()),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LastFeatureSentiment => "last-feature-sentiment",
+            Self::WindowedFeatureSentiment => "windowed-feature-sentiment",
+        }
+    }
+}
+
+fn is_negative_control_command(command: &str) -> bool {
+    matches!(command, "negative-control" | "compare-leaky")
+}
+
+fn replay(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let (path, signal) = parse_path_signal_args(args, "examples/late-arrival.pipe", "replay")?;
+    let events = load_events(&path)?;
+    let output = replay_with_signal(
+        signal,
+        &events,
+        ReplayOptions::default(),
+        ReplayOrder::ReceivedTime,
+    )?;
+
+    println!(
+        "replay path={path} signal={} events={}",
+        signal.as_str(),
+        output.replayed_events
+    );
+    println!("prediction_replay_key|symbol|signal_value|input_event_ids|max_input_replay_key");
+    print!("{}", output.predictions.transcript());
+    println!(
+        "transcript_hash={:016x}",
+        output.predictions.transcript_hash()
+    );
+    println!("outcomes_seen={}", output.outcomes_seen);
+    Ok(())
+}
+
+fn check(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let (path, options, signal) = parse_check_args(args)?;
+    let events = load_events(path)?;
+    let report = run_checks_with_signal(signal, &events, options);
+    let replay = replay_with_signal(
+        signal,
+        &events,
+        ReplayOptions::default(),
+        ReplayOrder::ReceivedTime,
+    )
+    .ok();
+
+    print_check_stdout(path, signal, options, &events, &report, replay.as_ref());
+
+    if report.passed() {
+        Ok(())
+    } else {
+        Err("one or more adversarial checks failed".into())
+    }
+}
+
+fn negative_control(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let (path, signal) = parse_path_signal_args(
+        args,
+        "examples/lookahead-negative-control.pipe",
+        "negative-control",
+    )?;
+    let events = load_events(&path)?;
+    let received_time = replay_with_signal(
+        signal,
+        &events,
+        ReplayOptions::default(),
+        ReplayOrder::ReceivedTime,
+    )?;
+    let observed_time = replay_with_signal(
+        signal,
+        &events,
+        ReplayOptions::default(),
+        ReplayOrder::ObservedTimeLeaky,
+    )?;
+    let labels = EventLabels::new(&events);
+
+    print_negative_control_stdout(
+        &path,
+        signal,
+        &events,
+        &received_time,
+        &observed_time,
+        &labels,
+    );
+
+    let correct_impossible = received_time.predictions.impossible_predictions();
+
+    if !correct_impossible.is_empty() {
+        return Err("received-time replay produced impossible predictions".into());
+    }
+
+    Ok(())
+}
+
+fn bench(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let mut events = 1_000_000_usize;
+    let mut symbols = 1_024_usize;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--events" => {
+                events = parse_flag_value(args, index, "--events")?;
+                index += 2;
+            }
+            "--symbols" => {
+                symbols = parse_flag_value(args, index, "--symbols")?;
+                index += 2;
+            }
+            other => return Err(format!("unknown bench argument: {other}").into()),
+        }
+    }
+
+    println!("bench events={events} symbols={symbols}");
+    for result in run_representation_benchmark(events, symbols) {
+        println!(
+            "representation=\"{}\" events={} symbols={} elapsed_ms={:.3} events_per_second={:.0} checksum={}",
+            result.representation,
+            result.events,
+            result.symbols,
+            result.elapsed_ns as f64 / 1_000_000.0,
+            result.events_per_second,
+            result.checksum
+        );
+    }
+
+    Ok(())
+}
+
+fn replay_with_signal(
+    signal: SignalChoice,
+    events: &[asof_causality_core::Event],
+    options: ReplayOptions,
+    order: ReplayOrder,
+) -> Result<ReplayOutput, asof_causality_core::ReplayError> {
+    match signal {
+        SignalChoice::LastFeatureSentiment => ReplayEngine::with_signal(LastFeatureSentimentSignal)
+            .replay_with_order(events, options, order),
+        SignalChoice::WindowedFeatureSentiment => {
+            ReplayEngine::with_signal(WindowedFeatureSentimentSignal::default())
+                .replay_with_order(events, options, order)
+        }
+    }
+}
+
+fn run_checks_with_signal(
+    signal: SignalChoice,
+    events: &[asof_causality_core::Event],
+    options: CheckOptions,
+) -> CheckReport {
+    match signal {
+        SignalChoice::LastFeatureSentiment => run_adversarial_checks_with_options_for_signal(
+            events,
+            options,
+            LastFeatureSentimentSignal,
+        ),
+        SignalChoice::WindowedFeatureSentiment => run_adversarial_checks_with_options_for_signal(
+            events,
+            options,
+            WindowedFeatureSentimentSignal::default(),
+        ),
+    }
+}
+
+fn parse_path_signal_args(
+    args: &[String],
+    default_path: &str,
+    command: &str,
+) -> Result<(String, SignalChoice), Box<dyn Error>> {
+    let mut path = default_path.to_string();
+    let mut signal = SignalChoice::default();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--signal" => {
+                signal = SignalChoice::parse(required_arg(args, index, "--signal")?)?;
+                index += 2;
+            }
+            value if value.starts_with("--") => {
+                return Err(format!("unknown {command} argument: {value}").into());
+            }
+            value => {
+                path = value.to_string();
+                index += 1;
+            }
+        }
+    }
+
+    Ok((path, signal))
+}
+
+fn parse_check_args(args: &[String]) -> Result<(&str, CheckOptions, SignalChoice), Box<dyn Error>> {
+    let mut path = "examples/late-arrival.pipe";
+    let mut options = CheckOptions::sampled(32);
+    let mut signal = SignalChoice::default();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--signal" => {
+                signal = SignalChoice::parse(required_arg(args, index, "--signal")?)?;
+                index += 2;
+            }
+            "--max-cutoffs" => {
+                let max_cutoffs = parse_arg(args, index, "--max-cutoffs")?;
+                if max_cutoffs == 0 {
+                    return Err("--max-cutoffs must be greater than 0".into());
+                }
+                options = CheckOptions::sampled(max_cutoffs);
+                index += 2;
+            }
+            "--exhaustive" => {
+                options = CheckOptions::exhaustive();
+                index += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(format!("unknown check argument: {value}").into());
+            }
+            value => {
+                path = value;
+                index += 1;
+            }
+        }
+    }
+
+    Ok((path, options, signal))
+}
+
+fn generate(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let (config, out, _) = parse_generate_args(args, false)?;
+    let stream = generate_events(&config);
+    let contents = stream.to_pipe_string();
+
+    if let Some(path) = out {
+        write_file(&path, &contents)?;
+        println!(
+            "generated path={} scenario={} seed={} data_events={} rows={} symbols={} late_updates={} feature_corrections={} predictions={}",
+            path.display(),
+            stream.stats.scenario.as_str(),
+            stream.stats.seed,
+            stream.stats.data_events,
+            stream.stats.rows,
+            stream.stats.symbols,
+            stream.stats.late_updates,
+            stream.stats.feature_corrections,
+            stream.stats.predictions
+        );
+    } else {
+        print!("{contents}");
+    }
+
+    Ok(())
+}
+
+fn run_suite(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let (config, out, signal) = parse_generate_args(args, true)?;
+    let out_dir = out.unwrap_or_else(|| {
+        PathBuf::from(format!(
+            "runs/{}-seed-{}",
+            config.scenario.as_str(),
+            config.seed
+        ))
+    });
+
+    fs::create_dir_all(&out_dir)?;
+
+    let stream = generate_events(&config);
+    let events_path = out_dir.join("events.pipe");
+    let predictions_path = out_dir.join("predictions.pipe");
+    let checks_path = out_dir.join("checks.txt");
+    let summary_path = out_dir.join("summary.md");
+    let manifest_path = out_dir.join("manifest.json");
+
+    let events_output = stream.to_pipe_string();
+    write_file(&events_path, &events_output)?;
+
+    let replay_start = Instant::now();
+    let replay = replay_with_signal(
+        signal,
+        &stream.events,
+        ReplayOptions::default(),
+        ReplayOrder::ReceivedTime,
+    )?;
+    let replay_elapsed = replay_start.elapsed();
+    let report = run_checks_with_signal(signal, &stream.events, CheckOptions::sampled(32));
+
+    let predictions_output = format_prediction_output(&replay);
+    let checks_output = format_check_report(&report);
+    let summary_output = format_suite_summary(&stream, signal, &replay, &report);
+    let manifest = RunManifest::new(RunManifestInputs {
+        config: &config,
+        stream: &stream,
+        signal,
+        replay: &replay,
+        report: &report,
+        events_output: &events_output,
+        predictions_output: &predictions_output,
+        checks_output: &checks_output,
+    });
+    let manifest_output = format_run_manifest(&manifest);
+
+    write_file(&predictions_path, &predictions_output)?;
+    write_file(&checks_path, &checks_output)?;
+    write_file(&summary_path, &summary_output)?;
+    write_file(&manifest_path, &manifest_output)?;
+
+    print_run_suite_stdout(RunSuiteStdout {
+        out_dir: &out_dir,
+        manifest_path: &manifest_path,
+        stream: &stream,
+        signal,
+        replay: &replay,
+        replay_elapsed,
+        report: &report,
+        manifest: &manifest,
+    });
+
+    if report.passed() {
+        Ok(())
+    } else {
+        Err("one or more adversarial checks failed".into())
+    }
+}
+
+fn parse_flag_value(args: &[String], index: usize, flag: &str) -> Result<usize, Box<dyn Error>> {
+    let value = args
+        .get(index + 1)
+        .ok_or_else(|| format!("{flag} requires a value"))?;
+    Ok(value.parse()?)
+}
+
+fn parse_generate_args(
+    args: &[String],
+    out_is_directory: bool,
+) -> Result<(GenerateConfig, Option<PathBuf>, SignalChoice), Box<dyn Error>> {
+    let scenario = find_string_flag(args, "--scenario")
+        .map(|value| {
+            Scenario::parse(value).ok_or_else(|| {
+                format!(
+                    "unknown scenario {value}; expected clean, late-heavy, or feature-correction-heavy"
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(Scenario::LateHeavy);
+
+    let mut config = GenerateConfig::for_scenario(scenario);
+    let mut out = None;
+    let mut signal = SignalChoice::default();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--signal" if out_is_directory => {
+                signal = SignalChoice::parse(required_arg(args, index, "--signal")?)?;
+                index += 2;
+            }
+            "--scenario" => {
+                required_arg(args, index, "--scenario")?;
+                index += 2;
+            }
+            "--events" => {
+                config.events = parse_arg(args, index, "--events")?;
+                index += 2;
+            }
+            "--symbols" => {
+                config.symbols = parse_arg(args, index, "--symbols")?;
+                index += 2;
+            }
+            "--late-rate" => {
+                config.late_rate = parse_arg(args, index, "--late-rate")?;
+                index += 2;
+            }
+            flag @ ("--feature-correction-rate" | "--correction-rate") => {
+                config.feature_correction_rate = parse_arg(args, index, flag)?;
+                index += 2;
+            }
+            flag @ ("--outcome-rate" | "--label-rate") => {
+                config.outcome_rate = parse_arg(args, index, flag)?;
+                index += 2;
+            }
+            "--prediction-interval" => {
+                config.prediction_interval = parse_arg(args, index, "--prediction-interval")?;
+                index += 2;
+            }
+            "--max-lag" => {
+                config.max_lag = parse_arg(args, index, "--max-lag")?;
+                index += 2;
+            }
+            "--seed" => {
+                config.seed = parse_arg(args, index, "--seed")?;
+                index += 2;
+            }
+            "--out" => {
+                out = Some(PathBuf::from(required_arg(args, index, "--out")?));
+                index += 2;
+            }
+            "--ordered" => {
+                config.shuffle_physical_order = false;
+                index += 1;
+            }
+            "--shuffle" => {
+                config.shuffle_physical_order = true;
+                index += 1;
+            }
+            other => {
+                let target = if out_is_directory {
+                    "run-suite"
+                } else {
+                    "generate"
+                };
+                return Err(format!("unknown {target} argument: {other}").into());
+            }
+        }
+    }
+
+    Ok((config, out, signal))
+}
+
+fn find_string_flag<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.windows(2)
+        .find(|window| window[0] == flag)
+        .map(|window| window[1].as_str())
+}
+
+fn required_arg<'a>(
+    args: &'a [String],
+    index: usize,
+    flag: &str,
+) -> Result<&'a str, Box<dyn Error>> {
+    args.get(index + 1)
+        .map(String::as_str)
+        .ok_or_else(|| format!("{flag} requires a value").into())
+}
+
+fn parse_arg<T>(args: &[String], index: usize, flag: &str) -> Result<T, Box<dyn Error>>
+where
+    T: std::str::FromStr,
+    T::Err: Error + 'static,
+{
+    Ok(required_arg(args, index, flag)?.parse()?)
+}
+
+fn load_events(path: &str) -> Result<Vec<asof_causality_core::Event>, Box<dyn Error>> {
+    let input = fs::read_to_string(path)?;
+    Ok(parse_pipe_events(&input)?)
+}
+
+fn write_file(path: &Path, contents: &str) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, contents)?;
+    Ok(())
+}
+
+fn format_prediction_output(output: &ReplayOutput) -> String {
+    let mut text = String::new();
+    let _ = writeln!(
+        text,
+        "prediction_replay_key|symbol|signal_value|input_event_ids|max_input_replay_key"
+    );
+    text.push_str(&output.predictions.transcript());
+    let _ = writeln!(
+        text,
+        "transcript_hash={:016x}",
+        output.predictions.transcript_hash()
+    );
+    let _ = writeln!(text, "outcomes_seen={}", output.outcomes_seen);
+    text
+}
+
+struct EventLabels<'a> {
+    event_labels: BTreeMap<EventKey, String>,
+    symbol_labels: BTreeMap<SymbolId, String>,
+    events_by_key: BTreeMap<EventKey, &'a Event>,
+}
+
+impl<'a> EventLabels<'a> {
+    fn new(events: &'a [Event]) -> Self {
+        Self {
+            event_labels: events
+                .iter()
+                .map(|event| (event.event_key, event.event_id.clone()))
+                .collect(),
+            symbol_labels: events
+                .iter()
+                .map(|event| (event.symbol_key, event.symbol.clone()))
+                .collect(),
+            events_by_key: events
+                .iter()
+                .map(|event| (event.event_key, event))
+                .collect(),
+        }
+    }
+}
+
+fn print_check_stdout(
+    path: &str,
+    signal: SignalChoice,
+    options: CheckOptions,
+    events: &[Event],
+    report: &CheckReport,
+    replay: Option<&ReplayOutput>,
+) {
+    println!("asof-causality check");
+    println!("  fixture    {path}");
+    println!("  events     {}", events.len());
+    println!("  signal     {}", signal.as_str());
+    println!("  cutoffs    {}", cutoff_summary(events, options));
+    println!();
+    print_check_section(report, true);
+    println!();
+    println!("PROVENANCE");
+    match replay {
+        Some(output) => {
+            println!(
+                "  transcript_hash      {:016x}",
+                output.predictions.transcript_hash()
+            );
+            println!(
+                "  predictions_emitted  {}",
+                output.predictions.records().len()
+            );
+            println!("  outcomes_separated   {}", output.outcomes_seen);
+        }
+        None => {
+            println!("  transcript_hash      unavailable");
+            println!("  predictions_emitted  unavailable");
+            println!("  outcomes_separated   unavailable");
+        }
+    }
+}
+
+fn print_negative_control_stdout(
+    path: &str,
+    signal: SignalChoice,
+    events: &[Event],
+    received_time: &ReplayOutput,
+    observed_time: &ReplayOutput,
+    labels: &EventLabels<'_>,
+) {
+    println!("asof-causality negative-control");
+    println!("  fixture  {path}");
+    println!("  events   {}", events.len());
+    println!("  signal   {}", signal.as_str());
+    println!();
+    print_engine_summary(
+        "ENGINE A: received-time replay (correct)",
+        "(received_time, sequence, event_id)",
+        received_time,
+    );
+    println!();
+    print_engine_summary(
+        "ENGINE B: observed-time replay (deliberately broken baseline)",
+        "(observed_time, sequence, event_id)",
+        observed_time,
+    );
+    println!();
+    print_leaked_predictions(observed_time, labels);
+    println!();
+    print_negative_control_diagnostic(received_time, observed_time, labels);
+}
+
+fn print_engine_summary(name: &str, ordering: &str, output: &ReplayOutput) {
+    let impossible = output.predictions.impossible_predictions();
+    let verdict = if impossible.is_empty() {
+        "PASS"
+    } else {
+        "FAIL"
+    };
+
+    println!("{name}");
+    println!("  ordering             {ordering}");
+    println!(
+        "  transcript_hash      {:016x}",
+        output.predictions.transcript_hash()
+    );
+    println!("  impossible           {}", impossible.len());
+    println!("  VERDICT              {verdict}");
+}
+
+fn print_leaked_predictions(output: &ReplayOutput, labels: &EventLabels<'_>) {
+    println!("LEAKED PREDICTIONS (engine B)");
+    let impossible = output.predictions.impossible_predictions();
+
+    if impossible.is_empty() {
+        println!("  none");
+        return;
+    }
+
+    for record in impossible {
+        let prediction_event = labels.events_by_key.get(&record.prediction_event_key);
+        let input_event = record
+            .max_input_event_key
+            .and_then(|event_key| labels.events_by_key.get(&event_key).copied());
+
+        println!();
+        match (prediction_event, input_event) {
+            (Some(prediction), Some(input)) => {
+                println!(
+                    "  {} at {}",
+                    prediction.event_id,
+                    format_replay_key_for_event(prediction)
+                );
+                println!("    signal_value     {}", record.signal_value);
+                println!(
+                    "    leaked_input     {:<18} at {}",
+                    input.event_id,
+                    format_replay_key_for_event(input)
+                );
+                println!("    violation        {}", leak_violation(prediction, input));
+                println!(
+                    "    interpretation   {}",
+                    leak_interpretation(prediction, input)
+                );
+            }
+            _ => {
+                println!(
+                    "  {}",
+                    record.canonical_line(&labels.event_labels, &labels.symbol_labels)
+                );
+                println!("    violation        input replay key > prediction replay key");
+            }
+        }
+    }
+}
+
+fn print_negative_control_diagnostic(
+    received_time: &ReplayOutput,
+    observed_time: &ReplayOutput,
+    labels: &EventLabels<'_>,
+) {
+    let correct_impossible = received_time.predictions.impossible_predictions();
+    let leaky_impossible = observed_time.predictions.impossible_predictions();
+    let leak_classes = leaky_impossible
+        .iter()
+        .filter_map(|record| {
+            let prediction = labels.events_by_key.get(&record.prediction_event_key)?;
+            let input = record
+                .max_input_event_key
+                .and_then(|event_key| labels.events_by_key.get(&event_key).copied())?;
+            Some(leak_class(prediction, input))
+        })
+        .collect::<BTreeSet<_>>()
+        .len();
+
+    println!("DIAGNOSTIC");
+    if leaky_impossible.is_empty() {
+        println!("  the broken engine emitted 0 impossible predictions on this fixture");
+    } else {
+        println!(
+            "  the broken engine emitted {} impossible predictions across {} distinct leak classes",
+            leaky_impossible.len(),
+            leak_classes
+        );
+    }
+    println!("  the correct engine emitted {}", correct_impossible.len());
+    println!("  the audit invariant catches the failure mode the engine is designed to prevent");
+}
+
+fn format_replay_key_for_event(event: &Event) -> String {
+    format!(
+        "({}, {}, {})",
+        event.received_time, event.sequence, event.event_id
+    )
+}
+
+fn leak_class(prediction: &Event, input: &Event) -> &'static str {
+    if input.received_time == prediction.received_time {
+        "same-timestamp sequence"
+    } else if input.role == EventRole::FeatureCorrection {
+        "late correction"
+    } else {
+        "late arrival"
+    }
+}
+
+fn leak_violation(prediction: &Event, input: &Event) -> String {
+    if input.received_time == prediction.received_time {
+        "input sequence > prediction sequence at same received_time".to_string()
+    } else {
+        format!(
+            "input replay key > prediction replay key by delta={}",
+            input.received_time.saturating_sub(prediction.received_time)
+        )
+    }
+}
+
+fn leak_interpretation(prediction: &Event, input: &Event) -> String {
+    if input.received_time == prediction.received_time {
+        format!(
+            "prediction at t={} used same-timestamp event that sorts after it",
+            prediction.received_time
+        )
+    } else if input.role == EventRole::FeatureCorrection {
+        format!(
+            "prediction at t={} used correction received at t={}",
+            prediction.received_time, input.received_time
+        )
+    } else {
+        format!(
+            "prediction at t={} used event that arrived at t={}",
+            prediction.received_time, input.received_time
+        )
+    }
+}
+
+fn print_check_section(report: &CheckReport, include_details: bool) {
+    let passed = passed_check_count(report);
+    let total = report.results.len();
+    println!(
+        "{:<58} {}/{} {}",
+        "ADVERSARIAL CHECKS",
+        passed,
+        total,
+        overall_status(report)
+    );
+    for result in &report.results {
+        let status = if result.passed { "PASS" } else { "FAIL" };
+        if include_details {
+            println!(
+                "  [{status}]  {:<32} {}",
+                result.name,
+                shortened_check_detail(result.name, &result.detail)
+            );
+        } else {
+            println!("  [{status}]  {}", result.name);
+        }
+    }
+}
+
+fn passed_check_count(report: &CheckReport) -> usize {
+    report.results.iter().filter(|result| result.passed).count()
+}
+
+fn overall_status(report: &CheckReport) -> &'static str {
+    if report.passed() {
+        "PASS"
+    } else {
+        "FAIL"
+    }
+}
+
+fn shortened_check_detail<'a>(name: &str, detail: &'a str) -> &'a str {
+    if name == "deterministic_replay" && detail.starts_with("shuffled input produced transcript") {
+        "shuffled input produced same transcript hash"
+    } else {
+        detail
+    }
+}
+
+fn cutoff_summary(events: &[Event], options: CheckOptions) -> String {
+    let total = prediction_cutoff_count(events);
+    match options.max_cutoffs {
+        None => format!("exhaustive ({total})"),
+        Some(max_cutoffs) => {
+            let used = selected_cutoff_count(total, max_cutoffs);
+            if used == total {
+                format!("all {total} (max {max_cutoffs})")
+            } else {
+                format!("sampled {used} of {total} (max {max_cutoffs})")
+            }
+        }
+    }
+}
+
+fn prediction_cutoff_count(events: &[Event]) -> usize {
+    let mut cutoffs: Vec<u64> = events
+        .iter()
+        .filter(|event| event.role == EventRole::Prediction)
+        .map(|event| event.received_time)
+        .collect();
+    cutoffs.sort_unstable();
+    cutoffs.dedup();
+    cutoffs.len()
+}
+
+fn selected_cutoff_count(total: usize, max_cutoffs: usize) -> usize {
+    if total == 0 || max_cutoffs == 0 {
+        return 0;
+    }
+    if total <= max_cutoffs {
+        return total;
+    }
+    if max_cutoffs == 1 {
+        return 1;
+    }
+
+    let last = total - 1;
+    (0..max_cutoffs)
+        .map(|index| index * last / (max_cutoffs - 1))
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn format_check_report(report: &CheckReport) -> String {
+    let mut text = String::new();
+    for result in &report.results {
+        let status = if result.passed { "PASS" } else { "FAIL" };
+        let _ = writeln!(text, "{status} {} - {}", result.name, result.detail);
+    }
+    text
+}
+
+fn format_suite_summary(
+    stream: &GeneratedStream,
+    signal: SignalChoice,
+    replay: &ReplayOutput,
+    report: &CheckReport,
+) -> String {
+    let mut text = String::new();
+    let _ = writeln!(text, "# asof-causality run suite");
+    let _ = writeln!(text);
+    let _ = writeln!(text, "- scenario: {}", stream.stats.scenario.as_str());
+    let _ = writeln!(text, "- signal: {}", signal.as_str());
+    let _ = writeln!(text, "- seed: {}", stream.stats.seed);
+    let _ = writeln!(text, "- data_events: {}", stream.stats.data_events);
+    let _ = writeln!(text, "- rows: {}", stream.stats.rows);
+    let _ = writeln!(text, "- symbols: {}", stream.stats.symbols);
+    let _ = writeln!(text, "- late_updates: {}", stream.stats.late_updates);
+    let _ = writeln!(
+        text,
+        "- feature_corrections: {}",
+        stream.stats.feature_corrections
+    );
+    let _ = writeln!(text, "- outcomes: {}", stream.stats.outcomes);
+    let _ = writeln!(
+        text,
+        "- transcript_hash: {:016x}",
+        replay.predictions.transcript_hash()
+    );
+    let _ = writeln!(text);
+    let _ = writeln!(text, "## Checks");
+    let _ = writeln!(text);
+    for result in &report.results {
+        let status = if result.passed { "PASS" } else { "FAIL" };
+        let _ = writeln!(text, "- {status} {}: {}", result.name, result.detail);
+    }
+    text
+}
+
+struct RunSuiteStdout<'a> {
+    out_dir: &'a Path,
+    manifest_path: &'a Path,
+    stream: &'a GeneratedStream,
+    signal: SignalChoice,
+    replay: &'a ReplayOutput,
+    replay_elapsed: Duration,
+    report: &'a CheckReport,
+    manifest: &'a RunManifest,
+}
+
+fn print_run_suite_stdout(inputs: RunSuiteStdout<'_>) {
+    println!("asof-causality run-suite");
+    println!("  scenario   {}", inputs.stream.stats.scenario.as_str());
+    println!("  seed       {}", inputs.stream.stats.seed);
+    println!("  signal     {}", inputs.signal.as_str());
+    println!();
+
+    println!("PHASE 1  GENERATE");
+    println!("  events            {}", inputs.stream.stats.data_events);
+    println!(
+        "  rows              {}  (includes corrections, predictions, outcomes)",
+        inputs.stream.stats.rows
+    );
+    println!("  symbols           {}", inputs.stream.stats.symbols);
+    println!(
+        "  late_updates      {}  ({})",
+        inputs.stream.stats.late_updates,
+        percent(
+            inputs.stream.stats.late_updates,
+            inputs.stream.stats.data_events
+        )
+    );
+    println!(
+        "  corrections       {}  ({})",
+        inputs.stream.stats.feature_corrections,
+        percent(
+            inputs.stream.stats.feature_corrections,
+            inputs.stream.stats.data_events
+        )
+    );
+    println!("  predictions       {}", inputs.stream.stats.predictions);
+    println!(
+        "  physical_order    {}",
+        if inputs.stream.stats.shuffled {
+            "shuffled  (replay order must reconstruct from replay key)"
+        } else {
+            "ordered"
+        }
+    );
+    println!();
+
+    println!("PHASE 2  REPLAY  ordered by (received_time, sequence, event_id)");
+    println!("  events_replayed   {}", inputs.replay.replayed_events);
+    println!(
+        "  predictions       {}",
+        inputs.replay.predictions.records().len()
+    );
+    println!("  outcomes_seen     {}", inputs.replay.outcomes_seen);
+    println!(
+        "  throughput        {} events/sec  (symbol-id state representation)",
+        format_rate(events_per_second(
+            inputs.replay.replayed_events,
+            inputs.replay_elapsed
+        ))
+    );
+    println!();
+
+    print_check_section(inputs.report, false);
+    let used_cutoffs = selected_cutoff_count(prediction_cutoff_count(&inputs.stream.events), 32);
+    let total_cutoffs = prediction_cutoff_count(&inputs.stream.events);
+    println!(
+        "  cutoffs_sampled   {} of {}  (deterministic sampling for large fixtures)",
+        used_cutoffs, total_cutoffs
+    );
+    println!();
+
+    print!(
+        "{}",
+        format_provenance_stdout(inputs.manifest_path, inputs.manifest)
+    );
+
+    println!("ARTIFACTS  {}", inputs.out_dir.display());
+    println!("  events.pipe        {} rows", inputs.stream.stats.rows);
+    println!(
+        "  predictions.pipe   {} records",
+        inputs.replay.predictions.records().len()
+    );
+    println!(
+        "  checks.txt         {} results",
+        inputs.report.results.len()
+    );
+    println!("  summary.md");
+    println!("  manifest.json      hash-linked run identity");
+    println!();
+
+    println!(
+        "RESULT     {}  ({}/{} checks)",
+        overall_status(inputs.report),
+        passed_check_count(inputs.report),
+        inputs.report.results.len()
+    );
+}
+
+fn format_provenance_stdout(manifest_path: &Path, manifest: &RunManifest) -> String {
+    let mut text = String::new();
+    let _ = writeln!(text, "PROVENANCE  written to {}", manifest_path.display());
+    let _ = writeln!(text, "  hash_algorithm         {}", manifest.hash_algorithm);
+    let _ = writeln!(
+        text,
+        "  data_fixture_hash      {}",
+        manifest.data_fixture_hash
+    );
+    let _ = writeln!(
+        text,
+        "  prediction_output_hash {}",
+        manifest.prediction_output_hash
+    );
+    let _ = writeln!(
+        text,
+        "  checks_output_hash     {}",
+        manifest.checks_output_hash
+    );
+    let _ = writeln!(
+        text,
+        "  signal_version_hash    {}",
+        manifest.signal_version_hash
+    );
+    let _ = writeln!(
+        text,
+        "  transcript_hash        {}",
+        manifest.transcript_hash
+    );
+    let _ = writeln!(
+        text,
+        "  code_commit_hash       {}",
+        manifest
+            .code_commit_hash
+            .as_deref()
+            .map(short_hash)
+            .unwrap_or("unavailable")
+    );
+    let _ = writeln!(
+        text,
+        "  rust_toolchain         {}",
+        manifest.rust_toolchain.as_deref().unwrap_or("unavailable")
+    );
+    let _ = writeln!(
+        text,
+        "  run_started_utc        {}",
+        manifest.run_started_utc
+    );
+    let _ = writeln!(text);
+    text
+}
+
+fn events_per_second(events: usize, elapsed: Duration) -> f64 {
+    let seconds = elapsed.as_secs_f64();
+    if seconds > 0.0 {
+        events as f64 / seconds
+    } else {
+        0.0
+    }
+}
+
+fn format_rate(rate: f64) -> String {
+    if rate >= 1_000_000.0 {
+        format!("{:.1}M", rate / 1_000_000.0)
+    } else if rate >= 1_000.0 {
+        format!("{:.1}K", rate / 1_000.0)
+    } else {
+        format!("{rate:.0}")
+    }
+}
+
+fn percent(count: usize, total: usize) -> String {
+    if total == 0 {
+        "0.0%".to_string()
+    } else {
+        format!("{:.1}%", count as f64 * 100.0 / total as f64)
+    }
+}
+
+fn short_hash(hash: &str) -> &str {
+    hash.get(..12).unwrap_or(hash)
+}
+
+struct RunManifestInputs<'a> {
+    config: &'a GenerateConfig,
+    stream: &'a GeneratedStream,
+    signal: SignalChoice,
+    replay: &'a ReplayOutput,
+    report: &'a CheckReport,
+    events_output: &'a str,
+    predictions_output: &'a str,
+    checks_output: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CheckCounts {
+    passed: usize,
+    failed: usize,
+    total: usize,
+}
+
+impl CheckCounts {
+    fn from_report(report: &CheckReport) -> Self {
+        let passed = passed_check_count(report);
+        let total = report.results.len();
+        Self {
+            passed,
+            failed: total.saturating_sub(passed),
+            total,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RunManifest {
+    schema_version: u8,
+    tool: &'static str,
+    hash_algorithm: &'static str,
+    run_started_utc: String,
+    invocation: String,
+    invocation_args: Vec<String>,
+    code_commit_hash: Option<String>,
+    rust_toolchain: Option<String>,
+    scenario: String,
+    signal: String,
+    seed: u64,
+    events_requested: usize,
+    rows: usize,
+    symbols: usize,
+    late_rate: f64,
+    feature_correction_rate: f64,
+    outcome_rate: f64,
+    data_fixture_hash: String,
+    prediction_output_hash: String,
+    checks_output_hash: String,
+    signal_version_hash: String,
+    transcript_hash: String,
+    checks_passed: bool,
+    checks: CheckCounts,
+}
+
+impl RunManifest {
+    fn new(inputs: RunManifestInputs<'_>) -> Self {
+        Self::new_with_context(
+            inputs,
+            SystemTime::now(),
+            env::args().collect(),
+            current_git_commit(),
+            current_rustc_version(),
+        )
+    }
+
+    fn new_with_context(
+        inputs: RunManifestInputs<'_>,
+        run_started: SystemTime,
+        invocation_args: Vec<String>,
+        code_commit_hash: Option<String>,
+        rust_toolchain: Option<String>,
+    ) -> Self {
+        let signal_version = format!(
+            "{}:{}",
+            code_commit_hash.as_deref().unwrap_or("unknown-commit"),
+            inputs.signal.as_str()
+        );
+
+        Self {
+            schema_version: 2,
+            tool: "asof-causality",
+            hash_algorithm: "fnv1a64",
+            run_started_utc: system_time_to_utc_iso8601(run_started),
+            invocation: shell_join(&invocation_args),
+            invocation_args,
+            code_commit_hash,
+            rust_toolchain,
+            scenario: inputs.stream.stats.scenario.as_str().to_string(),
+            signal: inputs.signal.as_str().to_string(),
+            seed: inputs.stream.stats.seed,
+            events_requested: inputs.config.events,
+            rows: inputs.stream.stats.rows,
+            symbols: inputs.stream.stats.symbols,
+            late_rate: inputs.config.late_rate,
+            feature_correction_rate: inputs.config.feature_correction_rate,
+            outcome_rate: inputs.config.outcome_rate,
+            data_fixture_hash: format!(
+                "{:016x}",
+                asof_causality_core::fnv1a64(inputs.events_output.as_bytes())
+            ),
+            prediction_output_hash: format!(
+                "{:016x}",
+                asof_causality_core::fnv1a64(inputs.predictions_output.as_bytes())
+            ),
+            checks_output_hash: format!(
+                "{:016x}",
+                asof_causality_core::fnv1a64(inputs.checks_output.as_bytes())
+            ),
+            signal_version_hash: format!(
+                "{:016x}",
+                asof_causality_core::fnv1a64(signal_version.as_bytes())
+            ),
+            transcript_hash: format!("{:016x}", inputs.replay.predictions.transcript_hash()),
+            checks_passed: inputs.report.passed(),
+            checks: CheckCounts::from_report(inputs.report),
+        }
+    }
+}
+
+fn format_run_manifest(manifest: &RunManifest) -> String {
+    let mut text = String::new();
+
+    let _ = writeln!(text, "{{");
+    let _ = writeln!(text, "  \"schema_version\": {},", manifest.schema_version);
+    let _ = writeln!(text, "  \"tool\": \"{}\",", manifest.tool);
+    let _ = writeln!(
+        text,
+        "  \"hash_algorithm\": \"{}\",",
+        manifest.hash_algorithm
+    );
+    let _ = writeln!(
+        text,
+        "  \"run_started_utc\": \"{}\",",
+        manifest.run_started_utc
+    );
+    let _ = writeln!(
+        text,
+        "  \"invocation\": \"{}\",",
+        json_escape(&manifest.invocation)
+    );
+    let _ = writeln!(
+        text,
+        "  \"invocation_args\": {},",
+        json_string_array(&manifest.invocation_args)
+    );
+    let _ = writeln!(
+        text,
+        "  \"code_commit_hash\": {},",
+        json_optional(&manifest.code_commit_hash)
+    );
+    let _ = writeln!(
+        text,
+        "  \"rust_toolchain\": {},",
+        json_optional(&manifest.rust_toolchain)
+    );
+    let _ = writeln!(text, "  \"scenario\": \"{}\",", manifest.scenario);
+    let _ = writeln!(text, "  \"signal\": \"{}\",", manifest.signal);
+    let _ = writeln!(text, "  \"seed\": {},", manifest.seed);
+    let _ = writeln!(
+        text,
+        "  \"events_requested\": {},",
+        manifest.events_requested
+    );
+    let _ = writeln!(text, "  \"rows\": {},", manifest.rows);
+    let _ = writeln!(text, "  \"symbols\": {},", manifest.symbols);
+    let _ = writeln!(text, "  \"late_rate\": {},", manifest.late_rate);
+    let _ = writeln!(
+        text,
+        "  \"feature_correction_rate\": {},",
+        manifest.feature_correction_rate
+    );
+    let _ = writeln!(text, "  \"outcome_rate\": {},", manifest.outcome_rate);
+    let _ = writeln!(
+        text,
+        "  \"data_fixture_hash\": \"{}\",",
+        manifest.data_fixture_hash
+    );
+    let _ = writeln!(
+        text,
+        "  \"prediction_output_hash\": \"{}\",",
+        manifest.prediction_output_hash
+    );
+    let _ = writeln!(
+        text,
+        "  \"checks_output_hash\": \"{}\",",
+        manifest.checks_output_hash
+    );
+    let _ = writeln!(
+        text,
+        "  \"signal_version_hash\": \"{}\",",
+        manifest.signal_version_hash
+    );
+    let _ = writeln!(
+        text,
+        "  \"transcript_hash\": \"{}\",",
+        manifest.transcript_hash
+    );
+    let _ = writeln!(text, "  \"checks_passed\": {},", manifest.checks_passed);
+    let _ = writeln!(
+        text,
+        "  \"checks\": {{ \"passed\": {}, \"failed\": {}, \"total\": {} }}",
+        manifest.checks.passed, manifest.checks.failed, manifest.checks.total
+    );
+    let _ = writeln!(text, "}}");
+    text
+}
+
+fn current_git_commit() -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let commit = String::from_utf8(output.stdout).ok()?;
+    Some(commit.trim().to_string()).filter(|commit| !commit.is_empty())
+}
+
+fn current_rustc_version() -> Option<String> {
+    let output = Command::new("rustc").arg("--version").output().ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let version = String::from_utf8(output.stdout).ok()?;
+    Some(version.trim().to_string()).filter(|version| !version.is_empty())
+}
+
+fn json_optional(value: &Option<String>) -> String {
+    value
+        .as_ref()
+        .map(|value| format!("\"{}\"", json_escape(value)))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn json_string_array(values: &[String]) -> String {
+    let mut text = String::from("[");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            text.push_str(", ");
+        }
+        let _ = write!(text, "\"{}\"", json_escape(value));
+    }
+    text.push(']');
+    text
+}
+
+fn json_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn shell_join(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| shell_escape(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_escape(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    if value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric()
+            || matches!(byte, b'_' | b'-' | b'.' | b'/' | b':' | b'=' | b'@')
+    }) {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+fn system_time_to_utc_iso8601(time: SystemTime) -> String {
+    let seconds = time
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs();
+    unix_seconds_to_utc_iso8601(seconds)
+}
+
+fn unix_seconds_to_utc_iso8601(seconds: u64) -> String {
+    let days = seconds / 86_400;
+    let seconds_of_day = seconds % 86_400;
+    let (year, month, day) = civil_from_days(days as i64);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
+    let z = days_since_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    let year = year + if month <= 2 { 1 } else { 0 };
+
+    (year, month as u32, day as u32)
+}
+
+fn print_help() {
+    println!("asof-causality");
+    println!();
+    println!("usage:");
+    println!("  asof-causality replay [path] [--signal name]");
+    println!("  asof-causality check [path] [--signal name] [--max-cutoffs N|--exhaustive]");
+    println!("  asof-causality negative-control [path] [--signal name]");
+    println!("  asof-causality generate [--scenario late-heavy] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out path]");
+    println!("  asof-causality run-suite [--scenario late-heavy] [--signal name] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out dir]");
+    println!("  asof-causality bench [--events N] [--symbols N]");
+    println!();
+    println!("signals:");
+    println!("  last-feature-sentiment (default)");
+    println!("  windowed-feature-sentiment");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    fn sample_manifest() -> RunManifest {
+        let config = GenerateConfig {
+            events: 64,
+            symbols: 4,
+            seed: 99,
+            ..GenerateConfig::for_scenario(Scenario::LateHeavy)
+        };
+        let stream = generate_events(&config);
+        let replay = replay_with_signal(
+            SignalChoice::LastFeatureSentiment,
+            &stream.events,
+            ReplayOptions::default(),
+            ReplayOrder::ReceivedTime,
+        )
+        .unwrap();
+        let report = run_checks_with_signal(
+            SignalChoice::LastFeatureSentiment,
+            &stream.events,
+            CheckOptions::sampled(8),
+        );
+        let events_output = stream.to_pipe_string();
+        let predictions_output = format_prediction_output(&replay);
+        let checks_output = format_check_report(&report);
+
+        RunManifest::new_with_context(
+            RunManifestInputs {
+                config: &config,
+                stream: &stream,
+                signal: SignalChoice::LastFeatureSentiment,
+                replay: &replay,
+                report: &report,
+                events_output: &events_output,
+                predictions_output: &predictions_output,
+                checks_output: &checks_output,
+            },
+            UNIX_EPOCH + Duration::from_secs(1_704_067_200),
+            args(&[
+                "asof-causality",
+                "run-suite",
+                "--out",
+                "/tmp/path with space",
+            ]),
+            Some("abcdef1234567890".to_string()),
+            Some("rustc test".to_string()),
+        )
+    }
+
+    #[test]
+    fn negative_control_command_has_legacy_alias() {
+        assert!(is_negative_control_command("negative-control"));
+        assert!(is_negative_control_command("compare-leaky"));
+        assert!(!is_negative_control_command("run-suite"));
+    }
+
+    #[test]
+    fn parses_signal_for_replay_like_commands() {
+        let (path, signal) = parse_path_signal_args(
+            &args(&[
+                "examples/lookahead-negative-control.pipe",
+                "--signal",
+                "windowed-feature-sentiment",
+            ]),
+            "default.pipe",
+            "negative-control",
+        )
+        .unwrap();
+
+        assert_eq!(path, "examples/lookahead-negative-control.pipe");
+        assert_eq!(signal, SignalChoice::WindowedFeatureSentiment);
+    }
+
+    #[test]
+    fn parses_signal_for_run_suite() {
+        let (_, _, signal) =
+            parse_generate_args(&args(&["--signal", "windowed-feature-sentiment"]), true).unwrap();
+
+        assert_eq!(signal, SignalChoice::WindowedFeatureSentiment);
+    }
+
+    #[test]
+    fn rejects_signal_for_generate() {
+        let error = parse_generate_args(&args(&["--signal", "windowed-feature-sentiment"]), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("unknown generate argument"));
+    }
+
+    #[test]
+    fn rejects_zero_max_cutoffs() {
+        let error = parse_check_args(&args(&["--max-cutoffs", "0"]))
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(error, "--max-cutoffs must be greater than 0");
+    }
+
+    #[test]
+    fn manifest_v2_contains_required_fields() {
+        let manifest = sample_manifest();
+        let json = format_run_manifest(&manifest);
+
+        assert!(json.contains("\"schema_version\": 2"));
+        assert!(json.contains("\"tool\": \"asof-causality\""));
+        assert!(json.contains("\"hash_algorithm\": \"fnv1a64\""));
+        assert!(json.contains("\"run_started_utc\": \"2024-01-01T00:00:00Z\""));
+        assert!(json
+            .contains("\"invocation\": \"asof-causality run-suite --out '/tmp/path with space'\""));
+        assert!(json.contains("\"invocation_args\": [\"asof-causality\", \"run-suite\", \"--out\", \"/tmp/path with space\"]"));
+        assert!(json.contains("\"code_commit_hash\": \"abcdef1234567890\""));
+        assert!(json.contains("\"rust_toolchain\": \"rustc test\""));
+        assert!(json.contains("\"data_fixture_hash\":"));
+        assert!(json.contains("\"prediction_output_hash\":"));
+        assert!(json.contains("\"checks_output_hash\":"));
+        assert!(json.contains("\"signal_version_hash\":"));
+        assert!(json.contains("\"transcript_hash\":"));
+        assert!(json.contains("\"checks_passed\": true"));
+    }
+
+    #[test]
+    fn manifest_records_check_summary_object() {
+        let manifest = sample_manifest();
+        let json = format_run_manifest(&manifest);
+
+        assert_eq!(manifest.checks.passed, 8);
+        assert_eq!(manifest.checks.failed, 0);
+        assert_eq!(manifest.checks.total, 8);
+        assert!(json.contains("\"checks\": { \"passed\": 8, \"failed\": 0, \"total\": 8 }"));
+    }
+
+    #[test]
+    fn invocation_args_serialize_as_json_array_with_escaping() {
+        let values = args(&["asof-causality", "quote\"arg", "slash\\arg"]);
+
+        assert_eq!(
+            json_string_array(&values),
+            "[\"asof-causality\", \"quote\\\"arg\", \"slash\\\\arg\"]"
+        );
+    }
+
+    #[test]
+    fn utc_formatter_formats_fixed_timestamps() {
+        assert_eq!(unix_seconds_to_utc_iso8601(0), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            unix_seconds_to_utc_iso8601(1_704_067_200),
+            "2024-01-01T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn stdout_provenance_labels_match_manifest_keys() {
+        let manifest = sample_manifest();
+        let output = format_provenance_stdout(Path::new("manifest.json"), &manifest);
+
+        assert!(output.contains("  hash_algorithm"));
+        assert!(output.contains("  data_fixture_hash"));
+        assert!(output.contains("  prediction_output_hash"));
+        assert!(output.contains("  checks_output_hash"));
+        assert!(output.contains("  signal_version_hash"));
+        assert!(output.contains("  transcript_hash"));
+        assert!(output.contains("  code_commit_hash"));
+        assert!(output.contains("  rust_toolchain"));
+        assert!(output.contains("  run_started_utc"));
+        assert!(!output.contains("  fixture_hash"));
+        assert!(!output.contains("  predictions_hash"));
+        assert!(!output.contains("  checks_hash"));
+    }
+}

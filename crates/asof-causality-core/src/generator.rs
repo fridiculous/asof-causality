@@ -1,11 +1,11 @@
-use crate::{Event, EventKind};
+use crate::{Event, EventRole};
 use std::fmt::Write;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scenario {
     Clean,
     LateHeavy,
-    CorrectionHeavy,
+    FeatureCorrectionHeavy,
 }
 
 impl Scenario {
@@ -13,7 +13,7 @@ impl Scenario {
         match value {
             "clean" => Some(Self::Clean),
             "late-heavy" => Some(Self::LateHeavy),
-            "correction-heavy" => Some(Self::CorrectionHeavy),
+            "feature-correction-heavy" | "correction-heavy" => Some(Self::FeatureCorrectionHeavy),
             _ => None,
         }
     }
@@ -22,7 +22,7 @@ impl Scenario {
         match self {
             Self::Clean => "clean",
             Self::LateHeavy => "late-heavy",
-            Self::CorrectionHeavy => "correction-heavy",
+            Self::FeatureCorrectionHeavy => "feature-correction-heavy",
         }
     }
 }
@@ -33,8 +33,8 @@ pub struct GenerateConfig {
     pub events: usize,
     pub symbols: usize,
     pub late_rate: f64,
-    pub correction_rate: f64,
-    pub label_rate: f64,
+    pub feature_correction_rate: f64,
+    pub outcome_rate: f64,
     pub prediction_interval: usize,
     pub max_lag: u64,
     pub seed: u64,
@@ -49,8 +49,8 @@ impl GenerateConfig {
                 events: 10_000,
                 symbols: 128,
                 late_rate: 0.0,
-                correction_rate: 0.0,
-                label_rate: 0.01,
+                feature_correction_rate: 0.0,
+                outcome_rate: 0.01,
                 prediction_interval: 10,
                 max_lag: 100,
                 seed: 42,
@@ -61,20 +61,20 @@ impl GenerateConfig {
                 events: 100_000,
                 symbols: 1_024,
                 late_rate: 0.30,
-                correction_rate: 0.05,
-                label_rate: 0.01,
+                feature_correction_rate: 0.05,
+                outcome_rate: 0.01,
                 prediction_interval: 10,
                 max_lag: 300,
                 seed: 42,
                 shuffle_physical_order: true,
             },
-            Scenario::CorrectionHeavy => Self {
+            Scenario::FeatureCorrectionHeavy => Self {
                 scenario,
                 events: 100_000,
                 symbols: 1_024,
                 late_rate: 0.10,
-                correction_rate: 0.25,
-                label_rate: 0.01,
+                feature_correction_rate: 0.25,
+                outcome_rate: 0.01,
                 prediction_interval: 10,
                 max_lag: 300,
                 seed: 42,
@@ -91,10 +91,10 @@ pub struct GenerationStats {
     pub data_events: usize,
     pub rows: usize,
     pub symbols: usize,
-    pub news: usize,
+    pub features: usize,
     pub predictions: usize,
-    pub corrections: usize,
-    pub labels: usize,
+    pub feature_corrections: usize,
+    pub outcomes: usize,
     pub late_updates: usize,
     pub shuffled: bool,
 }
@@ -108,7 +108,7 @@ pub struct GeneratedStream {
 impl GeneratedStream {
     pub fn to_pipe_string(&self) -> String {
         let mut output = String::new();
-        let _ = writeln!(output, "# generated_by=asof-replay");
+        let _ = writeln!(output, "# generated_by=asof-causality");
         let _ = writeln!(
             output,
             "# scenario={} seed={} data_events={} rows={} symbols={} shuffled={}",
@@ -121,7 +121,7 @@ impl GeneratedStream {
         );
         let _ = writeln!(
             output,
-            "# event_id|observed_time|received_time|sequence|kind|symbol|payload"
+            "# event_id|observed_time|received_time|sequence|role|symbol|payload"
         );
 
         for event in &self.events {
@@ -138,8 +138,8 @@ pub fn generate_events(config: &GenerateConfig) -> GeneratedStream {
     let prediction_interval = config.prediction_interval.max(1);
     let max_lag = config.max_lag.max(1);
     let late_rate = clamp_rate(config.late_rate);
-    let correction_rate = clamp_rate(config.correction_rate);
-    let label_rate = clamp_rate(config.label_rate);
+    let feature_correction_rate = clamp_rate(config.feature_correction_rate);
+    let outcome_rate = clamp_rate(config.outcome_rate);
 
     let mut rng = SplitMix64::new(config.seed);
     let mut events = Vec::with_capacity(data_events + data_events / prediction_interval + 8);
@@ -148,8 +148,8 @@ pub fn generate_events(config: &GenerateConfig) -> GeneratedStream {
     add_sentinel_events(
         &mut events,
         &mut sequence,
-        symbols,
-        correction_rate > 0.0 || matches!(config.scenario, Scenario::CorrectionHeavy),
+        feature_correction_rate > 0.0
+            || matches!(config.scenario, Scenario::FeatureCorrectionHeavy),
     );
 
     let mut stats = GenerationStats {
@@ -158,16 +158,17 @@ pub fn generate_events(config: &GenerateConfig) -> GeneratedStream {
         data_events,
         rows: 0,
         symbols,
-        news: 2,
-        predictions: 5,
-        corrections: 0,
-        labels: 0,
-        late_updates: 2,
+        features: 1,
+        predictions: 3,
+        feature_corrections: 0,
+        outcomes: 0,
+        late_updates: 1,
         shuffled: config.shuffle_physical_order,
     };
 
-    if correction_rate > 0.0 || matches!(config.scenario, Scenario::CorrectionHeavy) {
-        stats.corrections += 1;
+    if feature_correction_rate > 0.0 || matches!(config.scenario, Scenario::FeatureCorrectionHeavy)
+    {
+        stats.feature_corrections += 1;
         stats.predictions += 2;
         stats.late_updates += 1;
     }
@@ -190,11 +191,11 @@ pub fn generate_events(config: &GenerateConfig) -> GeneratedStream {
             observed_time,
             received_time,
             next_sequence(&mut sequence),
-            EventKind::News,
+            EventRole::Feature,
             symbol.clone(),
             format!("sentiment={sentiment}"),
         ));
-        stats.news += 1;
+        stats.features += 1;
         if is_late {
             stats.late_updates += 1;
         }
@@ -205,14 +206,14 @@ pub fn generate_events(config: &GenerateConfig) -> GeneratedStream {
                 observed_time + 1,
                 observed_time + 1,
                 next_sequence(&mut sequence),
-                EventKind::Predict,
+                EventRole::Prediction,
                 symbol.clone(),
                 "",
             ));
             stats.predictions += 1;
         }
 
-        if rng.chance(correction_rate) {
+        if rng.chance(feature_correction_rate) {
             let correction_time = received_time + 1 + rng.range_u64(max_lag);
             let correction_sentiment = sentiment_payload(rng.range_usize(3));
             events.push(Event::new(
@@ -220,27 +221,27 @@ pub fn generate_events(config: &GenerateConfig) -> GeneratedStream {
                 observed_time + 2,
                 correction_time,
                 next_sequence(&mut sequence),
-                EventKind::Correction,
+                EventRole::FeatureCorrection,
                 symbol.clone(),
                 format!("sentiment={correction_sentiment},corrects=n{index}"),
             ));
-            stats.corrections += 1;
+            stats.feature_corrections += 1;
             if correction_time > observed_time + 2 {
                 stats.late_updates += 1;
             }
         }
 
-        if rng.chance(label_rate) {
+        if rng.chance(outcome_rate) {
             events.push(Event::new(
                 format!("l{index}"),
                 observed_time + max_lag + 1,
                 observed_time + max_lag + 1,
                 next_sequence(&mut sequence),
-                EventKind::Label,
+                EventRole::Outcome,
                 symbol,
                 format!("return_bps={}", rng.range_i32(401) - 200),
             ));
-            stats.labels += 1;
+            stats.outcomes += 1;
         }
     }
 
@@ -252,19 +253,14 @@ pub fn generate_events(config: &GenerateConfig) -> GeneratedStream {
     GeneratedStream { events, stats }
 }
 
-fn add_sentinel_events(
-    events: &mut Vec<Event>,
-    sequence: &mut u64,
-    symbols: usize,
-    include_correction: bool,
-) {
-    let symbol = symbol_name(0.min(symbols.saturating_sub(1)));
+fn add_sentinel_events(events: &mut Vec<Event>, sequence: &mut u64, include_correction: bool) {
+    let symbol = symbol_name(0);
     events.push(Event::new(
         "p_sentinel_before",
         1_000,
         1_000,
         next_sequence(sequence),
-        EventKind::Predict,
+        EventRole::Prediction,
         symbol.clone(),
         "",
     ));
@@ -273,7 +269,7 @@ fn add_sentinel_events(
         1_000,
         1_020,
         next_sequence(sequence),
-        EventKind::News,
+        EventRole::Feature,
         symbol.clone(),
         "sentiment=positive",
     ));
@@ -282,7 +278,7 @@ fn add_sentinel_events(
         1_010,
         1_010,
         next_sequence(sequence),
-        EventKind::Predict,
+        EventRole::Prediction,
         symbol.clone(),
         "",
     ));
@@ -291,35 +287,7 @@ fn add_sentinel_events(
         1_030,
         1_030,
         next_sequence(sequence),
-        EventKind::Predict,
-        symbol.clone(),
-        "",
-    ));
-
-    events.push(Event::new(
-        "n_sentinel_second_late",
-        1_080,
-        1_110,
-        next_sequence(sequence),
-        EventKind::News,
-        symbol.clone(),
-        "sentiment=positive",
-    ));
-    events.push(Event::new(
-        "p_sentinel_second_between",
-        1_090,
-        1_090,
-        next_sequence(sequence),
-        EventKind::Predict,
-        symbol.clone(),
-        "",
-    ));
-    events.push(Event::new(
-        "p_sentinel_second_after",
-        1_120,
-        1_120,
-        next_sequence(sequence),
-        EventKind::Predict,
+        EventRole::Prediction,
         symbol.clone(),
         "",
     ));
@@ -330,7 +298,7 @@ fn add_sentinel_events(
             1_040,
             1_060,
             next_sequence(sequence),
-            EventKind::Correction,
+            EventRole::FeatureCorrection,
             symbol.clone(),
             "sentiment=negative,corrects=n_sentinel_late",
         ));
@@ -339,7 +307,7 @@ fn add_sentinel_events(
             1_050,
             1_050,
             next_sequence(sequence),
-            EventKind::Predict,
+            EventRole::Prediction,
             symbol.clone(),
             "",
         ));
@@ -348,7 +316,7 @@ fn add_sentinel_events(
             1_070,
             1_070,
             next_sequence(sequence),
-            EventKind::Predict,
+            EventRole::Prediction,
             symbol,
             "",
         ));
@@ -423,8 +391,7 @@ impl SplitMix64 {
     }
 
     fn chance(&mut self, probability: f64) -> bool {
-        let probability = clamp_rate(probability);
-        if probability <= 0.0 {
+        if probability <= 0.0 || probability.is_nan() {
             return false;
         }
         if probability >= 1.0 {
@@ -476,8 +443,9 @@ mod tests {
     }
 
     #[test]
-    fn chance_respects_closed_rate_endpoints() {
+    fn chance_handles_probability_endpoints() {
         let mut rng = SplitMix64::new(0);
+
         for _ in 0..1024 {
             assert!(!rng.chance(0.0));
             assert!(!rng.chance(f64::NAN));

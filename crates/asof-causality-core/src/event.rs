@@ -1,41 +1,41 @@
-use crate::EventKey;
+use crate::{EventKey, SymbolId};
 use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EventKind {
-    News,
-    Correction,
-    Predict,
-    Label,
+pub enum EventRole {
+    Feature,
+    FeatureCorrection,
+    Prediction,
+    Outcome,
 }
 
-impl EventKind {
+impl EventRole {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::News => "news",
-            Self::Correction => "correction",
-            Self::Predict => "predict",
-            Self::Label => "label",
+            Self::Feature => "feature",
+            Self::FeatureCorrection => "feature_correction",
+            Self::Prediction => "prediction",
+            Self::Outcome => "outcome",
         }
     }
 
-    pub fn updates_prediction_state(self) -> bool {
-        matches!(self, Self::News | Self::Correction)
+    pub fn updates_signal_state(self) -> bool {
+        matches!(self, Self::Feature | Self::FeatureCorrection)
     }
 }
 
-impl FromStr for EventKind {
+impl FromStr for EventRole {
     type Err = ParseEventError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim() {
-            "news" => Ok(Self::News),
-            "correction" => Ok(Self::Correction),
-            "predict" => Ok(Self::Predict),
-            "label" => Ok(Self::Label),
-            other => Err(ParseEventError::InvalidKind(other.to_string())),
+            "feature" | "news" => Ok(Self::Feature),
+            "feature_correction" | "correction" => Ok(Self::FeatureCorrection),
+            "prediction" | "predict" => Ok(Self::Prediction),
+            "outcome" | "label" => Ok(Self::Outcome),
+            other => Err(ParseEventError::InvalidRole(other.to_string())),
         }
     }
 }
@@ -77,7 +77,8 @@ pub struct Event {
     pub observed_time: u64,
     pub received_time: u64,
     pub sequence: u64,
-    pub kind: EventKind,
+    pub role: EventRole,
+    pub symbol_key: SymbolId,
     pub symbol: String,
     pub payload: String,
 }
@@ -88,19 +89,21 @@ impl Event {
         observed_time: u64,
         received_time: u64,
         sequence: u64,
-        kind: EventKind,
+        role: EventRole,
         symbol: impl Into<String>,
         payload: impl Into<String>,
     ) -> Self {
         let event_id = event_id.into();
+        let symbol = symbol.into();
         Self {
             event_key: EventKey::from_label(&event_id),
             event_id,
             observed_time,
             received_time,
             sequence,
-            kind,
-            symbol: symbol.into(),
+            role,
+            symbol_key: SymbolId::from_label(&symbol),
+            symbol,
             payload: payload.into(),
         }
     }
@@ -139,7 +142,7 @@ impl Event {
             self.observed_time,
             self.received_time,
             self.sequence,
-            self.kind.as_str(),
+            self.role.as_str(),
             self.symbol,
             self.payload
         )
@@ -154,7 +157,7 @@ impl Event {
     }
 
     pub fn sentiment(&self) -> Result<Option<Sentiment>, ParseEventError> {
-        if !self.kind.updates_prediction_state() {
+        if !self.role.updates_signal_state() {
             return Ok(None);
         }
 
@@ -175,7 +178,7 @@ impl Event {
 
     pub fn with_mutated_future_payload(&self) -> Self {
         let mut mutated = self.clone();
-        if mutated.kind.updates_prediction_state() {
+        if mutated.role.updates_signal_state() {
             mutated.payload = "sentiment=negative,mutated=true".to_string();
         } else {
             mutated.payload = format!("{},mutated=true", mutated.payload);
@@ -198,7 +201,7 @@ pub enum ParseEventError {
         field: &'static str,
         value: String,
     },
-    InvalidKind(String),
+    InvalidRole(String),
     InvalidSentiment(String),
     MissingPayloadField {
         event_id: String,
@@ -217,7 +220,7 @@ impl fmt::Display for ParseEventError {
             Self::InvalidNumber { field, value } => {
                 write!(f, "invalid numeric field {field}: {value}")
             }
-            Self::InvalidKind(kind) => write!(f, "invalid event kind: {kind}"),
+            Self::InvalidRole(role) => write!(f, "invalid event role: {role}"),
             Self::InvalidSentiment(value) => write!(f, "invalid sentiment: {value}"),
             Self::MissingPayloadField { event_id, field } => {
                 write!(f, "event {event_id} is missing payload field {field}")
@@ -253,18 +256,47 @@ mod tests {
 
     #[test]
     fn parses_pipe_record() {
-        let event = Event::from_pipe_record("n1|572|585|2|news|AAPL|sentiment=positive").unwrap();
+        let event =
+            Event::from_pipe_record("n1|572|585|2|feature|AAPL|sentiment=positive").unwrap();
 
         assert_eq!(event.event_id, "n1");
         assert_eq!(event.observed_time, 572);
         assert_eq!(event.received_time, 585);
-        assert_eq!(event.kind, EventKind::News);
+        assert_eq!(event.role, EventRole::Feature);
         assert_eq!(event.sentiment().unwrap(), Some(Sentiment::Positive));
     }
 
     #[test]
-    fn rejects_unknown_kind() {
+    fn parses_legacy_role_aliases() {
+        assert_eq!(
+            Event::from_pipe_record("n1|1|1|1|news|AAPL|sentiment=positive")
+                .unwrap()
+                .role,
+            EventRole::Feature
+        );
+        assert_eq!(
+            Event::from_pipe_record("c1|1|1|1|correction|AAPL|sentiment=negative")
+                .unwrap()
+                .role,
+            EventRole::FeatureCorrection
+        );
+        assert_eq!(
+            Event::from_pipe_record("p1|1|1|1|predict|AAPL|")
+                .unwrap()
+                .role,
+            EventRole::Prediction
+        );
+        assert_eq!(
+            Event::from_pipe_record("l1|1|1|1|label|AAPL|return_bps=1")
+                .unwrap()
+                .role,
+            EventRole::Outcome
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_role() {
         let error = Event::from_pipe_record("x|1|1|1|bad|AAPL|").unwrap_err();
-        assert!(matches!(error, ParseEventError::InvalidKind(_)));
+        assert!(matches!(error, ParseEventError::InvalidRole(_)));
     }
 }
