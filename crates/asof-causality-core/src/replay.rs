@@ -1,7 +1,7 @@
 use crate::state::StateStore;
 use crate::{
-    Event, EventRole, LastFeatureSentimentSignal, ParseEventError, PredictionLog, PredictionRecord,
-    Signal,
+    feature_recipe_hash, Event, EventRole, LastFeatureSentimentSignal, ParseEventError,
+    PredictionLog, PredictionRecord, Signal,
 };
 use std::error::Error;
 use std::fmt;
@@ -97,6 +97,9 @@ impl<S: Signal> ReplayEngine<S> {
                         max_input_received_time: snapshot.max_input_received_time,
                         max_input_sequence: snapshot.max_input_sequence,
                         max_input_event_key: snapshot.max_input_event_key,
+                        feature_recipe_hash: snapshot.feature_recipe_hash.unwrap_or_else(|| {
+                            feature_recipe_hash(self.signal.name(), snapshot.input_event_ids_used)
+                        }),
                     });
                 }
                 EventRole::Outcome => {

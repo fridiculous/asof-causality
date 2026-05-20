@@ -36,6 +36,14 @@ it keeps prediction records fixed-size and allocation-free in the replay path.
 Signals that need larger provenance should use a separate compact recipe hash or
 snapshot manifest rather than growing per-prediction heap state.
 
+The CLI `audit` command renders those records as JSONL and validates the public
+shape with `docs/audit.schema.json`. The JSONL audit record includes a BLAKE3
+`feature_recipe_hash`, `causally_valid`, optional
+`matched_stored_prediction`, and optional outcome attribution. Stored
+predictions are matched by `(symbol, prediction_replay_key)`. Outcomes must
+explicitly name the prediction replay key; the kernel attaches outcome values
+but does not score them.
+
 Symbols follow the same hot-path shape. `Event` keeps the original symbol string
 for input and transcript rendering, but `StateStore` and `PredictionRecord` use
 a stable `SymbolId`. The replay path does not clone a symbol string per feature
@@ -89,10 +97,11 @@ scenario also shuffles physical file order so deterministic replay is exercised
 against out-of-order input rather than only a hand-written toy fixture.
 
 The manifest is the run certificate for the output directory. It records the
-scenario, signal, invocation, UTC run timestamp, optional Git commit, Rust
-toolchain, hash algorithm, fixture hash, prediction output hash, checks output
-hash, signal-version hash, final transcript hash, and check pass/fail counts. It
-is meant to make a run verifiable from artifacts rather than from prose.
+scenario, signal, invocation, UTC run timestamp, source commit context,
+workspace dirty flag, Rust toolchain, hash algorithm, fixture hash, prediction
+output hash, checks output hash, final transcript hash, and check pass/fail
+counts. It is meant to make a run verifiable from artifacts rather than from
+prose; commit metadata is context, not the audit identity.
 
 ## Negative Control
 

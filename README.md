@@ -82,6 +82,7 @@ predictions that could not have used them in live replay.
 - a restricted signal API that receives only an opaque `AsOfView`
 - built-in single-input and windowed multi-input signals
 - immutable `PredictionRecord` output with input-event provenance
+- JSONL audit output with a checked schema in `docs/audit.schema.json`
 - interned symbol IDs in replay state and prediction records, rendered back to
   human symbols in transcripts
 - adversarial leakage checks for late arrivals, feature corrections, outcomes, and
@@ -102,6 +103,7 @@ Install Rust 1.78+ if needed, then:
 ```sh
 cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
 cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
+cargo run -p asof-causality-cli -- audit examples/late-arrival.pipe
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
@@ -153,6 +155,30 @@ For large generated files, `check` samples 32 received-time cutoffs by default
 for the expensive prefix-equivalence and future-mutation checks. Use
 `--exhaustive` for the full adversarial sweep on small fixtures, or
 `--max-cutoffs N` to set the deterministic cutoff sample size.
+
+```sh
+cargo run -p asof-causality-cli -- audit examples/late-arrival.pipe --signal windowed-feature-sentiment
+```
+
+Emits one JSON object per replay-derived prediction. Each record includes the
+prediction replay key, signal, symbol, signal value, ordered input event IDs,
+optional maximum input replay key, BLAKE3 `feature_recipe_hash`,
+`causally_valid`, optional `matched_stored_prediction`, and optional `outcome`.
+The machine-readable contract lives in
+[docs/audit.schema.json](docs/audit.schema.json). Use `--out path` to write the
+same JSONL stream to a file.
+
+To audit stored predictions instead of only emitting the replay-derived audit
+surface:
+
+```sh
+cargo run -p asof-causality-cli -- audit events.pipe stored_predictions.jsonl outcomes.pipe --out audit.jsonl
+```
+
+Stored predictions are matched by `(symbol, prediction_replay_key)` and should
+include `signal_value` plus optional `feature_recipe_hash`. Outcomes are
+attached only when they explicitly name `prediction_replay_key`; the audit
+record carries `return_bps` but does not compute PnL or scoring metrics.
 
 ```sh
 cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
@@ -228,7 +254,8 @@ before alpha research can be trusted:
 
 See [docs/architecture.md](docs/architecture.md) and
 [docs/measurements.md](docs/measurements.md) for the implementation shape and
-measurement notes.
+measurement notes. See [docs/roadmap.md](docs/roadmap.md) for the planned
+strategy layer, recipe-hash extension, and Parquet adapter.
 
 ## Compared To Backtesters
 
@@ -241,9 +268,9 @@ shipped with the repo so that the leak class is falsifiable, not just described.
 
 `run-suite` writes a `manifest.json` beside the generated fixture, predictions,
 checks, and summary. The manifest is a compact linkage proof for the run: it
-records the invocation, run timestamp, optional Git commit, Rust toolchain,
-fixture hash, prediction-output hash, checks-output hash, signal-version hash,
-and final transcript hash.
+records the invocation, run timestamp, source commit context, workspace dirty
+flag, Rust toolchain, fixture hash, prediction-output hash, checks-output hash,
+and final transcript hash. Public artifact hashes in the manifest use BLAKE3.
 
 That means the result is not just "the CLI printed PASS." The output directory
 contains enough identity to answer: which data, which signal, which executable

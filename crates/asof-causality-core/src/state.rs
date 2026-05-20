@@ -1,4 +1,6 @@
-use crate::{Event, EventKey, InputSet, Sentiment, SymbolId, MAX_INPUTS_PER_PREDICTION};
+use crate::{
+    Event, EventKey, FeatureRecipeHash, InputSet, Sentiment, SymbolId, MAX_INPUTS_PER_PREDICTION,
+};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8,6 +10,7 @@ pub struct SymbolSnapshot {
     pub max_input_received_time: u64,
     pub max_input_sequence: u64,
     pub max_input_event_key: Option<EventKey>,
+    pub feature_recipe_hash: Option<FeatureRecipeHash>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +135,7 @@ impl AsOfView<'_> {
                     max_input_received_time: observation.received_time,
                     max_input_sequence: observation.sequence,
                     max_input_event_key: Some(observation.input_key),
+                    feature_recipe_hash: None,
                 },
                 None => empty_snapshot(),
             },
@@ -175,6 +179,7 @@ impl AsOfView<'_> {
             max_input_received_time: max_observation.received_time,
             max_input_sequence: max_observation.sequence,
             max_input_event_key: Some(max_observation.input_key),
+            feature_recipe_hash: None,
         }
     }
 }
@@ -186,6 +191,7 @@ fn empty_snapshot() -> SymbolSnapshot {
         max_input_received_time: 0,
         max_input_sequence: 0,
         max_input_event_key: None,
+        feature_recipe_hash: None,
     }
 }
 
