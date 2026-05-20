@@ -268,7 +268,11 @@ fn parse_check_args(args: &[String]) -> Result<(&str, CheckOptions, SignalChoice
                 index += 2;
             }
             "--max-cutoffs" => {
-                options = CheckOptions::sampled(parse_arg(args, index, "--max-cutoffs")?);
+                let max_cutoffs = parse_arg(args, index, "--max-cutoffs")?;
+                if max_cutoffs == 0 {
+                    return Err("--max-cutoffs must be greater than 0".into());
+                }
+                options = CheckOptions::sampled(max_cutoffs);
                 index += 2;
             }
             "--exhaustive" => {
@@ -797,5 +801,14 @@ mod tests {
             .to_string();
 
         assert!(error.contains("unknown generate argument"));
+    }
+
+    #[test]
+    fn rejects_zero_max_cutoffs() {
+        let error = parse_check_args(&args(&["--max-cutoffs", "0"]))
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(error, "--max-cutoffs must be greater than 0");
     }
 }

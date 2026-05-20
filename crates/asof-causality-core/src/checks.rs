@@ -33,6 +33,7 @@ impl CheckOptions {
     }
 
     pub const fn sampled(max_cutoffs: usize) -> Self {
+        let max_cutoffs = if max_cutoffs == 0 { 1 } else { max_cutoffs };
         Self {
             max_cutoffs: Some(max_cutoffs),
         }
@@ -70,19 +71,18 @@ where
 }
 
 fn full_predictions<S>(
+    check_name: &'static str,
     events: &[Event],
     compute_outcomes: bool,
     signal: &S,
-) -> Vec<PredictionRecord>
+) -> Result<Vec<PredictionRecord>, CheckResult>
 where
     S: Signal + Clone,
 {
     ReplayEngine::with_signal(signal.clone())
         .replay(events, ReplayOptions { compute_outcomes })
-        .expect("fixture replay should succeed")
-        .predictions
-        .records()
-        .to_vec()
+        .map(|output| output.predictions.records().to_vec())
+        .map_err(|error| fail(check_name, format!("replay failed: {error}")))
 }
 
 fn predictions_at_or_before(
@@ -114,7 +114,7 @@ fn selected_prediction_cutoffs(events: &[Event], options: CheckOptions) -> (Vec<
         return (cutoffs, total);
     };
 
-    if max_cutoffs == 0 || cutoffs.len() <= max_cutoffs {
+    if cutoffs.len() <= max_cutoffs {
         return (cutoffs, total);
     }
 
@@ -147,7 +147,10 @@ fn prefix_equivalence<S>(events: &[Event], options: CheckOptions, signal: &S) ->
 where
     S: Signal + Clone,
 {
-    let full = full_predictions(events, true, signal);
+    let full = match full_predictions("prefix_equivalence", events, true, signal) {
+        Ok(predictions) => predictions,
+        Err(result) => return result,
+    };
     let (cutoffs, total_cutoffs) = selected_prediction_cutoffs(events, options);
 
     for cutoff in &cutoffs {
@@ -156,7 +159,10 @@ where
             .filter(|event| event.received_time <= *cutoff)
             .cloned()
             .collect();
-        let prefix = full_predictions(&prefix_events, true, signal);
+        let prefix = match full_predictions("prefix_equivalence", &prefix_events, true, signal) {
+            Ok(predictions) => predictions,
+            Err(result) => return result,
+        };
 
         if predictions_at_or_before(&full, *cutoff) != predictions_at_or_before(&prefix, *cutoff) {
             return fail(
@@ -181,7 +187,10 @@ fn future_mutation<S>(events: &[Event], options: CheckOptions, signal: &S) -> Ch
 where
     S: Signal + Clone,
 {
-    let full = full_predictions(events, true, signal);
+    let full = match full_predictions("future_mutation", events, true, signal) {
+        Ok(predictions) => predictions,
+        Err(result) => return result,
+    };
     let (cutoffs, total_cutoffs) = selected_prediction_cutoffs(events, options);
 
     for cutoff in &cutoffs {
@@ -195,7 +204,11 @@ where
                 }
             })
             .collect();
-        let mutated_predictions = full_predictions(&mutated, true, signal);
+        let mutated_predictions = match full_predictions("future_mutation", &mutated, true, signal)
+        {
+            Ok(predictions) => predictions,
+            Err(result) => return result,
+        };
 
         if predictions_at_or_before(&full, *cutoff)
             != predictions_at_or_before(&mutated_predictions, *cutoff)
@@ -222,23 +235,39 @@ fn late_arrival<S>(events: &[Event], signal: &S) -> CheckResult
 where
     S: Signal + Clone,
 {
-    let predictions = full_predictions(events, true, signal);
-    let update_by_key = update_event_by_key(events);
+    let predictions = match full_predictions("late_arrival", events, true, signal) {
+        Ok(predictions) => predictions,
+        Err(result) => return result,
+    };
+    let event_by_key = event_by_key(events);
 
     for prediction in &predictions {
+        let Some(prediction_event) = event_by_key.get(&prediction.prediction_event_key) else {
+            return fail(
+                "late_arrival",
+                format!(
+                    "missing prediction event for key {}",
+                    prediction.prediction_event_key.0
+                ),
+            );
+        };
+
         for input_key in prediction.input_event_ids_used.iter() {
-            let Some(event) = update_by_key.get(&input_key) else {
+            let Some(event) = event_by_key.get(&input_key) else {
                 continue;
             };
 
             if event.observed_time <= prediction.prediction_time
-                && prediction.prediction_time < event.received_time
+                && event.replay_key() > prediction_event.replay_key()
             {
                 return fail(
                     "late_arrival",
                     format!(
-                        "prediction at {} used late event {} received at {}",
-                        prediction.prediction_time, event.event_id, event.received_time
+                        "prediction {} at replay key {:?} used late event {} at replay key {:?}",
+                        prediction_event.event_id,
+                        prediction_event.replay_key(),
+                        event.event_id,
+                        event.replay_key()
                     ),
                 );
             }
@@ -247,7 +276,7 @@ where
 
     pass(
         "late_arrival",
-        "late events were not used before received_time",
+        "late events were not used before their replay key",
     )
 }
 
@@ -255,7 +284,10 @@ fn on_time_vs_late_contrast<S>(events: &[Event], signal: &S) -> CheckResult
 where
     S: Signal + Clone,
 {
-    let baseline = full_predictions(events, true, signal);
+    let baseline = match full_predictions("on_time_vs_late_contrast", events, true, signal) {
+        Ok(predictions) => predictions,
+        Err(result) => return result,
+    };
 
     for late_event in events
         .iter()
@@ -277,7 +309,11 @@ where
             }
         }
 
-        let on_time_predictions = full_predictions(&on_time, true, signal);
+        let on_time_predictions =
+            match full_predictions("on_time_vs_late_contrast", &on_time, true, signal) {
+                Ok(predictions) => predictions,
+                Err(result) => return result,
+            };
         let Some(on_time_record) = on_time_predictions.iter().find(|prediction| {
             prediction.symbol == target_prediction.symbol
                 && prediction.prediction_time == target_prediction.prediction_time
@@ -312,7 +348,11 @@ fn feature_correction_append_only<S>(events: &[Event], signal: &S) -> CheckResul
 where
     S: Signal + Clone,
 {
-    let predictions = full_predictions(events, true, signal);
+    let predictions = match full_predictions("feature_correction_append_only", events, true, signal)
+    {
+        Ok(predictions) => predictions,
+        Err(result) => return result,
+    };
     let update_by_key = update_event_by_key(events);
 
     for prediction in &predictions {
@@ -345,8 +385,14 @@ fn outcome_separation<S>(events: &[Event], signal: &S) -> CheckResult
 where
     S: Signal + Clone,
 {
-    let with_outcomes = full_predictions(events, true, signal);
-    let without_outcomes = full_predictions(events, false, signal);
+    let with_outcomes = match full_predictions("outcome_separation", events, true, signal) {
+        Ok(predictions) => predictions,
+        Err(result) => return result,
+    };
+    let without_outcomes = match full_predictions("outcome_separation", events, false, signal) {
+        Ok(predictions) => predictions,
+        Err(result) => return result,
+    };
 
     if with_outcomes == without_outcomes {
         pass(
@@ -365,19 +411,24 @@ fn deterministic_replay<S>(events: &[Event], signal: &S) -> CheckResult
 where
     S: Signal + Clone,
 {
-    let original = ReplayEngine::with_signal(signal.clone())
-        .replay(events, ReplayOptions::default())
-        .expect("fixture replay should succeed")
-        .predictions
-        .transcript_hash();
+    let original =
+        match ReplayEngine::with_signal(signal.clone()).replay(events, ReplayOptions::default()) {
+            Ok(output) => output.predictions.transcript_hash(),
+            Err(error) => {
+                return fail("deterministic_replay", format!("replay failed: {error}"));
+            }
+        };
 
     let mut shuffled = events.to_vec();
     shuffled.reverse();
-    let shuffled_hash = ReplayEngine::with_signal(signal.clone())
+    let shuffled_hash = match ReplayEngine::with_signal(signal.clone())
         .replay(&shuffled, ReplayOptions::default())
-        .expect("fixture replay should succeed")
-        .predictions
-        .transcript_hash();
+    {
+        Ok(output) => output.predictions.transcript_hash(),
+        Err(error) => {
+            return fail("deterministic_replay", format!("replay failed: {error}"));
+        }
+    };
 
     if original == shuffled_hash {
         pass(
@@ -396,7 +447,10 @@ fn audit_invariant<S>(events: &[Event], signal: &S) -> CheckResult
 where
     S: Signal + Clone,
 {
-    let predictions = full_predictions(events, true, signal);
+    let predictions = match full_predictions("audit_invariant", events, true, signal) {
+        Ok(predictions) => predictions,
+        Err(result) => return result,
+    };
     let event_by_key = event_by_key(events);
 
     for prediction in predictions {
@@ -470,7 +524,9 @@ fn fail(name: &'static str, detail: impl Into<String>) -> CheckResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{parse_pipe_events, WindowedFeatureSentimentSignal};
+    use crate::{
+        parse_pipe_events, AsOfView, InputSet, SymbolSnapshot, WindowedFeatureSentimentSignal,
+    };
 
     const FIXTURE: &str = "\
 p1|580|580|3|prediction|AAPL|
@@ -499,5 +555,82 @@ l1|640|640|8|outcome|AAPL|return_bps=12
         );
 
         assert!(report.passed(), "{report:?}");
+    }
+
+    #[test]
+    fn replay_errors_become_failed_check_results() {
+        let events = parse_pipe_events(
+            "\
+f1|100|100|1|feature|XYZ|
+p1|110|110|2|prediction|XYZ|
+",
+        )
+        .unwrap();
+
+        let report = run_adversarial_checks(&events);
+
+        assert!(!report.passed());
+        assert!(report
+            .results
+            .iter()
+            .any(|result| !result.passed && result.detail.contains("replay failed")));
+    }
+
+    #[test]
+    fn late_arrival_uses_full_replay_key() {
+        let events = parse_pipe_events(
+            "\
+p1|100|100|1|prediction|XYZ|
+f1|90|100|2|feature|XYZ|sentiment=positive
+",
+        )
+        .unwrap();
+        let future_key = events
+            .iter()
+            .find(|event| event.event_id == "f1")
+            .unwrap()
+            .event_key;
+
+        #[derive(Clone, Copy)]
+        struct LyingSignal {
+            input_key: EventKey,
+        }
+
+        impl Signal for LyingSignal {
+            fn predict(
+                &self,
+                _view: AsOfView<'_>,
+                _symbol: &str,
+                _prediction_time: u64,
+            ) -> SymbolSnapshot {
+                SymbolSnapshot {
+                    signal_value: 1,
+                    input_event_ids_used: InputSet::one(self.input_key),
+                    max_input_received_time: 100,
+                    max_input_sequence: 2,
+                    max_input_event_key: Some(self.input_key),
+                }
+            }
+        }
+
+        let result = late_arrival(
+            &events,
+            &LyingSignal {
+                input_key: future_key,
+            },
+        );
+
+        assert!(!result.passed);
+        assert!(result.detail.contains("used late event f1"));
+        assert!(result.detail.contains("replay key"));
+    }
+
+    #[test]
+    fn sampled_zero_is_not_exhaustive() {
+        let events = parse_pipe_events(FIXTURE).unwrap();
+        let (cutoffs, total) = selected_prediction_cutoffs(&events, CheckOptions::sampled(0));
+
+        assert!(total > 1);
+        assert_eq!(cutoffs.len(), 1);
     }
 }

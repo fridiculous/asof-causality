@@ -391,7 +391,14 @@ impl SplitMix64 {
     }
 
     fn chance(&mut self, probability: f64) -> bool {
-        let threshold = (clamp_rate(probability) * u64::MAX as f64) as u64;
+        if probability <= 0.0 || probability.is_nan() {
+            return false;
+        }
+        if probability >= 1.0 {
+            return true;
+        }
+
+        let threshold = (probability * u64::MAX as f64) as u64;
         self.next_u64() <= threshold
     }
 }
@@ -433,5 +440,16 @@ mod tests {
 
         let report = run_adversarial_checks(&parsed);
         assert!(report.passed(), "{report:?}");
+    }
+
+    #[test]
+    fn chance_handles_probability_endpoints() {
+        let mut rng = SplitMix64::new(0);
+
+        for _ in 0..1024 {
+            assert!(!rng.chance(0.0));
+            assert!(!rng.chance(f64::NAN));
+            assert!(rng.chance(1.0));
+        }
     }
 }
