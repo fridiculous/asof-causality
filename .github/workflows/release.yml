@@ -111,7 +111,7 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }} -p asof-causality-cli
       - name: Smoke test native release binary
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin'
         run: |
           target/${{ matrix.target }}/release/asof-causality replay examples/late-arrival.pipe
           target/${{ matrix.target }}/release/asof-causality check examples/late-arrival.pipe
