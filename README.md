@@ -176,9 +176,11 @@ cargo run -p asof-causality-cli -- audit events.pipe stored_predictions.jsonl ou
 ```
 
 Stored predictions are matched by `(symbol, prediction_replay_key)` and should
-include `signal_value` plus optional `feature_recipe_hash`. Outcomes are
-attached only when they explicitly name `prediction_replay_key`; the audit
-record carries `return_bps` but does not compute PnL or scoring metrics.
+include `signal_value` plus `feature_recipe_hash`. Use
+`--allow-missing-recipe-hash` only for legacy stored predictions that can be
+matched on `signal_value` alone. Outcomes are attached only when they explicitly
+name `prediction_replay_key`; the audit record carries `return_bps` but does not
+compute PnL or scoring metrics.
 
 ```sh
 cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe

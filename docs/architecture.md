@@ -44,6 +44,12 @@ predictions are matched by `(symbol, prediction_replay_key)`. Outcomes must
 explicitly name the prediction replay key; the kernel attaches outcome values
 but does not score them.
 
+The current `feature_recipe_hash` is intentionally an input-set commitment. It
+commits to the signal name and ordered input event keys. It does not separately
+commit to event payload values, the window size of a built-in signal, or replay
+ordering metadata. Later schema versions can commit to fuller feature recipes or
+input-value snapshots without changing the causality invariant.
+
 Symbols follow the same hot-path shape. `Event` keeps the original symbol string
 for input and transcript rendering, but `StateStore` and `PredictionRecord` use
 a stable `SymbolId`. The replay path does not clone a symbol string per feature

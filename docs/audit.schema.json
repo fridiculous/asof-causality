@@ -57,7 +57,8 @@
     },
     "feature_recipe_hash": {
       "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Schema v2 commits to the signal name and ordered input event keys. It is an input-set commitment, not an input-value commitment: event payload values, window size, and replay ordering are not separately encoded. Later schema versions may commit to input values or fuller feature recipes."
     },
     "causally_valid": {
       "type": "boolean"
