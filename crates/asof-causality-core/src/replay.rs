@@ -1,7 +1,7 @@
 use crate::state::StateStore;
 use crate::{
-    Event, EventRole, LastFeatureSentimentSignal, ParseEventError, PredictionLog, PredictionRecord,
-    Signal,
+    feature_recipe_hash, Event, EventRole, LastFeatureSentimentSignal, ParseEventError,
+    PredictionLog, PredictionRecord, Signal,
 };
 use std::error::Error;
 use std::fmt;
@@ -77,6 +77,8 @@ impl<S: Signal> ReplayEngine<S> {
         let mut state = StateStore::new();
         let mut predictions = PredictionLog::with_event_catalog(&ordered);
         let mut outcomes_seen = 0;
+        let signal_name = self.signal.name();
+        let signal_config_descriptor = self.signal.config_descriptor();
 
         for event in &ordered {
             match event.role {
@@ -97,6 +99,13 @@ impl<S: Signal> ReplayEngine<S> {
                         max_input_received_time: snapshot.max_input_received_time,
                         max_input_sequence: snapshot.max_input_sequence,
                         max_input_event_key: snapshot.max_input_event_key,
+                        feature_recipe_hash: snapshot.feature_recipe_hash.unwrap_or_else(|| {
+                            feature_recipe_hash(
+                                signal_name,
+                                &signal_config_descriptor,
+                                snapshot.input_event_ids_used,
+                            )
+                        }),
                     });
                 }
                 EventRole::Outcome => {
@@ -164,7 +173,7 @@ impl From<ParseEventError> for ReplayError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::WindowedFeatureSentimentSignal;
+    use crate::{WindowedFeatureSentimentSignal, WindowedZScoreSignal};
 
     #[test]
     fn ignores_comments_and_blank_lines() {
@@ -219,5 +228,46 @@ p1|130|130|4|prediction|XYZ|
         {
             assert!(record.input_event_ids_used.contains_key(event.event_key));
         }
+    }
+
+    #[test]
+    fn windowed_zscore_signal_records_numeric_inputs() {
+        let input = "\
+px1|100|100|1|feature|XYZ|score=10
+px2|110|110|2|feature|XYZ|score=10
+px3|120|120|3|feature|XYZ|score=10
+px4|130|130|4|feature|XYZ|score=30
+p1|140|140|5|prediction|XYZ|
+";
+        let events = parse_pipe_events(input).unwrap();
+        let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+            .replay(&events, ReplayOptions::default())
+            .unwrap();
+        let record = &output.predictions.records()[0];
+
+        assert_eq!(record.signal_value, 1);
+        assert_eq!(record.input_event_ids_used.len(), 4);
+        assert_eq!(record.max_input_received_time, 130);
+        assert_eq!(record.max_input_sequence, 4);
+    }
+
+    #[test]
+    fn recipe_hash_includes_signal_config_descriptor() {
+        let input = "\
+f1|100|100|1|feature|XYZ|sentiment=positive
+p1|110|110|2|prediction|XYZ|
+";
+        let events = parse_pipe_events(input).unwrap();
+        let last_feature = ReplayEngine::new()
+            .replay(&events, ReplayOptions::default())
+            .unwrap();
+        let windowed = ReplayEngine::with_signal(WindowedFeatureSentimentSignal::new(5))
+            .replay(&events, ReplayOptions::default())
+            .unwrap();
+
+        assert_ne!(
+            last_feature.predictions.records()[0].feature_recipe_hash,
+            windowed.predictions.records()[0].feature_recipe_hash
+        );
     }
 }

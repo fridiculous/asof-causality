@@ -47,6 +47,12 @@ pub enum Sentiment {
     Positive,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FeatureValues {
+    pub sentiment: Option<Sentiment>,
+    pub score: Option<f64>,
+}
+
 impl Sentiment {
     pub fn signal_value(self) -> i8 {
         match self {
@@ -161,25 +167,49 @@ impl Event {
             return Ok(None);
         }
 
-        for pair in self.payload.split(',') {
-            let Some((key, value)) = pair.split_once('=') else {
-                continue;
-            };
-            if key.trim() == "sentiment" {
-                return value.trim().parse().map(Some);
-            }
+        payload_field(&self.payload, "sentiment")
+            .map(|value| value.parse().map(Some))
+            .unwrap_or(Ok(None))
+    }
+
+    pub fn score(&self) -> Result<Option<f64>, ParseEventError> {
+        if !self.role.updates_signal_state() {
+            return Ok(None);
         }
 
-        Err(ParseEventError::MissingPayloadField {
-            event_id: self.event_id.clone(),
-            field: "sentiment",
-        })
+        payload_field(&self.payload, "score")
+            .map(|value| parse_f64("score", value).map(Some))
+            .unwrap_or(Ok(None))
+    }
+
+    pub fn feature_values(&self) -> Result<Option<FeatureValues>, ParseEventError> {
+        if !self.role.updates_signal_state() {
+            return Ok(None);
+        }
+
+        let values = FeatureValues {
+            sentiment: self.sentiment()?,
+            score: self.score()?,
+        };
+
+        if values.sentiment.is_none() && values.score.is_none() {
+            return Err(ParseEventError::MissingPayloadField {
+                event_id: self.event_id.clone(),
+                field: "sentiment_or_score",
+            });
+        }
+
+        Ok(Some(values))
     }
 
     pub fn with_mutated_future_payload(&self) -> Self {
         let mut mutated = self.clone();
         if mutated.role.updates_signal_state() {
-            mutated.payload = "sentiment=negative,mutated=true".to_string();
+            if payload_field(&mutated.payload, "score").is_some() {
+                mutated.payload = "score=-999,mutated=true".to_string();
+            } else {
+                mutated.payload = "sentiment=negative,mutated=true".to_string();
+            }
         } else {
             mutated.payload = format!("{},mutated=true", mutated.payload);
         }
@@ -250,6 +280,23 @@ fn parse_u64(field: &'static str, value: &str) -> Result<u64, ParseEventError> {
         })
 }
 
+fn parse_f64(field: &'static str, value: &str) -> Result<f64, ParseEventError> {
+    value
+        .trim()
+        .parse()
+        .map_err(|_| ParseEventError::InvalidNumber {
+            field,
+            value: value.trim().to_string(),
+        })
+}
+
+fn payload_field<'a>(payload: &'a str, field: &str) -> Option<&'a str> {
+    payload.split(',').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key.trim() == field).then_some(value.trim())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +311,15 @@ mod tests {
         assert_eq!(event.received_time, 585);
         assert_eq!(event.role, EventRole::Feature);
         assert_eq!(event.sentiment().unwrap(), Some(Sentiment::Positive));
+    }
+
+    #[test]
+    fn parses_numeric_score_payload() {
+        let event = Event::from_pipe_record("px1|1|1|1|feature|AAPL|score=0.73").unwrap();
+
+        assert_eq!(event.sentiment().unwrap(), None);
+        assert_eq!(event.score().unwrap(), Some(0.73));
+        assert_eq!(event.feature_values().unwrap().unwrap().score, Some(0.73));
     }
 
     #[test]

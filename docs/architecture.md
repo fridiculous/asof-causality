@@ -29,12 +29,31 @@ generator or pipe fixture
 through the signal API. The default `last-feature-sentiment` signal records
 one input event. The `windowed-feature-sentiment` signal records a bounded
 inline set of recent feature inputs, proving the provenance path is not limited
-to one-row examples.
+to one-row examples. The `windowed-zscore` signal reads continuous `score=...`
+features through the same opaque view and buckets the latest rolling Z-score to
+`-1`, `0`, or `1`, showing that the kernel is not sentiment-coupled.
+Numeric signals currently use `f64` arithmetic; floating-point transcript
+determinism is guaranteed for a fixed toolchain and architecture, not as a
+cross-platform bit-identity promise.
 
 `InputSet::Many` stores up to eight event keys inline. That cap is deliberate:
 it keeps prediction records fixed-size and allocation-free in the replay path.
 Signals that need larger provenance should use a separate compact recipe hash or
 snapshot manifest rather than growing per-prediction heap state.
+
+The CLI `audit` command renders those records as JSONL. The public shape is
+documented in `docs/audit.schema.json`. The JSONL audit record includes a BLAKE3
+`feature_recipe_hash`, `causally_valid`, optional
+`matched_stored_prediction`, and optional outcome attribution. Stored
+predictions are matched by `(symbol, prediction_replay_key)`. Outcomes must
+explicitly name the prediction replay key; the kernel attaches outcome values
+but does not score them.
+
+The current `feature_recipe_hash` is intentionally an input-set commitment. It
+commits to the signal name, signal configuration descriptor, and ordered input
+event keys. It does not separately commit to event payload values or replay
+ordering metadata. Later schema versions can commit to fuller feature recipes or
+input-value snapshots without changing the causality invariant.
 
 Symbols follow the same hot-path shape. `Event` keeps the original symbol string
 for input and transcript rendering, but `StateStore` and `PredictionRecord` use
@@ -47,11 +66,16 @@ portfolio state, and emit immutable `DecisionRecord`s with cross-strategy
 isolation checks. That is the natural next layer, but it is intentionally out of
 scope for this repository.
 
+It also intentionally avoids PnL, position tracking, fills, slippage, and market
+impact. Those belong to portfolio simulation and scoring. This kernel emits
+causal prediction and audit records that downstream tools can score without
+expanding the verifier into a backtester.
+
 ## Event Roles
 
 | Role | Behavior |
 |---|---|
-| `feature` | Updates per-symbol sentiment state from payload |
+| `feature` | Updates per-symbol feature state from `sentiment=...`, `score=...`, or both |
 | `feature_correction` | Append-only feature correction with its own received time |
 | `prediction` | Emits a prediction for the symbol at this received time |
 | `outcome` | Optional future outcome data; excluded from prediction state |
@@ -89,10 +113,11 @@ scenario also shuffles physical file order so deterministic replay is exercised
 against out-of-order input rather than only a hand-written toy fixture.
 
 The manifest is the run certificate for the output directory. It records the
-scenario, signal, invocation, UTC run timestamp, optional Git commit, Rust
-toolchain, hash algorithm, fixture hash, prediction output hash, checks output
-hash, signal-version hash, final transcript hash, and check pass/fail counts. It
-is meant to make a run verifiable from artifacts rather than from prose.
+scenario, signal, invocation, UTC run timestamp, source commit context,
+workspace dirty flag, Rust toolchain, hash algorithm, fixture hash, prediction
+output hash, checks output hash, final transcript hash, and check pass/fail
+counts. It is meant to make a run verifiable from artifacts rather than from
+prose; commit metadata is context, not the audit identity.
 
 ## Negative Control
 

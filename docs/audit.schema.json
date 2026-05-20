@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/fridiculous/asof-causality/docs/audit.schema.json",
+  "title": "asof-causality prediction audit record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "prediction_id",
+    "signal",
+    "prediction_replay_key",
+    "symbol",
+    "signal_value",
+    "input_event_ids",
+    "max_input_replay_key",
+    "feature_recipe_hash",
+    "causally_valid",
+    "matched_stored_prediction",
+    "outcome"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "prediction_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "signal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prediction_replay_key": {
+      "type": "string",
+      "pattern": "^[0-9]+:[0-9]+:.+$"
+    },
+    "symbol": {
+      "type": "string",
+      "minLength": 1
+    },
+    "signal_value": {
+      "type": "integer",
+      "minimum": -1,
+      "maximum": 1
+    },
+    "input_event_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "max_input_replay_key": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]+:[0-9]+:.+$"
+    },
+    "feature_recipe_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Schema v2 commits to the signal name, signal configuration descriptor, and ordered input event keys. It is an input-set commitment, not an input-value commitment: event payload values and replay ordering are not separately encoded. Later schema versions may commit to input values or fuller feature recipes."
+    },
+    "causally_valid": {
+      "type": "boolean"
+    },
+    "matched_stored_prediction": {
+      "type": ["boolean", "null"]
+    },
+    "outcome": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["return_bps"],
+      "properties": {
+        "return_bps": {
+          "type": "number"
+        }
+      }
+    }
+  }
+}

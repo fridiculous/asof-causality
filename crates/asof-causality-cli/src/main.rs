@@ -3,7 +3,10 @@ use asof_causality_core::{
     run_representation_benchmark, CheckOptions, CheckReport, Event, EventKey, EventRole,
     GenerateConfig, GeneratedStream, LastFeatureSentimentSignal, ReplayEngine, ReplayOptions,
     ReplayOrder, ReplayOutput, Scenario, SymbolId, WindowedFeatureSentimentSignal,
+    WindowedZScoreSignal,
 };
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Number;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::error::Error;
@@ -27,6 +30,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     match args.get(1).map(String::as_str) {
         Some("replay") => replay(&args[2..]),
         Some("check") => check(&args[2..]),
+        Some("audit") => audit(&args[2..]),
         Some(command) if is_negative_control_command(command) => negative_control(&args[2..]),
         Some("generate") => generate(&args[2..]),
         Some("run-suite") => run_suite(&args[2..]),
@@ -43,6 +47,7 @@ enum SignalChoice {
     #[default]
     LastFeatureSentiment,
     WindowedFeatureSentiment,
+    WindowedZScore,
 }
 
 impl SignalChoice {
@@ -50,8 +55,9 @@ impl SignalChoice {
         match value {
             "last-feature-sentiment" => Ok(Self::LastFeatureSentiment),
             "windowed-feature-sentiment" => Ok(Self::WindowedFeatureSentiment),
+            "windowed-zscore" => Ok(Self::WindowedZScore),
             other => Err(format!(
-                "unknown signal {other}; expected last-feature-sentiment or windowed-feature-sentiment"
+                "unknown signal {other}; expected last-feature-sentiment, windowed-feature-sentiment, or windowed-zscore"
             )
             .into()),
         }
@@ -61,6 +67,7 @@ impl SignalChoice {
         match self {
             Self::LastFeatureSentiment => "last-feature-sentiment",
             Self::WindowedFeatureSentiment => "windowed-feature-sentiment",
+            Self::WindowedZScore => "windowed-zscore",
         }
     }
 }
@@ -115,6 +122,63 @@ fn check(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
 }
 
+fn audit(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let audit_args = parse_audit_args(args)?;
+    let events = load_events(&audit_args.events_path)?;
+    let output = replay_with_signal(
+        audit_args.signal,
+        &events,
+        ReplayOptions::default(),
+        ReplayOrder::ReceivedTime,
+    )?;
+    let stored_predictions = audit_args
+        .stored_predictions_path
+        .as_ref()
+        .map(|path| load_stored_predictions(path))
+        .transpose()?;
+    let outcomes = audit_args
+        .outcomes_path
+        .as_ref()
+        .map(|path| load_outcome_attributions(path))
+        .transpose()?
+        .unwrap_or_default();
+    let jsonl = format_audit_jsonl(
+        audit_args.signal,
+        &output,
+        stored_predictions.as_ref(),
+        &outcomes,
+        audit_args.allow_missing_recipe_hash,
+    );
+    let summary = summarize_audit(
+        &output,
+        stored_predictions.as_ref(),
+        &outcomes,
+        audit_args.allow_missing_recipe_hash,
+    );
+
+    if let Some(path) = audit_args.out {
+        write_file(&path, &jsonl)?;
+        println!(
+            "audit path={} signal={} records={} causally_valid={} matched_stored_predictions={} outcomes_attached={} out={}",
+            audit_args.events_path,
+            audit_args.signal.as_str(),
+            output.predictions.records().len(),
+            summary.causally_valid,
+            summary.stored_match_summary(),
+            summary.outcomes_attached,
+            path.display()
+        );
+    } else {
+        print!("{jsonl}");
+    }
+
+    if summary.passed() {
+        Ok(())
+    } else {
+        Err(summary.failure_message().into())
+    }
+}
+
 fn negative_control(args: &[String]) -> Result<(), Box<dyn Error>> {
     let (path, signal) = parse_path_signal_args(
         args,
@@ -152,6 +216,64 @@ fn negative_control(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AuditArgs {
+    events_path: String,
+    stored_predictions_path: Option<PathBuf>,
+    outcomes_path: Option<PathBuf>,
+    signal: SignalChoice,
+    out: Option<PathBuf>,
+    allow_missing_recipe_hash: bool,
+}
+
+fn parse_audit_args(args: &[String]) -> Result<AuditArgs, Box<dyn Error>> {
+    let mut positional = Vec::new();
+    let mut signal = SignalChoice::default();
+    let mut out = None;
+    let mut allow_missing_recipe_hash = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--signal" => {
+                signal = SignalChoice::parse(required_arg(args, index, "--signal")?)?;
+                index += 2;
+            }
+            "--out" => {
+                out = Some(PathBuf::from(required_arg(args, index, "--out")?));
+                index += 2;
+            }
+            "--allow-missing-recipe-hash" => {
+                allow_missing_recipe_hash = true;
+                index += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(format!("unknown audit argument: {value}").into());
+            }
+            value => {
+                positional.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+
+    if positional.len() > 3 {
+        return Err("audit accepts at most events, stored predictions, and outcomes paths".into());
+    }
+
+    Ok(AuditArgs {
+        events_path: positional
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "examples/late-arrival.pipe".to_string()),
+        stored_predictions_path: positional.get(1).map(PathBuf::from),
+        outcomes_path: positional.get(2).map(PathBuf::from),
+        signal,
+        out,
+        allow_missing_recipe_hash,
+    })
 }
 
 fn bench(args: &[String]) -> Result<(), Box<dyn Error>> {
@@ -202,6 +324,8 @@ fn replay_with_signal(
             ReplayEngine::with_signal(WindowedFeatureSentimentSignal::default())
                 .replay_with_order(events, options, order)
         }
+        SignalChoice::WindowedZScore => ReplayEngine::with_signal(WindowedZScoreSignal::default())
+            .replay_with_order(events, options, order),
     }
 }
 
@@ -220,6 +344,11 @@ fn run_checks_with_signal(
             events,
             options,
             WindowedFeatureSentimentSignal::default(),
+        ),
+        SignalChoice::WindowedZScore => run_adversarial_checks_with_options_for_signal(
+            events,
+            options,
+            WindowedZScoreSignal::default(),
         ),
     }
 }
@@ -534,6 +663,433 @@ fn format_prediction_output(output: &ReplayOutput) -> String {
     );
     let _ = writeln!(text, "outcomes_seen={}", output.outcomes_seen);
     text
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct AuditKey {
+    symbol: String,
+    prediction_replay_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct StoredPrediction {
+    signal_value: i8,
+    feature_recipe_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OutcomeAttribution {
+    return_bps: Number,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AuditRecordJson {
+    schema_version: u8,
+    prediction_id: String,
+    signal: String,
+    prediction_replay_key: String,
+    symbol: String,
+    signal_value: i8,
+    input_event_ids: Vec<String>,
+    max_input_replay_key: Option<String>,
+    feature_recipe_hash: String,
+    causally_valid: bool,
+    matched_stored_prediction: Option<bool>,
+    outcome: Option<OutcomeAttribution>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct StoredPredictionJson {
+    prediction_replay_key: String,
+    symbol: String,
+    signal_value: i8,
+    feature_recipe_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OutcomeJson {
+    prediction_replay_key: String,
+    symbol: String,
+    return_bps: Number,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AuditSummary {
+    causally_valid: bool,
+    non_causal_records: usize,
+    mismatched_stored_predictions: Option<usize>,
+    extra_stored_predictions: Option<usize>,
+    outcomes_attached: usize,
+}
+
+impl AuditSummary {
+    fn passed(&self) -> bool {
+        self.non_causal_records == 0
+            && self.mismatched_stored_predictions.unwrap_or(0) == 0
+            && self.extra_stored_predictions.unwrap_or(0) == 0
+    }
+
+    fn stored_match_summary(&self) -> String {
+        self.mismatched_stored_predictions
+            .zip(self.extra_stored_predictions)
+            .map(|(mismatched, extra)| (mismatched == 0 && extra == 0).to_string())
+            .unwrap_or_else(|| "replay-only".to_string())
+    }
+
+    fn failure_message(&self) -> String {
+        let mut parts = Vec::new();
+        if self.non_causal_records > 0 {
+            parts.push(format!("{} non-causal records", self.non_causal_records));
+        }
+        if let Some(count) = self
+            .mismatched_stored_predictions
+            .filter(|count| *count > 0)
+        {
+            parts.push(format!("{count} mismatched or missing stored predictions"));
+        }
+        if let Some(count) = self.extra_stored_predictions.filter(|count| *count > 0) {
+            parts.push(format!("{count} extra stored predictions"));
+        }
+        if parts.is_empty() {
+            "audit failed".to_string()
+        } else {
+            format!("audit found {}", parts.join(", "))
+        }
+    }
+}
+
+fn format_audit_jsonl(
+    signal: SignalChoice,
+    output: &ReplayOutput,
+    stored_predictions: Option<&BTreeMap<AuditKey, StoredPrediction>>,
+    outcomes: &BTreeMap<AuditKey, OutcomeAttribution>,
+    allow_missing_recipe_hash: bool,
+) -> String {
+    let mut text = String::new();
+    for record in output.predictions.records() {
+        let _ = writeln!(
+            text,
+            "{}",
+            format_audit_record_json(
+                signal,
+                output,
+                record,
+                stored_predictions,
+                outcomes,
+                allow_missing_recipe_hash
+            )
+        );
+    }
+    text
+}
+
+fn format_audit_record_json(
+    signal: SignalChoice,
+    output: &ReplayOutput,
+    record: &asof_causality_core::PredictionRecord,
+    stored_predictions: Option<&BTreeMap<AuditKey, StoredPrediction>>,
+    outcomes: &BTreeMap<AuditKey, OutcomeAttribution>,
+    allow_missing_recipe_hash: bool,
+) -> String {
+    let prediction_id = output.predictions.event_label(record.prediction_event_key);
+    let prediction_replay_key = output.predictions.format_replay_key(
+        record.prediction_time,
+        record.prediction_sequence,
+        record.prediction_event_key,
+    );
+    let symbol = output.predictions.symbol_label(record.symbol);
+    let input_event_ids = output
+        .predictions
+        .input_event_labels(record.input_event_ids_used);
+    let max_input_replay_key = output.predictions.max_input_replay_key_value(record);
+    let feature_recipe_hash = record.feature_recipe_hash_hex();
+    let causally_valid = output.predictions.record_is_causal(record);
+    let audit_key = AuditKey {
+        symbol: symbol.clone(),
+        prediction_replay_key: prediction_replay_key.clone(),
+    };
+    let matched_stored_prediction = stored_predictions.map(|stored| {
+        stored.get(&audit_key).is_some_and(|stored_record| {
+            stored_record_matches(
+                stored_record,
+                record.signal_value,
+                &feature_recipe_hash,
+                allow_missing_recipe_hash,
+            )
+        })
+    });
+    let audit_record = AuditRecordJson {
+        schema_version: 2,
+        prediction_id,
+        signal: signal.as_str().to_string(),
+        prediction_replay_key,
+        symbol,
+        signal_value: record.signal_value,
+        input_event_ids,
+        max_input_replay_key,
+        feature_recipe_hash,
+        causally_valid,
+        matched_stored_prediction,
+        outcome: outcomes.get(&audit_key).cloned(),
+    };
+
+    serde_json::to_string(&audit_record).expect("audit record should serialize")
+}
+
+fn stored_record_matches(
+    stored_record: &StoredPrediction,
+    signal_value: i8,
+    feature_recipe_hash: &str,
+    allow_missing_recipe_hash: bool,
+) -> bool {
+    stored_record.signal_value == signal_value
+        && stored_record
+            .feature_recipe_hash
+            .as_deref()
+            .map_or(allow_missing_recipe_hash, |stored_hash| {
+                stored_hash == feature_recipe_hash
+            })
+}
+
+fn summarize_audit(
+    output: &ReplayOutput,
+    stored_predictions: Option<&BTreeMap<AuditKey, StoredPrediction>>,
+    outcomes: &BTreeMap<AuditKey, OutcomeAttribution>,
+    allow_missing_recipe_hash: bool,
+) -> AuditSummary {
+    let non_causal_records = output
+        .predictions
+        .records()
+        .iter()
+        .filter(|record| !output.predictions.record_is_causal(record))
+        .count();
+    let causally_valid = non_causal_records == 0;
+    let expected_keys: BTreeSet<AuditKey> = output
+        .predictions
+        .records()
+        .iter()
+        .map(|record| {
+            let prediction_replay_key = output.predictions.format_replay_key(
+                record.prediction_time,
+                record.prediction_sequence,
+                record.prediction_event_key,
+            );
+            AuditKey {
+                symbol: output.predictions.symbol_label(record.symbol),
+                prediction_replay_key,
+            }
+        })
+        .collect();
+    let mismatched_stored_predictions = stored_predictions.map(|stored| {
+        output
+            .predictions
+            .records()
+            .iter()
+            .filter(|record| {
+                let prediction_replay_key = output.predictions.format_replay_key(
+                    record.prediction_time,
+                    record.prediction_sequence,
+                    record.prediction_event_key,
+                );
+                let key = AuditKey {
+                    symbol: output.predictions.symbol_label(record.symbol),
+                    prediction_replay_key,
+                };
+                !stored.get(&key).is_some_and(|stored_record| {
+                    stored_record_matches(
+                        stored_record,
+                        record.signal_value,
+                        &record.feature_recipe_hash_hex(),
+                        allow_missing_recipe_hash,
+                    )
+                })
+            })
+            .count()
+    });
+    let extra_stored_predictions = stored_predictions.map(|stored| {
+        stored
+            .keys()
+            .filter(|key| !expected_keys.contains(*key))
+            .count()
+    });
+    let outcomes_attached = outcomes
+        .keys()
+        .filter(|key| expected_keys.contains(*key))
+        .count();
+
+    AuditSummary {
+        causally_valid,
+        non_causal_records,
+        mismatched_stored_predictions,
+        extra_stored_predictions,
+        outcomes_attached,
+    }
+}
+
+fn load_stored_predictions(
+    path: &Path,
+) -> Result<BTreeMap<AuditKey, StoredPrediction>, Box<dyn Error>> {
+    let input = fs::read_to_string(path)?;
+    parse_stored_predictions_jsonl(&input)
+}
+
+fn parse_stored_predictions_jsonl(
+    input: &str,
+) -> Result<BTreeMap<AuditKey, StoredPrediction>, Box<dyn Error>> {
+    let mut stored = BTreeMap::new();
+
+    for (index, record) in parse_jsonl_records::<StoredPredictionJson>(input, "stored prediction")?
+    {
+        let key = AuditKey {
+            symbol: record.symbol,
+            prediction_replay_key: record.prediction_replay_key,
+        };
+
+        if stored
+            .insert(
+                key,
+                StoredPrediction {
+                    signal_value: record.signal_value,
+                    feature_recipe_hash: record.feature_recipe_hash,
+                },
+            )
+            .is_some()
+        {
+            return Err(format!("duplicate stored prediction key on line {}", index + 1).into());
+        }
+    }
+
+    Ok(stored)
+}
+
+fn load_outcome_attributions(
+    path: &Path,
+) -> Result<BTreeMap<AuditKey, OutcomeAttribution>, Box<dyn Error>> {
+    let input = fs::read_to_string(path)?;
+    if first_data_line(&input)
+        .map(|line| line.starts_with('{'))
+        .unwrap_or(false)
+    {
+        parse_outcome_jsonl(&input)
+    } else {
+        parse_outcome_pipe(&input)
+    }
+}
+
+fn first_data_line(input: &str) -> Option<&str> {
+    input.lines().find_map(data_line)
+}
+
+fn parse_outcome_jsonl(
+    input: &str,
+) -> Result<BTreeMap<AuditKey, OutcomeAttribution>, Box<dyn Error>> {
+    let mut outcomes = BTreeMap::new();
+
+    for (index, record) in parse_jsonl_records::<OutcomeJson>(input, "outcome")? {
+        insert_outcome(
+            &mut outcomes,
+            index,
+            AuditKey {
+                symbol: record.symbol,
+                prediction_replay_key: record.prediction_replay_key,
+            },
+            OutcomeAttribution {
+                return_bps: record.return_bps,
+            },
+        )?;
+    }
+
+    Ok(outcomes)
+}
+
+fn parse_outcome_pipe(
+    input: &str,
+) -> Result<BTreeMap<AuditKey, OutcomeAttribution>, Box<dyn Error>> {
+    let events = parse_pipe_events(input)?;
+    let mut outcomes = BTreeMap::new();
+
+    for (index, event) in events.iter().enumerate() {
+        if event.role != EventRole::Outcome {
+            continue;
+        }
+
+        let Some(prediction_replay_key) = payload_field(&event.payload, "prediction_replay_key")
+        else {
+            continue;
+        };
+        let Some(return_bps) = payload_field(&event.payload, "return_bps") else {
+            continue;
+        };
+        let return_bps = parse_number_literal(&return_bps)
+            .map_err(|error| format!("outcome line {} {error}", index + 1))?;
+        insert_outcome(
+            &mut outcomes,
+            index,
+            AuditKey {
+                symbol: event.symbol.clone(),
+                prediction_replay_key,
+            },
+            OutcomeAttribution { return_bps },
+        )?;
+    }
+
+    Ok(outcomes)
+}
+
+fn insert_outcome(
+    outcomes: &mut BTreeMap<AuditKey, OutcomeAttribution>,
+    index: usize,
+    key: AuditKey,
+    outcome: OutcomeAttribution,
+) -> Result<(), Box<dyn Error>> {
+    if outcomes.insert(key, outcome).is_some() {
+        return Err(format!("duplicate outcome key on line {}", index + 1).into());
+    }
+
+    Ok(())
+}
+
+fn payload_field(payload: &str, field: &str) -> Option<String> {
+    payload.split(',').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key.trim() == field).then(|| value.trim().to_string())
+    })
+}
+
+fn parse_jsonl_records<T>(input: &str, record_name: &str) -> Result<Vec<(usize, T)>, Box<dyn Error>>
+where
+    T: DeserializeOwned,
+{
+    let mut records = Vec::new();
+
+    for (index, line) in input.lines().enumerate() {
+        let Some(line) = data_line(line) else {
+            continue;
+        };
+        let record = serde_json::from_str(line).map_err(|error| {
+            format!("invalid {record_name} JSON on line {}: {error}", index + 1)
+        })?;
+        records.push((index, record));
+    }
+
+    Ok(records)
+}
+
+fn data_line(line: &str) -> Option<&str> {
+    let line = line.trim().trim_start_matches('\u{feff}');
+    (!line.is_empty() && !line.starts_with('#')).then_some(line)
+}
+
+fn parse_number_literal(value: &str) -> Result<Number, Box<dyn Error>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("number literal is empty".into());
+    }
+    if let Ok(integer) = value.parse::<i64>() {
+        return Ok(Number::from(integer));
+    }
+    let float = value.parse::<f64>()?;
+    Number::from_f64(float).ok_or_else(|| "number literal must be finite".into())
 }
 
 struct EventLabels<'a> {
@@ -1031,22 +1587,27 @@ fn format_provenance_stdout(manifest_path: &Path, manifest: &RunManifest) -> Str
     );
     let _ = writeln!(
         text,
-        "  signal_version_hash    {}",
-        manifest.signal_version_hash
-    );
-    let _ = writeln!(
-        text,
         "  transcript_hash        {}",
         manifest.transcript_hash
     );
+    let _ = writeln!(text);
+    let _ = writeln!(text, "RUN CONTEXT");
     let _ = writeln!(
         text,
-        "  code_commit_hash       {}",
+        "  source_commit          {}",
         manifest
-            .code_commit_hash
+            .source_commit
             .as_deref()
             .map(short_hash)
             .unwrap_or("unavailable")
+    );
+    let _ = writeln!(
+        text,
+        "  workspace_dirty        {}",
+        manifest
+            .workspace_dirty
+            .map(|dirty| dirty.to_string())
+            .unwrap_or_else(|| "unavailable".to_string())
     );
     let _ = writeln!(
         text,
@@ -1131,7 +1692,8 @@ struct RunManifest {
     run_started_utc: String,
     invocation: String,
     invocation_args: Vec<String>,
-    code_commit_hash: Option<String>,
+    source_commit: Option<String>,
+    workspace_dirty: Option<bool>,
     rust_toolchain: Option<String>,
     scenario: String,
     signal: String,
@@ -1145,7 +1707,6 @@ struct RunManifest {
     data_fixture_hash: String,
     prediction_output_hash: String,
     checks_output_hash: String,
-    signal_version_hash: String,
     transcript_hash: String,
     checks_passed: bool,
     checks: CheckCounts,
@@ -1158,6 +1719,7 @@ impl RunManifest {
             SystemTime::now(),
             env::args().collect(),
             current_git_commit(),
+            current_workspace_dirty(),
             current_rustc_version(),
         )
     }
@@ -1166,23 +1728,19 @@ impl RunManifest {
         inputs: RunManifestInputs<'_>,
         run_started: SystemTime,
         invocation_args: Vec<String>,
-        code_commit_hash: Option<String>,
+        source_commit: Option<String>,
+        workspace_dirty: Option<bool>,
         rust_toolchain: Option<String>,
     ) -> Self {
-        let signal_version = format!(
-            "{}:{}",
-            code_commit_hash.as_deref().unwrap_or("unknown-commit"),
-            inputs.signal.as_str()
-        );
-
         Self {
-            schema_version: 2,
+            schema_version: 3,
             tool: "asof-causality",
-            hash_algorithm: "fnv1a64",
+            hash_algorithm: "blake3",
             run_started_utc: system_time_to_utc_iso8601(run_started),
             invocation: shell_join(&invocation_args),
             invocation_args,
-            code_commit_hash,
+            source_commit,
+            workspace_dirty,
             rust_toolchain,
             scenario: inputs.stream.stats.scenario.as_str().to_string(),
             signal: inputs.signal.as_str().to_string(),
@@ -1193,23 +1751,12 @@ impl RunManifest {
             late_rate: inputs.config.late_rate,
             feature_correction_rate: inputs.config.feature_correction_rate,
             outcome_rate: inputs.config.outcome_rate,
-            data_fixture_hash: format!(
-                "{:016x}",
-                asof_causality_core::fnv1a64(inputs.events_output.as_bytes())
+            data_fixture_hash: asof_causality_core::blake3_hex(inputs.events_output.as_bytes()),
+            prediction_output_hash: asof_causality_core::blake3_hex(
+                inputs.predictions_output.as_bytes(),
             ),
-            prediction_output_hash: format!(
-                "{:016x}",
-                asof_causality_core::fnv1a64(inputs.predictions_output.as_bytes())
-            ),
-            checks_output_hash: format!(
-                "{:016x}",
-                asof_causality_core::fnv1a64(inputs.checks_output.as_bytes())
-            ),
-            signal_version_hash: format!(
-                "{:016x}",
-                asof_causality_core::fnv1a64(signal_version.as_bytes())
-            ),
-            transcript_hash: format!("{:016x}", inputs.replay.predictions.transcript_hash()),
+            checks_output_hash: asof_causality_core::blake3_hex(inputs.checks_output.as_bytes()),
+            transcript_hash: inputs.replay.predictions.transcript_digest(),
             checks_passed: inputs.report.passed(),
             checks: CheckCounts::from_report(inputs.report),
         }
@@ -1244,8 +1791,13 @@ fn format_run_manifest(manifest: &RunManifest) -> String {
     );
     let _ = writeln!(
         text,
-        "  \"code_commit_hash\": {},",
-        json_optional(&manifest.code_commit_hash)
+        "  \"source_commit\": {},",
+        json_optional(&manifest.source_commit)
+    );
+    let _ = writeln!(
+        text,
+        "  \"workspace_dirty\": {},",
+        json_optional_bool(manifest.workspace_dirty)
     );
     let _ = writeln!(
         text,
@@ -1286,11 +1838,6 @@ fn format_run_manifest(manifest: &RunManifest) -> String {
     );
     let _ = writeln!(
         text,
-        "  \"signal_version_hash\": \"{}\",",
-        manifest.signal_version_hash
-    );
-    let _ = writeln!(
-        text,
         "  \"transcript_hash\": \"{}\",",
         manifest.transcript_hash
     );
@@ -1318,6 +1865,19 @@ fn current_git_commit() -> Option<String> {
     Some(commit.trim().to_string()).filter(|commit| !commit.is_empty())
 }
 
+fn current_workspace_dirty() -> Option<bool> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(!output.stdout.is_empty())
+}
+
 fn current_rustc_version() -> Option<String> {
     let output = Command::new("rustc").arg("--version").output().ok()?;
 
@@ -1333,6 +1893,12 @@ fn json_optional(value: &Option<String>) -> String {
     value
         .as_ref()
         .map(|value| format!("\"{}\"", json_escape(value)))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn json_optional_bool(value: Option<bool>) -> String {
+    value
+        .map(|value| value.to_string())
         .unwrap_or_else(|| "null".to_string())
 }
 
@@ -1415,6 +1981,7 @@ fn print_help() {
     println!("usage:");
     println!("  asof-causality replay [path] [--signal name]");
     println!("  asof-causality check [path] [--signal name] [--max-cutoffs N|--exhaustive]");
+    println!("  asof-causality audit [events] [stored_predictions.jsonl] [outcomes] [--signal name] [--out path] [--allow-missing-recipe-hash]");
     println!("  asof-causality negative-control [path] [--signal name]");
     println!("  asof-causality generate [--scenario late-heavy] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out path]");
     println!("  asof-causality run-suite [--scenario late-heavy] [--signal name] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out dir]");
@@ -1423,6 +1990,7 @@ fn print_help() {
     println!("signals:");
     println!("  last-feature-sentiment (default)");
     println!("  windowed-feature-sentiment");
+    println!("  windowed-zscore");
 }
 
 #[cfg(test)]
@@ -1431,6 +1999,17 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    fn late_arrival_events() -> Vec<Event> {
+        parse_pipe_events(include_str!("../../../examples/late-arrival.pipe")).unwrap()
+    }
+
+    fn negative_control_events() -> Vec<Event> {
+        parse_pipe_events(include_str!(
+            "../../../examples/lookahead-negative-control.pipe"
+        ))
+        .unwrap()
     }
 
     fn sample_manifest() -> RunManifest {
@@ -1476,6 +2055,7 @@ mod tests {
                 "/tmp/path with space",
             ]),
             Some("abcdef1234567890".to_string()),
+            Some(false),
             Some("rustc test".to_string()),
         )
     }
@@ -1505,11 +2085,54 @@ mod tests {
     }
 
     #[test]
+    fn parses_windowed_zscore_signal() {
+        let (_, signal) = parse_path_signal_args(
+            &args(&["--signal", "windowed-zscore"]),
+            "default.pipe",
+            "replay",
+        )
+        .unwrap();
+
+        assert_eq!(signal, SignalChoice::WindowedZScore);
+    }
+
+    #[test]
     fn parses_signal_for_run_suite() {
         let (_, _, signal) =
             parse_generate_args(&args(&["--signal", "windowed-feature-sentiment"]), true).unwrap();
 
         assert_eq!(signal, SignalChoice::WindowedFeatureSentiment);
+    }
+
+    #[test]
+    fn parses_audit_args() {
+        let parsed = parse_audit_args(&args(&[
+            "examples/lookahead-negative-control.pipe",
+            "runs/stored.jsonl",
+            "runs/outcomes.pipe",
+            "--signal",
+            "windowed-feature-sentiment",
+            "--out",
+            "runs/audit.jsonl",
+            "--allow-missing-recipe-hash",
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            parsed.events_path,
+            "examples/lookahead-negative-control.pipe"
+        );
+        assert_eq!(
+            parsed.stored_predictions_path,
+            Some(PathBuf::from("runs/stored.jsonl"))
+        );
+        assert_eq!(
+            parsed.outcomes_path,
+            Some(PathBuf::from("runs/outcomes.pipe"))
+        );
+        assert_eq!(parsed.signal, SignalChoice::WindowedFeatureSentiment);
+        assert_eq!(parsed.out, Some(PathBuf::from("runs/audit.jsonl")));
+        assert!(parsed.allow_missing_recipe_hash);
     }
 
     #[test]
@@ -1531,23 +2154,23 @@ mod tests {
     }
 
     #[test]
-    fn manifest_v2_contains_required_fields() {
+    fn manifest_v3_contains_required_fields() {
         let manifest = sample_manifest();
         let json = format_run_manifest(&manifest);
 
-        assert!(json.contains("\"schema_version\": 2"));
+        assert!(json.contains("\"schema_version\": 3"));
         assert!(json.contains("\"tool\": \"asof-causality\""));
-        assert!(json.contains("\"hash_algorithm\": \"fnv1a64\""));
+        assert!(json.contains("\"hash_algorithm\": \"blake3\""));
         assert!(json.contains("\"run_started_utc\": \"2024-01-01T00:00:00Z\""));
         assert!(json
             .contains("\"invocation\": \"asof-causality run-suite --out '/tmp/path with space'\""));
         assert!(json.contains("\"invocation_args\": [\"asof-causality\", \"run-suite\", \"--out\", \"/tmp/path with space\"]"));
-        assert!(json.contains("\"code_commit_hash\": \"abcdef1234567890\""));
+        assert!(json.contains("\"source_commit\": \"abcdef1234567890\""));
+        assert!(json.contains("\"workspace_dirty\": false"));
         assert!(json.contains("\"rust_toolchain\": \"rustc test\""));
         assert!(json.contains("\"data_fixture_hash\":"));
         assert!(json.contains("\"prediction_output_hash\":"));
         assert!(json.contains("\"checks_output_hash\":"));
-        assert!(json.contains("\"signal_version_hash\":"));
         assert!(json.contains("\"transcript_hash\":"));
         assert!(json.contains("\"checks_passed\": true"));
     }
@@ -1591,13 +2214,245 @@ mod tests {
         assert!(output.contains("  data_fixture_hash"));
         assert!(output.contains("  prediction_output_hash"));
         assert!(output.contains("  checks_output_hash"));
-        assert!(output.contains("  signal_version_hash"));
         assert!(output.contains("  transcript_hash"));
-        assert!(output.contains("  code_commit_hash"));
+        assert!(output.contains("RUN CONTEXT"));
+        assert!(output.contains("  source_commit"));
+        assert!(output.contains("  workspace_dirty"));
         assert!(output.contains("  rust_toolchain"));
         assert!(output.contains("  run_started_utc"));
         assert!(!output.contains("  fixture_hash"));
         assert!(!output.contains("  predictions_hash"));
         assert!(!output.contains("  checks_hash"));
+        assert!(!output.contains("  signal_version_hash"));
+        assert!(!output.contains("  code_commit_hash"));
+    }
+
+    #[test]
+    fn audit_jsonl_contains_schema_fields() {
+        let events = late_arrival_events();
+        let replay = replay_with_signal(
+            SignalChoice::LastFeatureSentiment,
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ReceivedTime,
+        )
+        .unwrap();
+        let outcomes = BTreeMap::new();
+        let jsonl = format_audit_jsonl(
+            SignalChoice::LastFeatureSentiment,
+            &replay,
+            None,
+            &outcomes,
+            false,
+        );
+
+        assert!(jsonl.contains("\"schema_version\":2"));
+        assert!(jsonl.contains("\"prediction_id\":\"p1\""));
+        assert!(jsonl.contains("\"signal\":\"last-feature-sentiment\""));
+        assert!(jsonl.contains("\"prediction_replay_key\":\"580:3:p1\""));
+        assert!(jsonl.contains("\"input_event_ids\":[]"));
+        assert!(jsonl.contains("\"max_input_replay_key\":null"));
+        assert!(jsonl.contains("\"feature_recipe_hash\":\""));
+        assert!(jsonl.contains("\"causally_valid\":true"));
+        assert!(jsonl.contains("\"matched_stored_prediction\":null"));
+        assert!(jsonl.contains("\"outcome\":null"));
+    }
+
+    #[test]
+    fn audit_jsonl_records_multi_input_provenance() {
+        let events = negative_control_events();
+        let replay = replay_with_signal(
+            SignalChoice::WindowedFeatureSentiment,
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ReceivedTime,
+        )
+        .unwrap();
+        let outcomes = BTreeMap::new();
+        let jsonl = format_audit_jsonl(
+            SignalChoice::WindowedFeatureSentiment,
+            &replay,
+            None,
+            &outcomes,
+            false,
+        );
+
+        assert!(jsonl.contains("\"signal\":\"windowed-feature-sentiment\""));
+        assert!(jsonl.contains("\"input_event_ids\":[\"n_seed_negative\",\"n_seed_positive\""));
+    }
+
+    #[test]
+    fn audit_jsonl_can_mark_non_causal_records() {
+        let events = negative_control_events();
+        let replay = replay_with_signal(
+            SignalChoice::WindowedFeatureSentiment,
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ObservedTimeLeaky,
+        )
+        .unwrap();
+        let outcomes = BTreeMap::new();
+        let jsonl = format_audit_jsonl(
+            SignalChoice::WindowedFeatureSentiment,
+            &replay,
+            None,
+            &outcomes,
+            false,
+        );
+
+        assert!(jsonl.contains("\"causally_valid\":false"));
+    }
+
+    #[test]
+    fn audit_jsonl_marks_matching_stored_predictions() {
+        let events = late_arrival_events();
+        let replay = replay_with_signal(
+            SignalChoice::LastFeatureSentiment,
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ReceivedTime,
+        )
+        .unwrap();
+        let outcomes = BTreeMap::new();
+        let expected = format_audit_jsonl(
+            SignalChoice::LastFeatureSentiment,
+            &replay,
+            None,
+            &outcomes,
+            false,
+        );
+        let stored = parse_stored_predictions_jsonl(&expected).unwrap();
+        let audited = format_audit_jsonl(
+            SignalChoice::LastFeatureSentiment,
+            &replay,
+            Some(&stored),
+            &outcomes,
+            false,
+        );
+
+        assert!(audited.contains("\"matched_stored_prediction\":true"));
+        assert!(!audited.contains("\"matched_stored_prediction\":false"));
+    }
+
+    #[test]
+    fn audit_jsonl_marks_missing_stored_predictions() {
+        let events = late_arrival_events();
+        let replay = replay_with_signal(
+            SignalChoice::LastFeatureSentiment,
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ReceivedTime,
+        )
+        .unwrap();
+        let stored = BTreeMap::new();
+        let outcomes = BTreeMap::new();
+        let jsonl = format_audit_jsonl(
+            SignalChoice::LastFeatureSentiment,
+            &replay,
+            Some(&stored),
+            &outcomes,
+            false,
+        );
+
+        assert!(jsonl.contains("\"matched_stored_prediction\":false"));
+    }
+
+    #[test]
+    fn audit_jsonl_marks_mismatched_recipe_hash() {
+        let stored_jsonl = "{\"prediction_replay_key\":\"580:3:p1\",\"symbol\":\"AAPL\",\"signal_value\":0,\"feature_recipe_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\"}\n";
+        let stored = parse_stored_predictions_jsonl(stored_jsonl).unwrap();
+        let events = late_arrival_events();
+        let replay = replay_with_signal(
+            SignalChoice::LastFeatureSentiment,
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ReceivedTime,
+        )
+        .unwrap();
+        let outcomes = BTreeMap::new();
+        let jsonl = format_audit_jsonl(
+            SignalChoice::LastFeatureSentiment,
+            &replay,
+            Some(&stored),
+            &outcomes,
+            false,
+        );
+
+        assert!(jsonl.contains("\"matched_stored_prediction\":false"));
+    }
+
+    #[test]
+    fn stored_predictions_require_recipe_hash_by_default() {
+        let stored_record = StoredPrediction {
+            signal_value: 0,
+            feature_recipe_hash: None,
+        };
+
+        assert!(!stored_record_matches(&stored_record, 0, "abc", false));
+        assert!(stored_record_matches(&stored_record, 0, "abc", true));
+    }
+
+    #[test]
+    fn stored_prediction_jsonl_accepts_valid_json_variants() {
+        let stored = parse_stored_predictions_jsonl(
+            "{\"symbol\":\"AAPL\", \"signal_value\":0, \"prediction_replay_key\":\"580:3:p\\u0031\"}\n",
+        )
+        .unwrap();
+
+        assert!(stored.contains_key(&AuditKey {
+            symbol: "AAPL".to_string(),
+            prediction_replay_key: "580:3:p1".to_string(),
+        }));
+    }
+
+    #[test]
+    fn audit_jsonl_attaches_explicit_pipe_outcome() {
+        let outcomes = parse_outcome_pipe(
+            "o1|640|640|8|outcome|AAPL|prediction_replay_key=590:4:p2,return_bps=12\n",
+        )
+        .unwrap();
+        let events = late_arrival_events();
+        let replay = replay_with_signal(
+            SignalChoice::LastFeatureSentiment,
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ReceivedTime,
+        )
+        .unwrap();
+        let jsonl = format_audit_jsonl(
+            SignalChoice::LastFeatureSentiment,
+            &replay,
+            None,
+            &outcomes,
+            false,
+        );
+
+        assert!(jsonl.contains("\"prediction_replay_key\":\"590:4:p2\""));
+        assert!(jsonl.contains("\"outcome\":{\"return_bps\":12}"));
+    }
+
+    #[test]
+    fn audit_jsonl_attaches_jsonl_outcome() {
+        let outcomes = parse_outcome_jsonl(
+            "{\"prediction_replay_key\":\"590:4:p2\",\"symbol\":\"AAPL\",\"return_bps\":12}\n",
+        )
+        .unwrap();
+        let events = late_arrival_events();
+        let replay = replay_with_signal(
+            SignalChoice::LastFeatureSentiment,
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ReceivedTime,
+        )
+        .unwrap();
+        let jsonl = format_audit_jsonl(
+            SignalChoice::LastFeatureSentiment,
+            &replay,
+            None,
+            &outcomes,
+            false,
+        );
+
+        assert!(jsonl.contains("\"outcome\":{\"return_bps\":12}"));
     }
 }

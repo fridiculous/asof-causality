@@ -2,6 +2,8 @@ use crate::{Event, EventKey, InputSet, SymbolId};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
+pub type FeatureRecipeHash = [u8; 32];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PredictionRecord {
     pub prediction_event_key: EventKey,
@@ -13,6 +15,7 @@ pub struct PredictionRecord {
     pub max_input_received_time: u64,
     pub max_input_sequence: u64,
     pub max_input_event_key: Option<EventKey>,
+    pub feature_recipe_hash: FeatureRecipeHash,
 }
 
 impl PredictionRecord {
@@ -66,6 +69,10 @@ impl PredictionRecord {
             prediction_event_id.as_str(),
         )
     }
+
+    pub fn feature_recipe_hash_hex(&self) -> String {
+        hex_digest(&self.feature_recipe_hash)
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -117,11 +124,54 @@ impl PredictionLog {
         fnv1a64(self.transcript().as_bytes())
     }
 
+    pub fn transcript_digest(&self) -> String {
+        blake3_hex(self.transcript().as_bytes())
+    }
+
     pub fn impossible_predictions(&self) -> Vec<&PredictionRecord> {
         self.records
             .iter()
             .filter(|record| record.violates_replay_key_order(&self.event_labels))
             .collect()
+    }
+
+    pub fn event_label(&self, event_key: EventKey) -> String {
+        label_for(event_key, &self.event_labels)
+    }
+
+    pub fn symbol_label(&self, symbol: SymbolId) -> String {
+        label_for_symbol(symbol, &self.symbol_labels)
+    }
+
+    pub fn format_replay_key(
+        &self,
+        received_time: u64,
+        sequence: u64,
+        event_key: EventKey,
+    ) -> String {
+        format_replay_key(received_time, sequence, event_key, &self.event_labels)
+    }
+
+    pub fn input_event_labels(&self, inputs: InputSet) -> Vec<String> {
+        inputs
+            .iter()
+            .map(|event_key| label_for(event_key, &self.event_labels))
+            .collect()
+    }
+
+    pub fn max_input_replay_key_value(&self, record: &PredictionRecord) -> Option<String> {
+        record.max_input_event_key.map(|event_key| {
+            format_replay_key(
+                record.max_input_received_time,
+                record.max_input_sequence,
+                event_key,
+                &self.event_labels,
+            )
+        })
+    }
+
+    pub fn record_is_causal(&self, record: &PredictionRecord) -> bool {
+        !record.violates_replay_key_order(&self.event_labels)
     }
 }
 
@@ -163,4 +213,44 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(PRIME);
     }
     hash
+}
+
+pub fn blake3_hex(bytes: &[u8]) -> String {
+    hex_digest(&blake3_digest(bytes))
+}
+
+pub fn blake3_digest(bytes: &[u8]) -> FeatureRecipeHash {
+    *blake3::hash(bytes).as_bytes()
+}
+
+pub fn hex_digest(digest: &FeatureRecipeHash) -> String {
+    let mut text = String::with_capacity(64);
+    for byte in digest {
+        let _ = write!(text, "{byte:02x}");
+    }
+    text
+}
+
+pub fn feature_recipe_hash(
+    signal_name: &str,
+    config_descriptor: &str,
+    inputs: InputSet,
+) -> FeatureRecipeHash {
+    let mut hasher = blake3::Hasher::new();
+    // Internal to the recipe-hash input; independent of audit JSON schema versions.
+    hasher.update(b"schema_version");
+    hasher.update(&1_u32.to_le_bytes());
+    update_hash_field(&mut hasher, b"signal", signal_name.as_bytes());
+    update_hash_field(&mut hasher, b"config", config_descriptor.as_bytes());
+    for input_key in inputs.iter() {
+        hasher.update(b"input_key");
+        hasher.update(&input_key.0.to_le_bytes());
+    }
+    *hasher.finalize().as_bytes()
+}
+
+fn update_hash_field(hasher: &mut blake3::Hasher, name: &[u8], value: &[u8]) {
+    hasher.update(name);
+    hasher.update(&(value.len() as u64).to_le_bytes());
+    hasher.update(value);
 }

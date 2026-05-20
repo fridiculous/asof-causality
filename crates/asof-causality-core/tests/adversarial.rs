@@ -1,6 +1,6 @@
 use asof_causality_core::{
     parse_pipe_events, run_adversarial_checks, ReplayEngine, ReplayOptions, ReplayOrder,
-    WindowedFeatureSentimentSignal,
+    WindowedFeatureSentimentSignal, WindowedZScoreSignal,
 };
 
 fn fixture_events() -> Vec<asof_causality_core::Event> {
@@ -12,6 +12,10 @@ fn negative_control_events() -> Vec<asof_causality_core::Event> {
         "../../../examples/lookahead-negative-control.pipe"
     ))
     .unwrap()
+}
+
+fn zscore_events() -> Vec<asof_causality_core::Event> {
+    parse_pipe_events(include_str!("../../../examples/zscore-lookahead.pipe")).unwrap()
 }
 
 fn assert_check_passes(name: &str) {
@@ -167,4 +171,39 @@ fn windowed_signal_records_multi_input_provenance() {
     assert_eq!(before_late_feature.input_event_ids_used.len(), 4);
     assert_eq!(before_late_feature.max_input_received_time, 95);
     assert_eq!(before_late_feature.max_input_sequence, 5);
+}
+
+#[test]
+fn zscore_fixture_passes_adversarial_checks() {
+    let events = zscore_events();
+    let report = asof_causality_core::run_adversarial_checks_with_options_for_signal(
+        &events,
+        asof_causality_core::CheckOptions::exhaustive(),
+        WindowedZScoreSignal::new(),
+    );
+
+    assert!(report.passed(), "{report:?}");
+}
+
+#[test]
+fn observed_time_baseline_leaks_numeric_zscore_input() {
+    let events = zscore_events();
+    let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+        .replay_with_order(
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ObservedTimeLeaky,
+        )
+        .unwrap();
+
+    let leaked = output
+        .predictions
+        .records()
+        .iter()
+        .find(|record| record.prediction_time == 100)
+        .expect("zscore fixture should emit prediction at 100");
+
+    assert_eq!(leaked.signal_value, 1);
+    assert_eq!(leaked.max_input_received_time, 120);
+    assert_eq!(output.predictions.impossible_predictions().len(), 1);
 }

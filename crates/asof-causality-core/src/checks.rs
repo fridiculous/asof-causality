@@ -597,6 +597,10 @@ f1|90|100|2|feature|XYZ|sentiment=positive
         }
 
         impl Signal for LyingSignal {
+            fn name(&self) -> &'static str {
+                "lying-signal"
+            }
+
             fn predict(
                 &self,
                 _view: AsOfView<'_>,
@@ -609,6 +613,7 @@ f1|90|100|2|feature|XYZ|sentiment=positive
                     max_input_received_time: 100,
                     max_input_sequence: 2,
                     max_input_event_key: Some(self.input_key),
+                    feature_recipe_hash: None,
                 }
             }
         }
