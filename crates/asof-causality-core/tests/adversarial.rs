@@ -1,0 +1,170 @@
+use asof_causality_core::{
+    parse_pipe_events, run_adversarial_checks, ReplayEngine, ReplayOptions, ReplayOrder,
+    WindowedFeatureSentimentSignal,
+};
+
+fn fixture_events() -> Vec<asof_causality_core::Event> {
+    parse_pipe_events(include_str!("../../../examples/late-arrival.pipe")).unwrap()
+}
+
+fn negative_control_events() -> Vec<asof_causality_core::Event> {
+    parse_pipe_events(include_str!(
+        "../../../examples/lookahead-negative-control.pipe"
+    ))
+    .unwrap()
+}
+
+fn assert_check_passes(name: &str) {
+    let events = fixture_events();
+    let report = run_adversarial_checks(&events);
+    let result = report
+        .results
+        .iter()
+        .find(|result| result.name == name)
+        .unwrap_or_else(|| panic!("missing check {name}"));
+
+    assert!(result.passed, "{} failed: {}", result.name, result.detail);
+}
+
+#[test]
+fn prefix_equivalence_holds() {
+    assert_check_passes("prefix_equivalence");
+}
+
+#[test]
+fn future_mutation_does_not_change_past_predictions() {
+    assert_check_passes("future_mutation");
+}
+
+#[test]
+fn late_arrival_is_not_used_before_received_time() {
+    assert_check_passes("late_arrival");
+}
+
+#[test]
+fn on_time_vs_late_arrival_can_change_prediction() {
+    assert_check_passes("on_time_vs_late_contrast");
+}
+
+#[test]
+fn feature_corrections_are_append_only() {
+    assert_check_passes("feature_correction_append_only");
+}
+
+#[test]
+fn outcomes_do_not_affect_predictions() {
+    assert_check_passes("outcome_separation");
+}
+
+#[test]
+fn shuffled_input_replays_to_same_transcript_hash() {
+    assert_check_passes("deterministic_replay");
+}
+
+#[test]
+fn prediction_audit_invariant_holds() {
+    assert_check_passes("audit_invariant");
+}
+
+#[test]
+fn disabling_outcome_computation_does_not_change_transcript_hash() {
+    let events = fixture_events();
+    let with_outcomes = ReplayEngine::new()
+        .replay(
+            &events,
+            ReplayOptions {
+                compute_outcomes: true,
+            },
+        )
+        .unwrap()
+        .predictions
+        .transcript_hash();
+    let without_outcomes = ReplayEngine::new()
+        .replay(
+            &events,
+            ReplayOptions {
+                compute_outcomes: false,
+            },
+        )
+        .unwrap()
+        .predictions
+        .transcript_hash();
+
+    assert_eq!(with_outcomes, without_outcomes);
+}
+
+#[test]
+fn received_time_engine_survives_negative_control() {
+    let events = negative_control_events();
+    let output = ReplayEngine::new()
+        .replay_with_order(&events, ReplayOptions::default(), ReplayOrder::ReceivedTime)
+        .unwrap();
+
+    assert!(output.predictions.impossible_predictions().is_empty());
+}
+
+#[test]
+fn observed_time_baseline_leaks_on_negative_control() {
+    let events = negative_control_events();
+    let output = ReplayEngine::new()
+        .replay_with_order(
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ObservedTimeLeaky,
+        )
+        .unwrap();
+
+    let same_time_sequence_leak = output
+        .predictions
+        .records()
+        .iter()
+        .find(|record| record.prediction_time == 95)
+        .expect("negative fixture should emit prediction at 95");
+
+    assert_eq!(same_time_sequence_leak.max_input_received_time, 95);
+    assert_eq!(same_time_sequence_leak.prediction_sequence, 4);
+    assert_eq!(same_time_sequence_leak.max_input_sequence, 5);
+
+    let late_feature_leak = output
+        .predictions
+        .records()
+        .iter()
+        .find(|record| record.prediction_time == 120)
+        .expect("negative fixture should emit prediction at 120");
+
+    assert_eq!(late_feature_leak.max_input_received_time, 150);
+    assert!(late_feature_leak.max_input_received_time > late_feature_leak.prediction_time);
+
+    let feature_correction_leak = output
+        .predictions
+        .records()
+        .iter()
+        .find(|record| record.prediction_time == 170)
+        .expect("negative fixture should emit prediction at 170");
+
+    assert_eq!(feature_correction_leak.max_input_received_time, 180);
+    assert!(
+        feature_correction_leak.max_input_received_time > feature_correction_leak.prediction_time
+    );
+
+    assert_eq!(output.predictions.impossible_predictions().len(), 3);
+}
+
+#[test]
+fn windowed_signal_records_multi_input_provenance() {
+    let events = negative_control_events();
+    let output = ReplayEngine::with_signal(WindowedFeatureSentimentSignal::new(5))
+        .replay_with_order(&events, ReplayOptions::default(), ReplayOrder::ReceivedTime)
+        .unwrap();
+
+    let before_late_feature = output
+        .predictions
+        .records()
+        .iter()
+        .find(|record| record.prediction_time == 120)
+        .expect("negative fixture should emit prediction at 120");
+
+    assert_eq!(before_late_feature.input_event_ids_used.len(), 4);
+    assert_eq!(before_late_feature.max_input_received_time, 95);
+    assert_eq!(before_late_feature.max_input_sequence, 5);
+}

@@ -3,7 +3,7 @@
 ```text
 generator or pipe fixture
   -> parse Event
-  -> sort by (received_time, sequence)
+  -> sort by (received_time, sequence, event_id)
   -> apply data events to internal StateStore
   -> call Signal::predict(AsOfView, prediction_time)
   -> append PredictionRecord
@@ -14,27 +14,41 @@ generator or pipe fixture
 
 | Concept | Responsibility |
 |---|---|
-| `Event` | Two-clock input row with stable `event_id`, symbol, kind, and payload |
+| `Event` | Two-clock input row with stable `event_id`, symbol, role, and payload |
 | `StateStore` | Internal mutable state created from received events |
 | `AsOfView` | Public opaque read-only view exposed to signal code |
 | `Signal` | Restricted API over `AsOfView`, never the full event list |
 | `PredictionRecord` | Immutable audit record with input event provenance |
 | `PredictionLog` | Append-only prediction transcript plus deterministic hash |
-| `ReplayEngine` | Orders events, updates state, emits predictions, and computes labels later |
-| `Generator` | Creates deterministic late-arrival/correction fixtures from a seed |
+| `ReplayEngine` | Orders events, updates state, emits predictions, and computes outcomes later |
+| `Generator` | Creates deterministic late-arrival/feature-correction fixtures from a seed |
 
 `StateStore` and `StateWriter` are crate-private. Signal authors can query
 `AsOfView`, but cannot construct it, mutate it, or access the full event list
-through the signal API.
+through the signal API. The default `last-feature-sentiment` signal records
+one input event. The `windowed-feature-sentiment` signal records a bounded
+inline set of recent feature inputs, proving the provenance path is not limited
+to one-row examples.
 
-## Event Kinds
+`InputSet::Many` stores up to eight event keys inline. That cap is deliberate:
+it keeps prediction records fixed-size and allocation-free in the replay path.
+Signals that need larger provenance should use a separate compact recipe hash or
+snapshot manifest rather than growing per-prediction heap state.
 
-| Kind | Behavior |
+This artifact stops at the signal layer. A full strategy layer would consume
+`PredictionRecord`s through its own point-in-time `StrategyView`, maintain
+portfolio state, and emit immutable `DecisionRecord`s with cross-strategy
+isolation checks. That is the natural next layer, but it is intentionally out of
+scope for this repository.
+
+## Event Roles
+
+| Role | Behavior |
 |---|---|
-| `news` | Updates per-symbol sentiment state from payload |
-| `correction` | Append-only correction event with its own received time |
-| `predict` | Emits a prediction for the symbol at this received time |
-| `label` | Optional future label data; excluded from prediction state |
+| `feature` | Updates per-symbol sentiment state from payload |
+| `feature_correction` | Append-only feature correction with its own received time |
+| `prediction` | Emits a prediction for the symbol at this received time |
+| `outcome` | Optional future outcome data; excluded from prediction state |
 
 ## Correctness Boundary
 
@@ -42,38 +56,46 @@ For each prediction:
 
 ```text
 max_input_replay_key <= prediction_replay_key
-where replay_key = (received_time, sequence)
 ```
 
-Late events may create new future predictions, but they cannot mutate old
-prediction records. Corrections are also append-only events; a correction
-received at 10:15 cannot affect a prediction emitted at 09:45.
+The replay key is `(received_time, sequence, event_id)`, not just time. Late
+events may create new future predictions, but they cannot mutate old prediction
+records. Same-timestamp events with a later sequence are also future inputs for
+an earlier prediction at that timestamp. Feature corrections are append-only
+events; a feature correction received at replay key `(10:15, 9, c1)` cannot
+affect a prediction emitted at `(10:15, 8, p1)`.
 
 ## Start-To-Finish Flow
 
 `run-suite` wires the artifact together:
 
 ```text
-GenerateConfig(seed, scenario, late_rate, correction_rate)
+GenerateConfig(seed, scenario, late_rate, feature_correction_rate)
   -> GeneratedStream(events.pipe)
   -> ReplayEngine(predictions.pipe)
   -> adversarial checks(checks.txt)
   -> summary.md with transcript hash and check results
+  -> manifest.json with hash-linked run identity
 ```
 
 Generated fixtures are deterministic for a fixed seed. The `late-heavy`
 scenario also shuffles physical file order so deterministic replay is exercised
 against out-of-order input rather than only a hand-written toy fixture.
 
+The manifest records the scenario, signal, optional Git commit, Rust toolchain,
+fixture hash, prediction output hash, checks output hash, signal-version hash,
+and final transcript hash. It is meant to make a run verifiable from artifacts
+rather than from prose.
+
 ## Negative Control
 
 The CLI also exposes a deliberately broken replay order:
 
 ```text
-received-time replay: sort by (received_time, sequence)
-observed-time baseline: sort by (observed_time, sequence)
+received-time replay: sort by (received_time, sequence, event_id)
+observed-time baseline: sort by (observed_time, sequence, event_id)
 ```
 
 The observed-time baseline is not a production mode. It exists so
-`compare-leaky` can run the same fixture through both engines and show the exact
+`negative-control` can run the same fixture through both engines and show the exact
 impossible prediction a naive backtest would emit.

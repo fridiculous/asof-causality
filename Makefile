@@ -8,10 +8,10 @@ test:
 	cargo test
 
 replay:
-	cargo run -p asof-replay-cli -- replay examples/late-arrival.pipe
+	cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
 
 check-fixture:
-	cargo run -p asof-replay-cli -- check examples/late-arrival.pipe
+	cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
 
 bench:
-	cargo run -p asof-replay-cli -- bench --events 1000000 --symbols 1024
+	cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024

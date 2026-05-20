@@ -19,19 +19,20 @@ Build: release for bench, dev for replay/check
 Command:
 
 ```text
-cargo run -p asof-replay-cli -- replay examples/late-arrival.pipe
+cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
 ```
 
 Output:
 
 ```text
-prediction_time|prediction_sequence|symbol|signal_value|input_event_ids|max_input_received_time|max_input_sequence
-580|3|AAPL|0|-|0|0
-590|4|AAPL|1|n1|585|2
-610|5|AAPL|1|n1|585|2
-620|7|AAPL|-1|c1|615|6
-transcript_hash=d869358b32a2f623
-labels_seen=1
+replay path=examples/late-arrival.pipe signal=last-feature-sentiment events=7
+prediction_replay_key|symbol|signal_value|input_event_ids|max_input_replay_key
+580:3:p1|AAPL|0|-|-
+590:4:p2|AAPL|1|n1|585:2:n1
+610:5:p3|AAPL|1|n1|585:2:n1
+620:7:p4|AAPL|-1|c1|615:6:c1
+transcript_hash=d959650f0492c42e
+outcomes_seen=1
 ```
 
 The `check` command also reverses the physical input order and verifies that the
@@ -42,20 +43,20 @@ same transcript hash is produced.
 Command:
 
 ```text
-cargo run -p asof-replay-cli -- check examples/late-arrival.pipe
+cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
 ```
 
 Result:
 
 ```text
-PASS prefix_equivalence
-PASS future_mutation
-PASS late_arrival
-PASS on_time_vs_late_contrast
-PASS correction_append_only
-PASS label_separation
-PASS deterministic_replay
-PASS audit_invariant
+PASS prefix_equivalence - all received-time prefixes matched full replay
+PASS future_mutation - mutating future rows did not change past predictions
+PASS late_arrival - late events were not used before received_time
+PASS on_time_vs_late_contrast - moving n1 earlier changed prediction at 580 from 0 to 1
+PASS feature_correction_append_only - feature corrections did not rewrite predictions emitted before receipt
+PASS outcome_separation - disabling outcomes did not change predictions
+PASS deterministic_replay - shuffled input produced transcript hash d959650f0492c42e
+PASS audit_invariant - all predictions satisfy max_input_replay_key <= prediction_replay_key
 ```
 
 The most important contrast is `on_time_vs_late_contrast`: moving event `n1`
@@ -68,50 +69,77 @@ ignoring late events.
 Command:
 
 ```text
-cargo run -p asof-replay-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
+cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 ```
 
 Result:
 
 ```text
-generated path=runs/late-heavy.pipe scenario=late-heavy seed=42 data_events=100000 rows=116011 symbols=1024 late_updates=34892 corrections=4993 predictions=10007
+generated path=runs/late-heavy.pipe scenario=late-heavy seed=42 data_events=100000 rows=116008 symbols=1024 late_updates=34891 feature_corrections=4993 predictions=10005
 ```
 
 The generated file is deterministic for seed `42` and physically shuffled by
-default in this scenario. It also includes fixed sentinel late-arrival
-sequences before the random body, so the on-time-vs-late contrast check has
-known adversarial cases. Running `check runs/late-heavy.pipe` samples 32
-replay-key cutoffs for the expensive prefix and future-mutation checks and still
-exercises the direct late-arrival, correction, label, replay, and audit checks
-across the full generated file.
+default in this scenario. It also includes a fixed sentinel late-arrival
+sequence before the random body, so the on-time-vs-late contrast check has a
+known adversarial case. Running `check runs/late-heavy.pipe` samples 32
+received-time cutoffs for the expensive prefix and future-mutation checks and
+still exercises the direct late-arrival, feature-correction, outcome, replay, and audit
+checks across the full generated file.
 
 ## Leaky Baseline
 
 Command:
 
 ```text
-cargo run -p asof-replay-cli -- compare-leaky examples/lookahead-negative-control.pipe
+cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
 ```
 
 Expected interpretation:
 
 ```text
+negative-control path=examples/lookahead-negative-control.pipe signal=last-feature-sentiment events=12
 received-time replay: PASS
+  transcript_hash=643d89a73fb1a868
+  impossible_predictions=0
+
 observed-time replay (leaky baseline): FAIL
+  transcript_hash=5e2b2c91fab15484
+  impossible_predictions=3
+  95:4:p_before_same_time_sequence|XYZ|1|n_same_time_later|95:5:n_same_time_later
+  impossible: input replay key 95:5:n_same_time_later was used by prediction key 95:4:p_before_same_time_sequence
+  120:6:p_before_late_feature|XYZ|1|n_late_positive|150:7:n_late_positive
+  impossible: input replay key 150:7:n_late_positive was used by prediction key 120:6:p_before_late_feature
+  170:10:p_before_correction|XYZ|-1|c_late_negative|180:9:c_late_negative
+  impossible: input replay key 180:9:c_late_negative was used by prediction key 170:10:p_before_correction
 ```
 
 The baseline intentionally sorts by `observed_time`. On the negative-control
-fixture, it lets a prediction at time `120` use `n_late_positive`, which was not
-received until `150`. That prediction is impossible in live replay, and the
-audit invariant catches it as
-`max_input_replay_key > prediction_replay_key`.
+fixture, it lets a prediction at replay key `95:4:p_before_same_time_sequence`
+use `n_same_time_later`, which has the same `received_time` but a later sequence.
+It also lets later predictions use records received at `150` and `180`. Those
+predictions are impossible in live replay, and the audit invariant catches them
+as `max_input_replay_key > prediction_replay_key`.
+
+The same fixture also exercises the bounded multi-input signal:
+
+```text
+cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
+```
+
+The leaky baseline then renders multi-input provenance directly:
+
+```text
+95:4:p_before_same_time_sequence|XYZ|0|n_seed_negative,n_seed_positive,n_seed_negative_2,n_same_time_later|95:5:n_same_time_later
+120:6:p_before_late_feature|XYZ|1|n_seed_negative,n_seed_positive,n_seed_negative_2,n_same_time_later,n_late_positive|150:7:n_late_positive
+170:10:p_before_correction|XYZ|1|n_seed_positive,n_seed_negative_2,n_same_time_later,n_late_positive,c_late_negative|180:9:c_late_negative
+```
 
 ## Throughput
 
 Command:
 
 ```text
-cargo run --release -p asof-replay-cli -- bench --events 1000000 --symbols 1024
+cargo run --release -p asof-causality-cli -- bench --events 1000000 --symbols 1024
 ```
 
 Single-run result:
@@ -134,11 +162,11 @@ project: before moving work to a more complicated architecture, make the
 point-in-time state representation boring and indexed.
 
 Prediction provenance follows the same lesson. The replay path stores input
-provenance as compact inline event keys (`InputSet::Empty` or `InputSet::One`)
-and renders those keys back to human-readable event IDs only when producing the
-transcript. The v1 built-in signal uses at most one input event per prediction;
-a multi-input signal would need a bounded inline set or rolling hash rather than
-allocating a `Vec` per prediction.
+provenance as compact inline event keys (`InputSet::Empty`, `InputSet::One`, or
+a fixed-capacity `InputSet::Many`) and renders those keys back to human-readable
+event IDs only when producing the transcript. The windowed built-in signal uses
+that bounded inline set so
+multi-input provenance does not allocate a `Vec` per prediction.
 
 ## Scope Of Conclusions
 

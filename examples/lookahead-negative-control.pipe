@@ -1,13 +1,18 @@
 # Negative-control fixture for lookahead bias.
-# A broken engine that replays by observed_time would use n_late_positive
-# before p_before_late_news, and c_late_negative before p_before_correction.
-# asof-replay must not: both events are received later than those predictions.
-# event_id|observed_time|received_time|sequence|kind|symbol|payload
-n_seed|90|90|1|news|XYZ|sentiment=negative
-p_before_late_news|120|120|2|predict|XYZ|
-n_late_positive|100|150|3|news|XYZ|sentiment=positive
-p_after_late_news|160|160|4|predict|XYZ|
-c_late_negative|165|180|5|correction|XYZ|sentiment=negative,corrects=n_late_positive
-p_before_correction|170|170|6|predict|XYZ|
-p_after_correction|190|190|7|predict|XYZ|
-l_future|300|300|8|label|XYZ|return_bps=99
+# A broken engine that replays by observed_time would use n_same_time_later
+# before p_before_same_time_sequence, n_late_positive before
+# p_before_late_feature, and c_late_negative before p_before_correction.
+# asof-causality must not: each input sorts after the prediction replay key.
+# event_id|observed_time|received_time|sequence|role|symbol|payload
+n_seed_negative|80|80|1|feature|XYZ|sentiment=negative
+n_seed_positive|85|85|2|feature|XYZ|sentiment=positive
+n_seed_negative_2|90|90|3|feature|XYZ|sentiment=negative
+p_before_same_time_sequence|95|95|4|prediction|XYZ|
+n_same_time_later|90|95|5|feature|XYZ|sentiment=positive
+p_before_late_feature|120|120|6|prediction|XYZ|
+n_late_positive|100|150|7|feature|XYZ|sentiment=positive
+p_after_late_feature|160|160|8|prediction|XYZ|
+c_late_negative|165|180|9|feature_correction|XYZ|sentiment=negative,corrects=n_late_positive
+p_before_correction|170|170|10|prediction|XYZ|
+p_after_correction|190|190|11|prediction|XYZ|
+l_future|300|300|12|outcome|XYZ|return_bps=99
