@@ -107,8 +107,8 @@ cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 1000
 Runs the start-to-finish path: generate an adversarial fixture, replay it, run
 the checks, and write `events.pipe`, `predictions.pipe`, `checks.txt`, and
 `summary.md`. It also writes `manifest.json`, which links the fixture hash,
-signal-version hash, checks hash, transcript hash, and optional Git commit for
-the run.
+signal-version hash, checks hash, transcript hash, hash algorithm, invocation,
+UTC run timestamp, check counts, and optional Git commit for the run.
 
 ```sh
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe

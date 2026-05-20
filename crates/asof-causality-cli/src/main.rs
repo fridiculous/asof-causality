@@ -9,12 +9,14 @@ use std::env;
 use std::error::Error;
 use std::fmt::Write;
 use std::fs;
+use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn main() {
     if let Err(error) = run() {
+        let _ = io::stdout().flush();
         eprintln!("error: {error}");
         std::process::exit(1);
     }
@@ -348,7 +350,7 @@ fn run_suite(args: &[String]) -> Result<(), Box<dyn Error>> {
     let predictions_output = format_prediction_output(&replay);
     let checks_output = format_check_report(&report);
     let summary_output = format_suite_summary(&stream, signal, &replay, &report);
-    let manifest_output = format_run_manifest(RunManifestInputs {
+    let manifest = RunManifest::new(RunManifestInputs {
         config: &config,
         stream: &stream,
         signal,
@@ -358,6 +360,7 @@ fn run_suite(args: &[String]) -> Result<(), Box<dyn Error>> {
         predictions_output: &predictions_output,
         checks_output: &checks_output,
     });
+    let manifest_output = format_run_manifest(&manifest);
 
     write_file(&predictions_path, &predictions_output)?;
     write_file(&checks_path, &checks_output)?;
@@ -372,9 +375,7 @@ fn run_suite(args: &[String]) -> Result<(), Box<dyn Error>> {
         replay: &replay,
         replay_elapsed,
         report: &report,
-        events_output: &events_output,
-        predictions_output: &predictions_output,
-        checks_output: &checks_output,
+        manifest: &manifest,
     });
 
     if report.passed() {
@@ -913,9 +914,7 @@ struct RunSuiteStdout<'a> {
     replay: &'a ReplayOutput,
     replay_elapsed: Duration,
     report: &'a CheckReport,
-    events_output: &'a str,
-    predictions_output: &'a str,
-    checks_output: &'a str,
+    manifest: &'a RunManifest,
 }
 
 fn print_run_suite_stdout(inputs: RunSuiteStdout<'_>) {
@@ -984,47 +983,10 @@ fn print_run_suite_stdout(inputs: RunSuiteStdout<'_>) {
     );
     println!();
 
-    let git_commit = current_git_commit();
-    let rust_toolchain = current_rustc_version();
-    let signal_version = format!(
-        "{}:{}",
-        git_commit.as_deref().unwrap_or("unknown-commit"),
-        inputs.signal.as_str()
+    print!(
+        "{}",
+        format_provenance_stdout(inputs.manifest_path, inputs.manifest)
     );
-
-    println!("PROVENANCE  written to {}", inputs.manifest_path.display());
-    println!(
-        "  fixture_hash           {:016x}",
-        asof_causality_core::fnv1a64(inputs.events_output.as_bytes())
-    );
-    println!(
-        "  predictions_hash       {:016x}",
-        asof_causality_core::fnv1a64(inputs.predictions_output.as_bytes())
-    );
-    println!(
-        "  checks_hash            {:016x}",
-        asof_causality_core::fnv1a64(inputs.checks_output.as_bytes())
-    );
-    println!(
-        "  signal_version_hash    {:016x}",
-        asof_causality_core::fnv1a64(signal_version.as_bytes())
-    );
-    println!(
-        "  transcript_hash        {:016x}",
-        inputs.replay.predictions.transcript_hash()
-    );
-    println!(
-        "  git_commit             {}",
-        git_commit
-            .as_deref()
-            .map(short_hash)
-            .unwrap_or("unavailable")
-    );
-    println!(
-        "  rust_toolchain         {}",
-        rust_toolchain.as_deref().unwrap_or("unavailable")
-    );
-    println!();
 
     println!("ARTIFACTS  {}", inputs.out_dir.display());
     println!("  events.pipe        {} rows", inputs.stream.stats.rows);
@@ -1046,6 +1008,58 @@ fn print_run_suite_stdout(inputs: RunSuiteStdout<'_>) {
         passed_check_count(inputs.report),
         inputs.report.results.len()
     );
+}
+
+fn format_provenance_stdout(manifest_path: &Path, manifest: &RunManifest) -> String {
+    let mut text = String::new();
+    let _ = writeln!(text, "PROVENANCE  written to {}", manifest_path.display());
+    let _ = writeln!(text, "  hash_algorithm         {}", manifest.hash_algorithm);
+    let _ = writeln!(
+        text,
+        "  data_fixture_hash      {}",
+        manifest.data_fixture_hash
+    );
+    let _ = writeln!(
+        text,
+        "  prediction_output_hash {}",
+        manifest.prediction_output_hash
+    );
+    let _ = writeln!(
+        text,
+        "  checks_output_hash     {}",
+        manifest.checks_output_hash
+    );
+    let _ = writeln!(
+        text,
+        "  signal_version_hash    {}",
+        manifest.signal_version_hash
+    );
+    let _ = writeln!(
+        text,
+        "  transcript_hash        {}",
+        manifest.transcript_hash
+    );
+    let _ = writeln!(
+        text,
+        "  code_commit_hash       {}",
+        manifest
+            .code_commit_hash
+            .as_deref()
+            .map(short_hash)
+            .unwrap_or("unavailable")
+    );
+    let _ = writeln!(
+        text,
+        "  rust_toolchain         {}",
+        manifest.rust_toolchain.as_deref().unwrap_or("unavailable")
+    );
+    let _ = writeln!(
+        text,
+        "  run_started_utc        {}",
+        manifest.run_started_utc
+    );
+    let _ = writeln!(text);
+    text
 }
 
 fn events_per_second(events: usize, elapsed: Duration) -> f64 {
@@ -1090,73 +1104,202 @@ struct RunManifestInputs<'a> {
     checks_output: &'a str,
 }
 
-fn format_run_manifest(inputs: RunManifestInputs<'_>) -> String {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CheckCounts {
+    passed: usize,
+    failed: usize,
+    total: usize,
+}
+
+impl CheckCounts {
+    fn from_report(report: &CheckReport) -> Self {
+        let passed = passed_check_count(report);
+        let total = report.results.len();
+        Self {
+            passed,
+            failed: total.saturating_sub(passed),
+            total,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RunManifest {
+    schema_version: u8,
+    tool: &'static str,
+    hash_algorithm: &'static str,
+    run_started_utc: String,
+    invocation: String,
+    invocation_args: Vec<String>,
+    code_commit_hash: Option<String>,
+    rust_toolchain: Option<String>,
+    scenario: String,
+    signal: String,
+    seed: u64,
+    events_requested: usize,
+    rows: usize,
+    symbols: usize,
+    late_rate: f64,
+    feature_correction_rate: f64,
+    outcome_rate: f64,
+    data_fixture_hash: String,
+    prediction_output_hash: String,
+    checks_output_hash: String,
+    signal_version_hash: String,
+    transcript_hash: String,
+    checks_passed: bool,
+    checks: CheckCounts,
+}
+
+impl RunManifest {
+    fn new(inputs: RunManifestInputs<'_>) -> Self {
+        Self::new_with_context(
+            inputs,
+            SystemTime::now(),
+            env::args().collect(),
+            current_git_commit(),
+            current_rustc_version(),
+        )
+    }
+
+    fn new_with_context(
+        inputs: RunManifestInputs<'_>,
+        run_started: SystemTime,
+        invocation_args: Vec<String>,
+        code_commit_hash: Option<String>,
+        rust_toolchain: Option<String>,
+    ) -> Self {
+        let signal_version = format!(
+            "{}:{}",
+            code_commit_hash.as_deref().unwrap_or("unknown-commit"),
+            inputs.signal.as_str()
+        );
+
+        Self {
+            schema_version: 2,
+            tool: "asof-causality",
+            hash_algorithm: "fnv1a64",
+            run_started_utc: system_time_to_utc_iso8601(run_started),
+            invocation: shell_join(&invocation_args),
+            invocation_args,
+            code_commit_hash,
+            rust_toolchain,
+            scenario: inputs.stream.stats.scenario.as_str().to_string(),
+            signal: inputs.signal.as_str().to_string(),
+            seed: inputs.stream.stats.seed,
+            events_requested: inputs.config.events,
+            rows: inputs.stream.stats.rows,
+            symbols: inputs.stream.stats.symbols,
+            late_rate: inputs.config.late_rate,
+            feature_correction_rate: inputs.config.feature_correction_rate,
+            outcome_rate: inputs.config.outcome_rate,
+            data_fixture_hash: format!(
+                "{:016x}",
+                asof_causality_core::fnv1a64(inputs.events_output.as_bytes())
+            ),
+            prediction_output_hash: format!(
+                "{:016x}",
+                asof_causality_core::fnv1a64(inputs.predictions_output.as_bytes())
+            ),
+            checks_output_hash: format!(
+                "{:016x}",
+                asof_causality_core::fnv1a64(inputs.checks_output.as_bytes())
+            ),
+            signal_version_hash: format!(
+                "{:016x}",
+                asof_causality_core::fnv1a64(signal_version.as_bytes())
+            ),
+            transcript_hash: format!("{:016x}", inputs.replay.predictions.transcript_hash()),
+            checks_passed: inputs.report.passed(),
+            checks: CheckCounts::from_report(inputs.report),
+        }
+    }
+}
+
+fn format_run_manifest(manifest: &RunManifest) -> String {
     let mut text = String::new();
-    let git_commit = current_git_commit();
-    let rust_toolchain = current_rustc_version();
-    let checks_passed = inputs.report.passed();
-    let signal_version = format!(
-        "{}:{}",
-        git_commit.as_deref().unwrap_or("unknown-commit"),
-        inputs.signal.as_str()
-    );
 
     let _ = writeln!(text, "{{");
-    let _ = writeln!(text, "  \"schema_version\": 1,");
-    let _ = writeln!(text, "  \"tool\": \"asof-causality\",");
+    let _ = writeln!(text, "  \"schema_version\": {},", manifest.schema_version);
+    let _ = writeln!(text, "  \"tool\": \"{}\",", manifest.tool);
+    let _ = writeln!(
+        text,
+        "  \"hash_algorithm\": \"{}\",",
+        manifest.hash_algorithm
+    );
+    let _ = writeln!(
+        text,
+        "  \"run_started_utc\": \"{}\",",
+        manifest.run_started_utc
+    );
+    let _ = writeln!(
+        text,
+        "  \"invocation\": \"{}\",",
+        json_escape(&manifest.invocation)
+    );
+    let _ = writeln!(
+        text,
+        "  \"invocation_args\": {},",
+        json_string_array(&manifest.invocation_args)
+    );
     let _ = writeln!(
         text,
         "  \"code_commit_hash\": {},",
-        json_optional(&git_commit)
+        json_optional(&manifest.code_commit_hash)
     );
     let _ = writeln!(
         text,
         "  \"rust_toolchain\": {},",
-        json_optional(&rust_toolchain)
+        json_optional(&manifest.rust_toolchain)
     );
+    let _ = writeln!(text, "  \"scenario\": \"{}\",", manifest.scenario);
+    let _ = writeln!(text, "  \"signal\": \"{}\",", manifest.signal);
+    let _ = writeln!(text, "  \"seed\": {},", manifest.seed);
     let _ = writeln!(
         text,
-        "  \"scenario\": \"{}\",",
-        inputs.stream.stats.scenario.as_str()
+        "  \"events_requested\": {},",
+        manifest.events_requested
     );
-    let _ = writeln!(text, "  \"signal\": \"{}\",", inputs.signal.as_str());
-    let _ = writeln!(text, "  \"seed\": {},", inputs.stream.stats.seed);
-    let _ = writeln!(text, "  \"events_requested\": {},", inputs.config.events);
-    let _ = writeln!(text, "  \"rows\": {},", inputs.stream.stats.rows);
-    let _ = writeln!(text, "  \"symbols\": {},", inputs.stream.stats.symbols);
-    let _ = writeln!(text, "  \"late_rate\": {},", inputs.config.late_rate);
+    let _ = writeln!(text, "  \"rows\": {},", manifest.rows);
+    let _ = writeln!(text, "  \"symbols\": {},", manifest.symbols);
+    let _ = writeln!(text, "  \"late_rate\": {},", manifest.late_rate);
     let _ = writeln!(
         text,
         "  \"feature_correction_rate\": {},",
-        inputs.config.feature_correction_rate
+        manifest.feature_correction_rate
     );
-    let _ = writeln!(text, "  \"outcome_rate\": {},", inputs.config.outcome_rate);
+    let _ = writeln!(text, "  \"outcome_rate\": {},", manifest.outcome_rate);
     let _ = writeln!(
         text,
-        "  \"data_fixture_hash\": \"{:016x}\",",
-        asof_causality_core::fnv1a64(inputs.events_output.as_bytes())
-    );
-    let _ = writeln!(
-        text,
-        "  \"prediction_output_hash\": \"{:016x}\",",
-        asof_causality_core::fnv1a64(inputs.predictions_output.as_bytes())
+        "  \"data_fixture_hash\": \"{}\",",
+        manifest.data_fixture_hash
     );
     let _ = writeln!(
         text,
-        "  \"checks_output_hash\": \"{:016x}\",",
-        asof_causality_core::fnv1a64(inputs.checks_output.as_bytes())
+        "  \"prediction_output_hash\": \"{}\",",
+        manifest.prediction_output_hash
     );
     let _ = writeln!(
         text,
-        "  \"signal_version_hash\": \"{:016x}\",",
-        asof_causality_core::fnv1a64(signal_version.as_bytes())
+        "  \"checks_output_hash\": \"{}\",",
+        manifest.checks_output_hash
     );
     let _ = writeln!(
         text,
-        "  \"transcript_hash\": \"{:016x}\",",
-        inputs.replay.predictions.transcript_hash()
+        "  \"signal_version_hash\": \"{}\",",
+        manifest.signal_version_hash
     );
-    let _ = writeln!(text, "  \"checks_passed\": {checks_passed}");
+    let _ = writeln!(
+        text,
+        "  \"transcript_hash\": \"{}\",",
+        manifest.transcript_hash
+    );
+    let _ = writeln!(text, "  \"checks_passed\": {},", manifest.checks_passed);
+    let _ = writeln!(
+        text,
+        "  \"checks\": {{ \"passed\": {}, \"failed\": {}, \"total\": {} }}",
+        manifest.checks.passed, manifest.checks.failed, manifest.checks.total
+    );
     let _ = writeln!(text, "}}");
     text
 }
@@ -1193,8 +1336,77 @@ fn json_optional(value: &Option<String>) -> String {
         .unwrap_or_else(|| "null".to_string())
 }
 
+fn json_string_array(values: &[String]) -> String {
+    let mut text = String::from("[");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            text.push_str(", ");
+        }
+        let _ = write!(text, "\"{}\"", json_escape(value));
+    }
+    text.push(']');
+    text
+}
+
 fn json_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn shell_join(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| shell_escape(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_escape(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    if value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric()
+            || matches!(byte, b'_' | b'-' | b'.' | b'/' | b':' | b'=' | b'@')
+    }) {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+fn system_time_to_utc_iso8601(time: SystemTime) -> String {
+    let seconds = time
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs();
+    unix_seconds_to_utc_iso8601(seconds)
+}
+
+fn unix_seconds_to_utc_iso8601(seconds: u64) -> String {
+    let days = seconds / 86_400;
+    let seconds_of_day = seconds % 86_400;
+    let (year, month, day) = civil_from_days(days as i64);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
+    let z = days_since_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    let year = year + if month <= 2 { 1 } else { 0 };
+
+    (year, month as u32, day as u32)
 }
 
 fn print_help() {
@@ -1219,6 +1431,53 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    fn sample_manifest() -> RunManifest {
+        let config = GenerateConfig {
+            events: 64,
+            symbols: 4,
+            seed: 99,
+            ..GenerateConfig::for_scenario(Scenario::LateHeavy)
+        };
+        let stream = generate_events(&config);
+        let replay = replay_with_signal(
+            SignalChoice::LastFeatureSentiment,
+            &stream.events,
+            ReplayOptions::default(),
+            ReplayOrder::ReceivedTime,
+        )
+        .unwrap();
+        let report = run_checks_with_signal(
+            SignalChoice::LastFeatureSentiment,
+            &stream.events,
+            CheckOptions::sampled(8),
+        );
+        let events_output = stream.to_pipe_string();
+        let predictions_output = format_prediction_output(&replay);
+        let checks_output = format_check_report(&report);
+
+        RunManifest::new_with_context(
+            RunManifestInputs {
+                config: &config,
+                stream: &stream,
+                signal: SignalChoice::LastFeatureSentiment,
+                replay: &replay,
+                report: &report,
+                events_output: &events_output,
+                predictions_output: &predictions_output,
+                checks_output: &checks_output,
+            },
+            UNIX_EPOCH + Duration::from_secs(1_704_067_200),
+            args(&[
+                "asof-causality",
+                "run-suite",
+                "--out",
+                "/tmp/path with space",
+            ]),
+            Some("abcdef1234567890".to_string()),
+            Some("rustc test".to_string()),
+        )
     }
 
     #[test]
@@ -1269,5 +1528,76 @@ mod tests {
             .to_string();
 
         assert_eq!(error, "--max-cutoffs must be greater than 0");
+    }
+
+    #[test]
+    fn manifest_v2_contains_required_fields() {
+        let manifest = sample_manifest();
+        let json = format_run_manifest(&manifest);
+
+        assert!(json.contains("\"schema_version\": 2"));
+        assert!(json.contains("\"tool\": \"asof-causality\""));
+        assert!(json.contains("\"hash_algorithm\": \"fnv1a64\""));
+        assert!(json.contains("\"run_started_utc\": \"2024-01-01T00:00:00Z\""));
+        assert!(json
+            .contains("\"invocation\": \"asof-causality run-suite --out '/tmp/path with space'\""));
+        assert!(json.contains("\"invocation_args\": [\"asof-causality\", \"run-suite\", \"--out\", \"/tmp/path with space\"]"));
+        assert!(json.contains("\"code_commit_hash\": \"abcdef1234567890\""));
+        assert!(json.contains("\"rust_toolchain\": \"rustc test\""));
+        assert!(json.contains("\"data_fixture_hash\":"));
+        assert!(json.contains("\"prediction_output_hash\":"));
+        assert!(json.contains("\"checks_output_hash\":"));
+        assert!(json.contains("\"signal_version_hash\":"));
+        assert!(json.contains("\"transcript_hash\":"));
+        assert!(json.contains("\"checks_passed\": true"));
+    }
+
+    #[test]
+    fn manifest_records_check_summary_object() {
+        let manifest = sample_manifest();
+        let json = format_run_manifest(&manifest);
+
+        assert_eq!(manifest.checks.passed, 8);
+        assert_eq!(manifest.checks.failed, 0);
+        assert_eq!(manifest.checks.total, 8);
+        assert!(json.contains("\"checks\": { \"passed\": 8, \"failed\": 0, \"total\": 8 }"));
+    }
+
+    #[test]
+    fn invocation_args_serialize_as_json_array_with_escaping() {
+        let values = args(&["asof-causality", "quote\"arg", "slash\\arg"]);
+
+        assert_eq!(
+            json_string_array(&values),
+            "[\"asof-causality\", \"quote\\\"arg\", \"slash\\\\arg\"]"
+        );
+    }
+
+    #[test]
+    fn utc_formatter_formats_fixed_timestamps() {
+        assert_eq!(unix_seconds_to_utc_iso8601(0), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            unix_seconds_to_utc_iso8601(1_704_067_200),
+            "2024-01-01T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn stdout_provenance_labels_match_manifest_keys() {
+        let manifest = sample_manifest();
+        let output = format_provenance_stdout(Path::new("manifest.json"), &manifest);
+
+        assert!(output.contains("  hash_algorithm"));
+        assert!(output.contains("  data_fixture_hash"));
+        assert!(output.contains("  prediction_output_hash"));
+        assert!(output.contains("  checks_output_hash"));
+        assert!(output.contains("  signal_version_hash"));
+        assert!(output.contains("  transcript_hash"));
+        assert!(output.contains("  code_commit_hash"));
+        assert!(output.contains("  rust_toolchain"));
+        assert!(output.contains("  run_started_utc"));
+        assert!(!output.contains("  fixture_hash"));
+        assert!(!output.contains("  predictions_hash"));
+        assert!(!output.contains("  checks_hash"));
     }
 }

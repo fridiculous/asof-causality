@@ -31,8 +31,9 @@ keeps the full sweep available when the input size is appropriate.
 `run-suite` succeeds when it can generate an adversarial fixture from a seed,
 replay it, emit prediction records, run the checks, and write a summary report
 with the transcript hash. It also writes a `manifest.json` that links the data
-fixture, signal, check output, toolchain, optional commit, and transcript hashes.
-This makes the submission a complete workflow rather than only a library API.
+fixture, signal, check output, toolchain, invocation, UTC run timestamp, optional
+commit, transcript hash, and check counts. This makes the submission a complete
+workflow rather than only a library API.
 
 `negative-control` succeeds as a demonstration when the received-time engine emits
 zero impossible predictions and the observed-time baseline emits at least one on
