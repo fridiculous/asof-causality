@@ -3,9 +3,10 @@
 ```text
 generator or pipe fixture
   -> parse Event
+  -> derive stable SymbolId for replay state
   -> sort by (received_time, sequence, event_id)
   -> apply data events to internal StateStore
-  -> call Signal::predict(AsOfView, prediction_time)
+  -> call Signal::predict(AsOfView, symbol_id, prediction_time)
   -> append PredictionRecord
   -> hash deterministic transcript
 ```
@@ -14,7 +15,7 @@ generator or pipe fixture
 
 | Concept | Responsibility |
 |---|---|
-| `Event` | Two-clock input row with stable `event_id`, symbol, role, and payload |
+| `Event` | Two-clock input row with stable `event_id`, human symbol, derived `SymbolId`, role, and payload |
 | `StateStore` | Internal mutable state created from received events |
 | `AsOfView` | Public opaque read-only view exposed to signal code |
 | `Signal` | Restricted API over `AsOfView`, never the full event list |
@@ -34,6 +35,11 @@ to one-row examples.
 it keeps prediction records fixed-size and allocation-free in the replay path.
 Signals that need larger provenance should use a separate compact recipe hash or
 snapshot manifest rather than growing per-prediction heap state.
+
+Symbols follow the same hot-path shape. `Event` keeps the original symbol string
+for input and transcript rendering, but `StateStore` and `PredictionRecord` use
+a stable `SymbolId`. The replay path does not clone a symbol string per feature
+update or prediction.
 
 This artifact stops at the signal layer. A full strategy layer would consume
 `PredictionRecord`s through its own point-in-time `StrategyView`, maintain

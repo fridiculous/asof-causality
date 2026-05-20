@@ -15,7 +15,7 @@ pub use checks::{
 };
 pub use event::{Event, EventRole, ParseEventError, Sentiment};
 pub use generator::{generate_events, GenerateConfig, GeneratedStream, GenerationStats, Scenario};
-pub use ids::{EventKey, InputSet, MAX_INPUTS_PER_PREDICTION};
+pub use ids::{EventKey, InputSet, SymbolId, MAX_INPUTS_PER_PREDICTION};
 pub use log::{fnv1a64, PredictionLog, PredictionRecord};
 pub use replay::{
     parse_pipe_events, ReplayEngine, ReplayError, ReplayOptions, ReplayOrder, ReplayOutput,

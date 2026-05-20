@@ -51,7 +51,7 @@ Result:
 ```text
 PASS prefix_equivalence - all received-time prefixes matched full replay
 PASS future_mutation - mutating future rows did not change past predictions
-PASS late_arrival - late events were not used before received_time
+PASS late_arrival - late events were not used before their replay key
 PASS on_time_vs_late_contrast - moving n1 earlier changed prediction at 580 from 0 to 1
 PASS feature_correction_append_only - feature corrections did not rewrite predictions emitted before receipt
 PASS outcome_separation - disabling outcomes did not change predictions
@@ -161,12 +161,14 @@ is to find the per-symbol state slot. That is the useful lesson for this
 project: before moving work to a more complicated architecture, make the
 point-in-time state representation boring and indexed.
 
-Prediction provenance follows the same lesson. The replay path stores input
-provenance as compact inline event keys (`InputSet::Empty`, `InputSet::One`, or
-a fixed-capacity `InputSet::Many`) and renders those keys back to human-readable
-event IDs only when producing the transcript. The windowed built-in signal uses
-that bounded inline set so
-multi-input provenance does not allocate a `Vec` per prediction.
+The replay implementation now applies that lesson directly. `Event` keeps the
+human symbol string for input and transcript rendering, while `StateStore` and
+`PredictionRecord` use a stable `SymbolId` in the replay path. Prediction
+provenance follows the same shape: input provenance is stored as compact inline
+event keys (`InputSet::Empty`, `InputSet::One`, or fixed-capacity
+`InputSet::Many`) and rendered back to human-readable event IDs only when
+producing the transcript. The windowed built-in signal uses that bounded inline
+set so multi-input provenance does not allocate a `Vec` per prediction.
 
 ## Scope Of Conclusions
 

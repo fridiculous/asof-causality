@@ -1,4 +1,4 @@
-use crate::EventKey;
+use crate::{EventKey, SymbolId};
 use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
@@ -78,6 +78,7 @@ pub struct Event {
     pub received_time: u64,
     pub sequence: u64,
     pub role: EventRole,
+    pub symbol_key: SymbolId,
     pub symbol: String,
     pub payload: String,
 }
@@ -93,6 +94,7 @@ impl Event {
         payload: impl Into<String>,
     ) -> Self {
         let event_id = event_id.into();
+        let symbol = symbol.into();
         Self {
             event_key: EventKey::from_label(&event_id),
             event_id,
@@ -100,7 +102,8 @@ impl Event {
             received_time,
             sequence,
             role,
-            symbol: symbol.into(),
+            symbol_key: SymbolId::from_label(&symbol),
+            symbol,
             payload: payload.into(),
         }
     }

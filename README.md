@@ -20,6 +20,8 @@ predictions.
 - a restricted signal API that receives only an opaque `AsOfView`
 - built-in single-input and windowed multi-input signals
 - immutable `PredictionRecord` output with input-event provenance
+- interned symbol IDs in replay state and prediction records, rendered back to
+  human symbols in transcripts
 - adversarial leakage checks for late arrivals, feature corrections, outcomes, and
   shuffled physical input
 - a synthetic throughput benchmark comparing string-keyed state with interned

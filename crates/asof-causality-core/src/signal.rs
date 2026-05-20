@@ -1,14 +1,20 @@
-use crate::{AsOfView, SymbolSnapshot};
+use crate::{AsOfView, SymbolId, SymbolSnapshot};
 
 pub trait Signal {
-    fn predict(&self, view: AsOfView<'_>, symbol: &str, prediction_time: u64) -> SymbolSnapshot;
+    fn predict(&self, view: AsOfView<'_>, symbol: SymbolId, prediction_time: u64)
+        -> SymbolSnapshot;
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LastFeatureSentimentSignal;
 
 impl Signal for LastFeatureSentimentSignal {
-    fn predict(&self, view: AsOfView<'_>, symbol: &str, _prediction_time: u64) -> SymbolSnapshot {
+    fn predict(
+        &self,
+        view: AsOfView<'_>,
+        symbol: SymbolId,
+        _prediction_time: u64,
+    ) -> SymbolSnapshot {
         view.snapshot(symbol)
     }
 }
@@ -39,7 +45,12 @@ impl Default for WindowedFeatureSentimentSignal {
 }
 
 impl Signal for WindowedFeatureSentimentSignal {
-    fn predict(&self, view: AsOfView<'_>, symbol: &str, _prediction_time: u64) -> SymbolSnapshot {
+    fn predict(
+        &self,
+        view: AsOfView<'_>,
+        symbol: SymbolId,
+        _prediction_time: u64,
+    ) -> SymbolSnapshot {
         view.windowed_snapshot(symbol, self.window)
     }
 }

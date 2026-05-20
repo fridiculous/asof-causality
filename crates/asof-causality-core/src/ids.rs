@@ -16,6 +16,15 @@ impl EventKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SymbolId(pub u64);
+
+impl SymbolId {
+    pub fn from_label(label: &str) -> Self {
+        Self(fnv1a64(label.as_bytes()))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputSet {
     Empty,

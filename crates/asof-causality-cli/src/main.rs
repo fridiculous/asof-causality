@@ -128,18 +128,28 @@ fn negative_control(args: &[String]) -> Result<(), Box<dyn Error>> {
         .iter()
         .map(|event| (event.event_key, event.event_id.clone()))
         .collect();
+    let symbol_labels: BTreeMap<_, _> = events
+        .iter()
+        .map(|event| (event.symbol_key, event.symbol.clone()))
+        .collect();
 
     println!(
         "negative-control path={path} signal={} events={}",
         signal.as_str(),
         events.len()
     );
-    print_engine_comparison("received-time replay", &received_time, &event_labels);
+    print_engine_comparison(
+        "received-time replay",
+        &received_time,
+        &event_labels,
+        &symbol_labels,
+    );
     println!();
     print_engine_comparison(
         "observed-time replay (leaky baseline)",
         &observed_time,
         &event_labels,
+        &symbol_labels,
     );
 
     let correct_impossible = received_time.predictions.impossible_predictions();
@@ -545,6 +555,7 @@ fn print_engine_comparison(
     name: &str,
     output: &ReplayOutput,
     event_labels: &BTreeMap<asof_causality_core::EventKey, String>,
+    symbol_labels: &BTreeMap<asof_causality_core::SymbolId, String>,
 ) {
     let impossible = output.predictions.impossible_predictions();
     let status = if impossible.is_empty() {
@@ -561,12 +572,12 @@ fn print_engine_comparison(
     println!("  impossible_predictions={}", impossible.len());
 
     for record in impossible.iter().take(8) {
-        println!("  {}", record.canonical_line(event_labels));
+        println!("  {}", record.canonical_line(event_labels, symbol_labels));
         println!(
             "  impossible: input replay key {} was used by prediction key {}",
             record.max_input_replay_key(event_labels),
             record
-                .canonical_line(event_labels)
+                .canonical_line(event_labels, symbol_labels)
                 .split('|')
                 .next()
                 .unwrap_or("-")

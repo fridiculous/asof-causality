@@ -82,14 +82,16 @@ impl<S: Signal> ReplayEngine<S> {
             match event.role {
                 EventRole::Feature | EventRole::FeatureCorrection => state.writer().apply(event)?,
                 EventRole::Prediction => {
-                    let snapshot =
-                        self.signal
-                            .predict(state.as_of_view(), &event.symbol, event.received_time);
+                    let snapshot = self.signal.predict(
+                        state.as_of_view(),
+                        event.symbol_key,
+                        event.received_time,
+                    );
                     predictions.append(PredictionRecord {
                         prediction_event_key: event.event_key,
                         prediction_time: event.received_time,
                         prediction_sequence: event.sequence,
-                        symbol: event.symbol.clone(),
+                        symbol: event.symbol_key,
                         signal_value: snapshot.signal_value,
                         input_event_ids_used: snapshot.input_event_ids_used,
                         max_input_received_time: snapshot.max_input_received_time,

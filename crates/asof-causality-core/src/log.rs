@@ -1,4 +1,4 @@
-use crate::{Event, EventKey, InputSet};
+use crate::{Event, EventKey, InputSet, SymbolId};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
@@ -7,7 +7,7 @@ pub struct PredictionRecord {
     pub prediction_event_key: EventKey,
     pub prediction_time: u64,
     pub prediction_sequence: u64,
-    pub symbol: String,
+    pub symbol: SymbolId,
     pub signal_value: i8,
     pub input_event_ids_used: InputSet,
     pub max_input_received_time: u64,
@@ -16,7 +16,11 @@ pub struct PredictionRecord {
 }
 
 impl PredictionRecord {
-    pub fn canonical_line(&self, event_labels: &BTreeMap<EventKey, String>) -> String {
+    pub fn canonical_line(
+        &self,
+        event_labels: &BTreeMap<EventKey, String>,
+        symbol_labels: &BTreeMap<SymbolId, String>,
+    ) -> String {
         format!(
             "{}|{}|{}|{}|{}",
             format_replay_key(
@@ -25,7 +29,7 @@ impl PredictionRecord {
                 self.prediction_event_key,
                 event_labels
             ),
-            self.symbol,
+            label_for_symbol(self.symbol, symbol_labels),
             self.signal_value,
             self.input_event_ids_used.format_with(event_labels),
             self.max_input_replay_key(event_labels)
@@ -68,6 +72,7 @@ impl PredictionRecord {
 pub struct PredictionLog {
     records: Vec<PredictionRecord>,
     event_labels: BTreeMap<EventKey, String>,
+    symbol_labels: BTreeMap<SymbolId, String>,
 }
 
 impl PredictionLog {
@@ -76,10 +81,15 @@ impl PredictionLog {
             .iter()
             .map(|event| (event.event_key, event.event_id.clone()))
             .collect();
+        let symbol_labels = events
+            .iter()
+            .map(|event| (event.symbol_key, event.symbol.clone()))
+            .collect();
 
         Self {
             records: Vec::new(),
             event_labels,
+            symbol_labels,
         }
     }
 
@@ -94,7 +104,11 @@ impl PredictionLog {
     pub fn transcript(&self) -> String {
         let mut output = String::new();
         for record in &self.records {
-            let _ = writeln!(output, "{}", record.canonical_line(&self.event_labels));
+            let _ = writeln!(
+                output,
+                "{}",
+                record.canonical_line(&self.event_labels, &self.symbol_labels)
+            );
         }
         output
     }
@@ -130,6 +144,13 @@ fn label_for(event_key: EventKey, event_labels: &BTreeMap<EventKey, String>) -> 
         .get(&event_key)
         .cloned()
         .unwrap_or_else(|| format!("event_key:{:016x}", event_key.0))
+}
+
+fn label_for_symbol(symbol: SymbolId, symbol_labels: &BTreeMap<SymbolId, String>) -> String {
+    symbol_labels
+        .get(&symbol)
+        .cloned()
+        .unwrap_or_else(|| format!("symbol:{:016x}", symbol.0))
 }
 
 pub fn fnv1a64(bytes: &[u8]) -> u64 {

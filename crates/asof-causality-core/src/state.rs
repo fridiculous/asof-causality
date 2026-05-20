@@ -1,4 +1,4 @@
-use crate::{Event, EventKey, InputSet, Sentiment, MAX_INPUTS_PER_PREDICTION};
+use crate::{Event, EventKey, InputSet, Sentiment, SymbolId, MAX_INPUTS_PER_PREDICTION};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +75,7 @@ impl Default for FeatureObservation {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct StateStore {
-    by_symbol: BTreeMap<String, SymbolState>,
+    by_symbol: BTreeMap<SymbolId, SymbolState>,
 }
 
 impl StateStore {
@@ -104,7 +104,7 @@ impl StateWriter<'_> {
 
         self.store
             .by_symbol
-            .entry(event.symbol.clone())
+            .entry(event.symbol_key)
             .or_default()
             .push(FeatureObservation {
                 sentiment,
@@ -123,8 +123,8 @@ pub struct AsOfView<'a> {
 }
 
 impl AsOfView<'_> {
-    pub fn snapshot(&self, symbol: &str) -> SymbolSnapshot {
-        match self.store.by_symbol.get(symbol) {
+    pub fn snapshot(&self, symbol: SymbolId) -> SymbolSnapshot {
+        match self.store.by_symbol.get(&symbol) {
             Some(state) => match state.latest() {
                 Some(observation) => SymbolSnapshot {
                     signal_value: observation.sentiment.signal_value(),
@@ -139,8 +139,8 @@ impl AsOfView<'_> {
         }
     }
 
-    pub fn windowed_snapshot(&self, symbol: &str, window: usize) -> SymbolSnapshot {
-        let Some(state) = self.store.by_symbol.get(symbol) else {
+    pub fn windowed_snapshot(&self, symbol: SymbolId, window: usize) -> SymbolSnapshot {
+        let Some(state) = self.store.by_symbol.get(&symbol) else {
             return empty_snapshot();
         };
 
@@ -231,7 +231,9 @@ mod tests {
             store.writer().apply(event).unwrap();
         }
 
-        let snapshot = store.as_of_view().windowed_snapshot("XYZ", 3);
+        let snapshot = store
+            .as_of_view()
+            .windowed_snapshot(events[0].symbol_key, 3);
 
         assert_eq!(snapshot.signal_value, 1);
         assert_eq!(snapshot.input_event_ids_used.len(), 3);

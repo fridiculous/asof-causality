@@ -294,7 +294,7 @@ where
         .filter(|event| event.role.updates_signal_state())
     {
         let Some(target_prediction) = baseline.iter().find(|prediction| {
-            prediction.symbol == late_event.symbol
+            prediction.symbol == late_event.symbol_key
                 && late_event.observed_time <= prediction.prediction_time
                 && prediction.prediction_time < late_event.received_time
         }) else {
@@ -600,7 +600,7 @@ f1|90|100|2|feature|XYZ|sentiment=positive
             fn predict(
                 &self,
                 _view: AsOfView<'_>,
-                _symbol: &str,
+                _symbol: crate::SymbolId,
                 _prediction_time: u64,
             ) -> SymbolSnapshot {
                 SymbolSnapshot {
