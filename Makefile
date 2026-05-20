@@ -1,11 +1,27 @@
-.PHONY: check test replay check-fixture run-suite-late-heavy verify-real-data-demo bench
+.PHONY: ci check test doc build release-smoke package replay check-fixture run-suite-late-heavy verify-real-data-demo bench
+
+ci: check test doc build release-smoke package
 
 check:
 	cargo fmt --check
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets -- -D warnings
 
 test:
-	cargo test --workspace
+	cargo test --workspace --locked
+
+doc:
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+
+build:
+	cargo build --release --locked
+
+release-smoke: build
+	target/release/asof-causality replay examples/late-arrival.pipe
+	target/release/asof-causality check examples/late-arrival.pipe
+	target/release/asof-causality negative-control examples/lookahead-negative-control.pipe
+
+package:
+	cargo package --locked --allow-dirty --list -p asof-causality-core
 
 replay:
 	cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe

@@ -8,38 +8,50 @@ use std::collections::BTreeMap;
 pub const MAX_INPUTS_PER_PREDICTION: usize = 8;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Stable compact event identifier used in provenance records.
 pub struct EventKey(pub u64);
 
 impl EventKey {
+    /// Derives an event key from a human-readable label.
     pub fn from_label(label: &str) -> Self {
         Self(fnv1a64(label.as_bytes()))
     }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Stable compact symbol identifier used by replay state and records.
 pub struct SymbolId(pub u64);
 
 impl SymbolId {
+    /// Derives a symbol identifier from a human-readable symbol label.
     pub fn from_label(label: &str) -> Self {
         Self(fnv1a64(label.as_bytes()))
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Fixed-capacity set of input event keys used by a prediction.
 pub enum InputSet {
+    /// No input event was used.
     Empty,
+    /// A single input event was used.
     One(EventKey),
+    /// Multiple ordered input events were used.
     Many {
+        /// Fixed-capacity event-key storage.
         keys: [EventKey; MAX_INPUTS_PER_PREDICTION],
+        /// Number of populated keys.
         len: u8,
     },
 }
 
 impl InputSet {
+    /// Returns an empty input set.
     pub fn empty() -> Self {
         Self::Empty
     }
 
+    /// Returns an input set containing one key.
     pub fn one(event_key: EventKey) -> Self {
         Self::One(event_key)
     }
@@ -73,6 +85,7 @@ impl InputSet {
         }
     }
 
+    /// Returns the number of input keys in the set.
     pub fn len(self) -> usize {
         match self {
             Self::Empty => 0,
@@ -81,10 +94,12 @@ impl InputSet {
         }
     }
 
+    /// Returns whether the set contains no input keys.
     pub fn is_empty(self) -> bool {
         matches!(self, Self::Empty)
     }
 
+    /// Iterates over input keys in deterministic order.
     pub fn iter(self) -> InputSetIter {
         let mut keys = [EventKey::default(); MAX_INPUTS_PER_PREDICTION];
         let len = match self {
@@ -109,10 +124,12 @@ impl InputSet {
         }
     }
 
+    /// Returns whether the set contains `event_key`.
     pub fn contains_key(self, event_key: EventKey) -> bool {
         self.iter().any(|key| key == event_key)
     }
 
+    /// Returns the one key if the set contains exactly one input.
     pub fn single_key(self) -> Option<EventKey> {
         match self {
             Self::Empty => None,
@@ -122,6 +139,7 @@ impl InputSet {
         }
     }
 
+    /// Returns the source received time when at least one input was used.
     pub fn max_received_time(self, received_time: u64) -> u64 {
         match self {
             Self::Empty => 0,
@@ -129,6 +147,7 @@ impl InputSet {
         }
     }
 
+    /// Formats event keys with human labels when available.
     pub fn format_with(self, labels: &BTreeMap<EventKey, String>) -> String {
         match self {
             Self::Empty => "-".to_string(),
@@ -143,6 +162,7 @@ impl InputSet {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Iterator over a fixed-capacity [`InputSet`].
 pub struct InputSetIter {
     keys: [EventKey; MAX_INPUTS_PER_PREDICTION],
     len: usize,
@@ -150,6 +170,7 @@ pub struct InputSetIter {
 }
 
 impl Iterator for InputSetIter {
+    /// Input event key yielded by the iterator.
     type Item = EventKey;
 
     fn next(&mut self) -> Option<Self::Item> {

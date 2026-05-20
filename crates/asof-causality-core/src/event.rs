@@ -4,14 +4,20 @@ use std::fmt;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Role of an event in the causality replay stream.
 pub enum EventRole {
+    /// Feature information that signal code may use after its received time.
     Feature,
+    /// Append-only correction to earlier feature information.
     FeatureCorrection,
+    /// Prediction point where the replay engine asks a signal for a value.
     Prediction,
+    /// Future evaluation data that must not affect signal state.
     Outcome,
 }
 
 impl EventRole {
+    /// Returns the canonical pipe-format name for this role.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Feature => "feature",
@@ -21,6 +27,7 @@ impl EventRole {
         }
     }
 
+    /// Returns whether this role can update signal-visible state.
     pub fn updates_signal_state(self) -> bool {
         matches!(self, Self::Feature | Self::FeatureCorrection)
     }
@@ -41,19 +48,27 @@ impl FromStr for EventRole {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Discrete feature sentiment used by built-in example signals.
 pub enum Sentiment {
+    /// Negative sentiment, mapped to signal value `-1`.
     Negative,
+    /// Neutral sentiment, mapped to signal value `0`.
     Neutral,
+    /// Positive sentiment, mapped to signal value `1`.
     Positive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Parsed feature payload values for signal-state updates.
 pub struct FeatureValues {
+    /// Optional discrete sentiment value.
     pub sentiment: Option<Sentiment>,
+    /// Optional numeric score value.
     pub score: Option<f64>,
 }
 
 impl Sentiment {
+    /// Converts sentiment into the built-in prediction signal value.
     pub fn signal_value(self) -> i8 {
         match self {
             Self::Negative => -1,
@@ -77,19 +92,30 @@ impl FromStr for Sentiment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Two-clock event row consumed by the replay engine.
 pub struct Event {
+    /// Human-readable event identifier from the input stream.
     pub event_id: String,
+    /// Stable compact key derived from `event_id`.
     pub event_key: EventKey,
+    /// Time the event was observed in the source domain.
     pub observed_time: u64,
+    /// Time the event became available to the replay engine.
     pub received_time: u64,
+    /// Tie-breaker within the replay timestamp.
     pub sequence: u64,
+    /// Event role controlling how replay handles the row.
     pub role: EventRole,
+    /// Stable compact key derived from `symbol`.
     pub symbol_key: SymbolId,
+    /// Human-readable symbol label.
     pub symbol: String,
+    /// Opaque comma-delimited payload parsed by accessors.
     pub payload: String,
 }
 
 impl Event {
+    /// Builds an event and derives stable event and symbol keys.
     pub fn new(
         event_id: impl Into<String>,
         observed_time: u64,
@@ -114,6 +140,7 @@ impl Event {
         }
     }
 
+    /// Parses one pipe-delimited event record.
     pub fn from_pipe_record(line: &str) -> Result<Self, ParseEventError> {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -141,6 +168,7 @@ impl Event {
         ))
     }
 
+    /// Serializes the event back to the pipe-delimited fixture format.
     pub fn to_pipe_record(&self) -> String {
         format!(
             "{}|{}|{}|{}|{}|{}|{}",
@@ -154,14 +182,17 @@ impl Event {
         )
     }
 
+    /// Returns the correct replay ordering key.
     pub fn replay_key(&self) -> (u64, u64, &str) {
         (self.received_time, self.sequence, self.event_id.as_str())
     }
 
+    /// Returns the deliberately leaky observed-time ordering key.
     pub fn observed_key(&self) -> (u64, u64, &str) {
         (self.observed_time, self.sequence, self.event_id.as_str())
     }
 
+    /// Parses the optional `sentiment` payload field for feature roles.
     pub fn sentiment(&self) -> Result<Option<Sentiment>, ParseEventError> {
         if !self.role.updates_signal_state() {
             return Ok(None);
@@ -172,6 +203,7 @@ impl Event {
             .unwrap_or(Ok(None))
     }
 
+    /// Parses the optional `score` payload field for feature roles.
     pub fn score(&self) -> Result<Option<f64>, ParseEventError> {
         if !self.role.updates_signal_state() {
             return Ok(None);
@@ -182,6 +214,7 @@ impl Event {
             .unwrap_or(Ok(None))
     }
 
+    /// Parses all signal-state feature values from the payload.
     pub fn feature_values(&self) -> Result<Option<FeatureValues>, ParseEventError> {
         if !self.role.updates_signal_state() {
             return Ok(None);
@@ -202,6 +235,7 @@ impl Event {
         Ok(Some(values))
     }
 
+    /// Returns a copy with future feature payloads changed for mutation checks.
     pub fn with_mutated_future_payload(&self) -> Self {
         let mut mutated = self.clone();
         if mutated.role.updates_signal_state() {
@@ -218,23 +252,38 @@ impl Event {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Error returned while parsing event rows or feature payloads.
 pub enum ParseEventError {
+    /// The input record is empty.
     Empty,
+    /// A required field was empty.
     MissingField {
+        /// Name of the missing field.
         field: &'static str,
     },
+    /// The input record had the wrong number of pipe-delimited fields.
     WrongFieldCount {
+        /// Expected field count.
         expected: usize,
+        /// Actual field count.
         actual: usize,
     },
+    /// A numeric field could not be parsed.
     InvalidNumber {
+        /// Name of the numeric field.
         field: &'static str,
+        /// Rejected value.
         value: String,
     },
+    /// The role field was not recognized.
     InvalidRole(String),
+    /// The sentiment value was not recognized.
     InvalidSentiment(String),
+    /// A feature event did not contain any supported feature value.
     MissingPayloadField {
+        /// Event identifier for the malformed row.
         event_id: String,
+        /// Missing payload field name.
         field: &'static str,
     },
 }
