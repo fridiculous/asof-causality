@@ -80,7 +80,7 @@ predictions that could not have used them in live replay.
   `outcome`
 - deterministic replay by `(received_time, sequence, event_id)`
 - a restricted signal API that receives only an opaque `AsOfView`
-- built-in single-input and windowed multi-input signals
+- built-in single-input, windowed multi-input, and numeric Z-score signals
 - immutable `PredictionRecord` output with input-event provenance
 - JSONL audit output with a checked schema in `docs/audit.schema.json`
 - interned symbol IDs in replay state and prediction records, rendered back to
@@ -92,9 +92,10 @@ predictions that could not have used them in live replay.
 - a synthetic throughput benchmark comparing string-keyed state with interned
   symbol IDs
 
-The built-in signals are intentionally simple: one reads the last received
-per-symbol feature sentiment, and one reads a bounded recent feature window. The
-non-trivial part is the correctness cage around the signal.
+The kernel is signal-agnostic. The built-ins include deliberately simple
+sentiment signals and a numeric `windowed-zscore` signal over continuous
+`score=...` payloads. The non-trivial part is the correctness cage around the
+signal: all of them receive only an opaque as-of view and emit provenance.
 
 ## Quick Start
 
@@ -106,6 +107,7 @@ cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
 cargo run -p asof-causality-cli -- audit examples/late-arrival.pipe
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
+cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
@@ -143,7 +145,8 @@ cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
 Prints deterministic prediction records and a transcript hash.
 
 Use `--signal windowed-feature-sentiment` to run the same replay through the
-bounded multi-input signal. The default is `last-feature-sentiment`.
+bounded multi-input signal, or `--signal windowed-zscore` for numeric
+`score=...` features. The default is `last-feature-sentiment`.
 
 ```sh
 cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
@@ -201,11 +204,11 @@ the checks, and write `events.pipe`, `predictions.pipe`, `checks.txt`, and
 `summary.md`.
 
 It also writes `manifest.json`, the run certificate for the output directory.
-The manifest links the fixture hash, signal-version hash, prediction-output
-hash, checks-output hash, transcript hash, hash algorithm, invocation, UTC run
-timestamp, check counts, Rust toolchain, and optional Git commit. A reviewer can
-compare the manifest and artifacts to verify that a run's predictions, checks,
-and reported transcript belong to the same execution.
+The manifest links the fixture hash, prediction-output hash, checks-output hash,
+transcript hash, hash algorithm, invocation, UTC run timestamp, check counts,
+Rust toolchain, and optional Git commit. A reviewer can compare the manifest and
+artifacts to verify that a run's predictions, checks, and reported transcript
+belong to the same execution.
 
 ```sh
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
@@ -231,6 +234,15 @@ demonstration is:
 
 The leaky baseline is intentionally included as a negative control; it shows the
 class of impossible prediction that the normal engine prevents.
+
+```sh
+cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
+```
+
+The numeric fixture exercises the same boundary with continuous inputs. In the
+broken observed-time baseline, `p_before_late_score` can see `px_late_spike`
+before it was received. The received-time engine cannot, and the audit invariant
+marks the spike as a future input.
 
 ```sh
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024

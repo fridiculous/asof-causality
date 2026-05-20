@@ -23,5 +23,7 @@ pub use log::{
 pub use replay::{
     parse_pipe_events, ReplayEngine, ReplayError, ReplayOptions, ReplayOrder, ReplayOutput,
 };
-pub use signal::{LastFeatureSentimentSignal, Signal, WindowedFeatureSentimentSignal};
+pub use signal::{
+    LastFeatureSentimentSignal, Signal, WindowedFeatureSentimentSignal, WindowedZScoreSignal,
+};
 pub use state::{AsOfView, SymbolSnapshot};

@@ -231,10 +231,15 @@ pub fn hex_digest(digest: &FeatureRecipeHash) -> String {
     text
 }
 
-pub fn feature_recipe_hash(signal_name: &str, inputs: InputSet) -> FeatureRecipeHash {
+pub fn feature_recipe_hash(
+    signal_name: &str,
+    config_descriptor: &str,
+    inputs: InputSet,
+) -> FeatureRecipeHash {
     let mut recipe = String::new();
     let _ = writeln!(recipe, "schema_version=1");
     let _ = writeln!(recipe, "signal={signal_name}");
+    let _ = writeln!(recipe, "config={config_descriptor}");
     for input_key in inputs.iter() {
         let _ = writeln!(recipe, "input_key:{:016x}", input_key.0);
     }

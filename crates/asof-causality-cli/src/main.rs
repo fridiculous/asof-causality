@@ -3,6 +3,7 @@ use asof_causality_core::{
     run_representation_benchmark, CheckOptions, CheckReport, Event, EventKey, EventRole,
     GenerateConfig, GeneratedStream, LastFeatureSentimentSignal, ReplayEngine, ReplayOptions,
     ReplayOrder, ReplayOutput, Scenario, SymbolId, WindowedFeatureSentimentSignal,
+    WindowedZScoreSignal,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Number;
@@ -46,6 +47,7 @@ enum SignalChoice {
     #[default]
     LastFeatureSentiment,
     WindowedFeatureSentiment,
+    WindowedZScore,
 }
 
 impl SignalChoice {
@@ -53,8 +55,9 @@ impl SignalChoice {
         match value {
             "last-feature-sentiment" => Ok(Self::LastFeatureSentiment),
             "windowed-feature-sentiment" => Ok(Self::WindowedFeatureSentiment),
+            "windowed-zscore" => Ok(Self::WindowedZScore),
             other => Err(format!(
-                "unknown signal {other}; expected last-feature-sentiment or windowed-feature-sentiment"
+                "unknown signal {other}; expected last-feature-sentiment, windowed-feature-sentiment, or windowed-zscore"
             )
             .into()),
         }
@@ -64,6 +67,7 @@ impl SignalChoice {
         match self {
             Self::LastFeatureSentiment => "last-feature-sentiment",
             Self::WindowedFeatureSentiment => "windowed-feature-sentiment",
+            Self::WindowedZScore => "windowed-zscore",
         }
     }
 }
@@ -320,6 +324,8 @@ fn replay_with_signal(
             ReplayEngine::with_signal(WindowedFeatureSentimentSignal::default())
                 .replay_with_order(events, options, order)
         }
+        SignalChoice::WindowedZScore => ReplayEngine::with_signal(WindowedZScoreSignal::default())
+            .replay_with_order(events, options, order),
     }
 }
 
@@ -338,6 +344,11 @@ fn run_checks_with_signal(
             events,
             options,
             WindowedFeatureSentimentSignal::default(),
+        ),
+        SignalChoice::WindowedZScore => run_adversarial_checks_with_options_for_signal(
+            events,
+            options,
+            WindowedZScoreSignal::default(),
         ),
     }
 }
@@ -1979,6 +1990,7 @@ fn print_help() {
     println!("signals:");
     println!("  last-feature-sentiment (default)");
     println!("  windowed-feature-sentiment");
+    println!("  windowed-zscore");
 }
 
 #[cfg(test)]
@@ -2070,6 +2082,18 @@ mod tests {
 
         assert_eq!(path, "examples/lookahead-negative-control.pipe");
         assert_eq!(signal, SignalChoice::WindowedFeatureSentiment);
+    }
+
+    #[test]
+    fn parses_windowed_zscore_signal() {
+        let (_, signal) = parse_path_signal_args(
+            &args(&["--signal", "windowed-zscore"]),
+            "default.pipe",
+            "replay",
+        )
+        .unwrap();
+
+        assert_eq!(signal, SignalChoice::WindowedZScore);
     }
 
     #[test]

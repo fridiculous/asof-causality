@@ -36,9 +36,10 @@ useful context, not proof that a run is trustworthy.
 `PredictionRecord` stores a bounded inline set of input event keys plus a fixed
 BLAKE3 `feature_recipe_hash`. For larger feature sets, the right extension is a
 compact recipe digest rather than a growing per-prediction key list. Today the
-digest commits to the signal name and ordered input event keys, not the input
-payload values or signal configuration. Later it can commit to a feature recipe
-or snapshot manifest without changing the core causality invariant.
+digest commits to the signal name, signal configuration descriptor, and ordered
+input event keys, not the input payload values. Later it can commit to value
+hashes, a feature recipe, or snapshot manifest without changing the core
+causality invariant.
 
 ## Parquet Adapter
 
