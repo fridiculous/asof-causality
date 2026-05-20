@@ -15,7 +15,7 @@ reviewers who need to defend historical claims, methodology transparency has to
 be executable. Every prediction carries the input event IDs it used and the
 maximum replay key of those inputs. That turns "could this result have known
 what it claims to know?" into a checkable invariant rather than a README
-assertion. The system evaluates causality, not PnL.
+assertion. The system evaluates causality, not strategy performance.
 
 ## Goal
 

@@ -81,18 +81,18 @@ GenerateConfig(seed, scenario, late_rate, feature_correction_rate)
   -> ReplayEngine(predictions.pipe)
   -> adversarial checks(checks.txt)
   -> summary.md with transcript hash and check results
-  -> manifest.json with hash-linked run identity
+  -> manifest.json run certificate with hash-linked run identity
 ```
 
 Generated fixtures are deterministic for a fixed seed. The `late-heavy`
 scenario also shuffles physical file order so deterministic replay is exercised
 against out-of-order input rather than only a hand-written toy fixture.
 
-The manifest records the scenario, signal, invocation, UTC run timestamp,
-optional Git commit, Rust toolchain, hash algorithm, fixture hash, prediction
-output hash, checks output hash, signal-version hash, final transcript hash, and
-check pass/fail counts. It is meant to make a run verifiable from artifacts
-rather than from prose.
+The manifest is the run certificate for the output directory. It records the
+scenario, signal, invocation, UTC run timestamp, optional Git commit, Rust
+toolchain, hash algorithm, fixture hash, prediction output hash, checks output
+hash, signal-version hash, final transcript hash, and check pass/fail counts. It
+is meant to make a run verifiable from artifacts rather than from prose.
 
 ## Negative Control
 
