@@ -11,6 +11,18 @@ generator or pipe fixture
   -> hash deterministic transcript
 ```
 
+```mermaid
+flowchart LR
+  CLI["asof-cli<br/>commands + artifacts"] --> Core["asof-causality<br/>replay + checks"]
+  Signals["asof-signals<br/>Signal registry + built-ins"] --> Core
+
+  Core --> View["AsOfView<br/>opaque signal API"]
+  View --> Signals
+
+  Core --> Records["PredictionRecord<br/>value + provenance"]
+  Records --> Schemas["schemas/<br/>audit + manifest contracts"]
+```
+
 ## Core Concepts
 
 | Concept | Responsibility |
@@ -29,20 +41,25 @@ generator or pipe fixture
 
 `StateStore` and `StateWriter` are crate-private. Signal authors receive a
 replay-local `SymbolSlot` and can query `AsOfView`, but cannot construct it,
-mutate it, or access the full event list through the signal API.
-`Signal::evaluate` also receives the `as_of_timestamp` for the replay event
-being evaluated; the view contains only state received by that replay key. The
-default `last-feature-sentiment` signal returns the latest feature value and
-cites one input event. The `windowed-feature-sentiment` signal returns a
-bounded inline set of recent feature inputs, proving the provenance path is not
-limited to one-row examples. The `windowed-zscore` signal reads `score=...`
-fields with
+mutate it, or access the full event list through the signal API. This prevents
+mechanical lookahead through the kernel surface; it does not detect semantic or
+out-of-band knowledge encoded by the signal author or upstream data. The kernel
+has no built-in default signal.
+
+`Signal::evaluate` also receives `as_of_timestamp` for the replay event being
+evaluated. That timestamp is informational for signal logic; it is not the
+filtering mechanism. Causality comes from replay order: the engine applies only
+events available at the prediction's replay key before constructing `AsOfView`.
+
+The `asof-signals` crate registers the built-ins. `last-feature-sentiment`
+returns the latest feature value and cites one input event.
+`windowed-feature-sentiment` returns a bounded inline set of recent feature
+inputs. `windowed-zscore` reads `score=...` fields with
 `FeatureDType::FixedDecimal { scale: 6 }` through the same opaque view and
-buckets the latest rolling Z-score to `-1`, `0`, or `1`, showing that the kernel
-is not sentiment-coupled.
+buckets the latest rolling Z-score to `-1`, `0`, or `1`.
 `vol-adjusted-momentum` implements a fixed-parameter fast/slow moving-average
-crossover gated by realized volatility and returns the same `SignalEvaluation`
-shape.
+crossover gated by realized volatility. These prove the provenance path is not
+limited to one-row examples and that the kernel is not sentiment-coupled.
 
 Built-in feature schema is intentionally small: `sentiment` has dtype `Text`
 and `score` has dtype `FixedDecimal { scale: 6 }`. There is no separate
@@ -61,26 +78,94 @@ may format rates with floats, but prediction transcripts do not depend on
 floating-point arithmetic.
 
 For a public real-data demonstration of the same bitemporal boundary on
-ALFRED/FRED source data, see `docs/real-data-demo.md`.
+ALFRED/FRED source data, see [demo.md](demo.md).
 
-`InputSet::Many` stores up to eight event keys inline. That cap is deliberate:
-it keeps `PredictionRecord`s fixed-size and allocation-free in the replay path.
-Signals that need larger provenance should use a separate compact recipe hash or
-snapshot manifest rather than growing per-prediction heap state.
+`InputSet::Many` stores up to eight event keys inline, and per-symbol
+`SymbolState` also remembers only the most recent eight feature observations.
+That cap is deliberate: it keeps both state reads and `PredictionRecord`
+provenance fixed-size and allocation-free in the replay path. It also means the
+current engine cannot compute a 50-observation mean from internal state. Signals
+that need larger history or provenance should use a separate compact recipe hash
+or snapshot manifest rather than growing per-prediction heap state.
+
+That larger-window path is not proven by the current inline state/provenance
+cage. The checked-in demo covers bounded built-in signals over text and
+fixed-decimal payloads; recipe-hash-backed snapshots, larger input sets, and
+richer numeric representations are roadmap items.
 
 The CLI `audit` command renders those records as JSONL. The public shape is
-documented in `docs/audit.schema.json`. The JSONL audit record includes a BLAKE3
-`feature_recipe_hash`, `causally_valid`, optional
+documented in `schemas/audit.schema.json`. The JSONL audit record includes a
+BLAKE3 `feature_recipe_hash`, `causally_valid`, optional
 `matched_stored_prediction`, and optional outcome attribution. Stored
-predictions are matched by `(symbol, prediction_replay_key)`. Outcomes must
-explicitly name the prediction replay key; the kernel attaches outcome values
-but does not score them.
+predictions are matched by `(symbol, prediction_replay_key)`. The current CLI
+outcome attachment uses the same strict replay key so fixture audits are
+unambiguous; it attaches outcome values to audit records but does not score
+them. Production outcome joins should use economic target keys and resolve
+replay identity inside the platform boundary.
+
+## Ingestion Boundary
+
+The pipe parser is fail-fast, not quarantine-based. Blank lines and `#` comments
+are ignored, but every data row must have exactly seven pipe-delimited fields:
+
+```text
+event_id|observed_time|received_time|received_sequence_number|role|symbol|payload
+```
+
+`event_id` and `symbol` must be non-empty, timestamps and sequence numbers must
+parse as `u64`, and `role` must be recognized. Missing `received_time`, invalid
+numbers, malformed rows, duplicate event IDs, duplicate
+`(received_time, received_sequence_number)` positions, event-key collisions, and
+symbol identity collisions abort the run with an error. The CLI reports the
+error and exits nonzero; the parser does not panic and continue with partial
+data.
+
+Payload parsing is role-dependent. Feature and feature-correction rows must
+contain a supported `sentiment=...` or `score=...` value by the time replay
+applies them. Malformed feature values abort replay. Outcome payloads are opaque
+to the core replay engine; the CLI parses `prediction_replay_key` and numeric
+`return_bps` only when attaching outcomes for `audit`.
+
+The parser does not reject `observed_time > received_time`. The kernel's
+causality invariant is defined on replay order, not calendar semantics. If a
+production dataset forbids that relationship, enforce it in the upstream
+adapter or add an explicit validation pass before replay.
+
+## The Root Of Trust
+
+The current bitemporal engine enforces causality from the `received_time`
+provided in the event schema. That is enough for deterministic fixtures,
+negative controls, and local regression tests, but it is not a production
+security boundary. If a researcher can freely write the event file, they can
+also forge historical availability by backdating `received_time`.
+
+In a deployed system, `received_time` should be bound to an infrastructural root
+of trust rather than self-reported by the payload. Examples include a Kafka
+append timestamp, warehouse ingestion metadata, an S3 object creation or object
+lock timestamp, or a hardware-stamped packet capture from a market-data packet
+broker. The causality engine should ingest from that authoritative boundary or
+from an adapter that preserves and signs that boundary.
+
+The current `manifest.json` binds the run to input and output hashes, but it
+does not prove that the input timestamps were authentic. BLAKE3 commits the
+artifacts to each other; it is not evidence that a user-provided
+`received_time` is real. A production manifest should also bind the replay to
+the authoritative timestamp source, adapter version, and source object/message
+commitments. With that additional root of trust, the audit can argue not only
+that the signal respected the provided timeline, but that the timeline itself
+was not successfully forged by the signal author or research pipeline.
 
 The current `feature_recipe_hash` is intentionally an input-set commitment. It
 commits to the signal name, signal configuration descriptor, and ordered input
 event keys. It does not separately commit to event payload values or replay
 ordering metadata. Later schema versions can commit to fuller feature recipes or
 input-value snapshots without changing the causality invariant.
+
+The input keys inside that recipe are compact FNV-1a 64-bit `EventKey`s, not
+BLAKE3 hashes. Event and symbol catalogs validate the labels they derive from
+and reject collisions before replay. BLAKE3 is used for recipe digests, event
+stream hashes, transcript digests, and manifests; compact IDs remain
+non-cryptographic identities.
 
 Symbols follow the same hot-path shape. `Event` keeps the original symbol string
 for input and transcript rendering. Replay builds a symbol catalog once,
@@ -158,6 +243,22 @@ need to be implemented as delayed availability, a cutoff-aware `AsOfView` over
 sufficient history, or bounded history with explicit overflow/fail-closed
 behavior.
 
+## Sensitivity
+
+Sensitivity analysis sits outside the strict causality kernel. It perturbs event
+timestamps under a policy, replays the signal, and measures how much the
+`PredictionRecord` stream moves. A signal can be causal and still be brittle if
+small receipt-time shifts flip decisions, so sensitivity is a robustness layer
+after the causality gate.
+
+The `lookahead` scenario asks how much fictitious early availability changes the
+signal. The `late-arrivals` scenario asks which late-arrival cohorts explain
+output flips. For cumulative late-arrival policies, `flip_rate` is not expected
+to be monotonic: moving more inputs earlier can change which prior inputs are
+visible at each prediction cutoff. See [cli.md](cli.md#sensitivity) for
+invocation and [audit-artifacts.md](audit-artifacts.md#sensitivity-artifacts)
+for outputs.
+
 ## Start-To-Finish Flow
 
 `run-suite` wires the artifact together:
@@ -166,7 +267,7 @@ behavior.
 GenerateConfig(seed, scenario, late_rate, feature_correction_rate)
   -> GeneratedStream(events.pipe)
   -> ReplayEngine(PredictionRecords in predictions.pipe)
-  -> adversarial checks(checks.txt)
+  -> causality check methods(checks.txt)
   -> summary.md with transcript hash and check results
   -> manifest.json run certificate with hash-linked run identity
 ```

@@ -22,7 +22,7 @@ max_input_replay_key <= prediction_replay_key
 ## Audit Surface
 
 The submission-facing surface is JSONL audit output plus
-`docs/audit.schema.json`. JSONL keeps the dependency tree small, works with
+`schemas/audit.schema.json`. JSONL keeps the dependency tree small, works with
 basic shell tools, and makes every prediction independently inspectable. The
 audit command can run in replay-only mode or compare replay-derived predictions
 against stored prediction JSONL, with optional explicit outcome attribution.
@@ -32,6 +32,25 @@ pretend that source-control metadata is the audit identity. The durable audit
 identity is the data fixture hash, prediction output hash, checks output hash,
 transcript hash, and per-record recipe hash. Commit and toolchain metadata are
 useful context, not proof that a run is trustworthy.
+
+## Outcome Join Semantics
+
+The current CLI outcome attachment is deliberately strict:
+`(symbol, prediction_replay_key)` must match exactly. That is useful for
+fixtures, regression tests, and second-pass audits where outcomes are generated
+after replay has already produced stable prediction keys. It is not the right
+primary API for production outcome data.
+
+Market outcome datasets are normally keyed by economic target identity: symbol,
+target timestamp, horizon, close/open convention, and sometimes venue or
+corporate-action policy. They should not need to know an internal replay key
+before the causality engine has emitted a `PredictionRecord`.
+
+The production outcome adapter should therefore accept target keys such as
+`(symbol, target_timestamp, horizon)` or an explicit target event ID, join them
+to replay-derived predictions inside the platform, and then write the resolved
+`prediction_replay_key` into the final audit artifact. The replay key remains
+the immutable audit identity; it should not be the only user-facing join handle.
 
 ## Recipe Hashes
 
@@ -43,24 +62,48 @@ input event keys, not the input payload values. Later it can commit to value
 hashes, a feature recipe, or snapshot manifest without changing the core
 causality invariant.
 
-## Parquet Adapter
+That extension is not proven by the current artifact. The checked-in signals
+exercise short-window inline state/provenance, text fixture payloads, and
+fixed-point numeric payloads. Signals requiring more than eight remembered
+observations or cited inputs, non-fixed-point numeric representations, or
+recipe-hash-backed snapshots need a follow-up design and tests before they
+should be treated as covered by the cage.
 
-Parquet is a good downstream adapter, not the first submission surface. It would
-improve Polars, Pandas, DuckDB, and Jupyter workflows by carrying an embedded
-schema and columnar layout. It also adds Arrow/Parquet dependency weight and
-compile-time surface area. The intended sequence is:
+## Arrow/Parquet Production Boundary
 
-1. Keep JSONL plus JSON Schema as the canonical audit contract.
-2. Add a Parquet writer that adapts the same audit records.
-3. Treat Parquet files as ergonomic exports, with JSONL remaining the simplest
-   review and diff format.
+Pipe fixtures and JSONL audit output are the reference interface because they
+keep the repository easy to inspect and keep the dependency tree small. They are
+not the production-scale I/O boundary. For real quant research workloads,
+Parquet is not just an export format; it is the required ingestion and querying
+boundary.
+
+The production architecture should be Arrow-native at the adapter boundary and
+Parquet-backed at the durable audit/query boundary. Arrow IPC is the natural
+ingestion format for typed event batches. Parquet is the storage format for
+audited predictions. Together they let the causality engine exchange data with
+Polars, DuckDB, Pandas, and Python strategy tooling without repeatedly parsing
+text. They also provide schema metadata, predicate pushdown, and column
+projection, so researchers can scan millions of audited `PredictionRecord`s
+without paying JSONL deserialization cost.
+
+The intended sequence is:
+
+1. Keep pipe text and JSONL plus JSON Schema as the canonical review/debug
+   surface.
+2. Add typed Arrow IPC ingestion for event batches and prove transcript-hash
+   equality against the same pipe fixtures.
+3. Add a Parquet audit writer that emits the same `PredictionRecord` contract
+   through Arrow `RecordBatch`es.
+4. Treat Arrow/Parquet as the production I/O boundary, with JSONL remaining the
+   simplest diff and submission format.
 
 The first Arrow/Parquet PR should make this strong claim:
 
-> This PR makes the strong claim that the audit export is no longer just JSONL
-> reshaped into Parquet: it is a typed, columnar audit contract with explicit
-> schema metadata, stable provenance columns, and compression chosen
-> deliberately rather than inherited from parquet-rs defaults.
+> This PR makes the strong claim that columnar I/O is a first-class production
+> boundary, not JSONL reshaped into Parquet: event ingestion uses a typed Arrow
+> schema, audit output uses a typed Parquet schema, metadata is explicit, and
+> compression is chosen deliberately rather than inherited from parquet-rs
+> defaults.
 
 The writer should set compression explicitly. Snappy is the lower-surprise first
 choice for interoperability and fast reads. Zstd level 3 is also defensible for
@@ -71,7 +114,10 @@ Parquet file metadata should include:
 
 - `asof.schema`
 - `asof.hash_algorithm`
+- `asof.hash_encoding`
 - `asof.tool`
+- `asof.input_commitment`
+- fixed-point scale metadata, such as `asof.score_scale` and `asof.bps_scale`
 
 `feature_recipe_hash` remains a per-row column, not file metadata. The metadata
 names describe the contract and hashing/tool context; they do not replace the
@@ -79,24 +125,74 @@ row-level provenance digest.
 
 The typed schema should avoid treating the export as only JSONL-in-Parquet:
 
-- `sentiment`: `Dictionary<Int32, Utf8>` for the low-cardinality sentiment
-  domain, including generated mutation markers if they appear in fixtures.
-- `return_bps`: revisit before implementation. If PR #11 lands `FixedDecimal`,
-  use the same decimal discipline for outcomes. Otherwise prefer integer basis
-  points (`Int64`) or an Arrow decimal type over `Float64`.
-- `payload`: only keep this as `Utf8` for a thin first adapter if the typed
-  feature schema is blocked.
+- `symbol_id`: fixed-width integer identity for joins and audit records.
+- `symbol`: dictionary-encoded UTF-8 label for display and analyst queries.
+- `sentiment`: dictionary-encoded UTF-8 for the low-cardinality sentiment
+  fixture domain, including generated mutation markers if they appear in tests.
+  It is retained for API coverage, not as the intended production quant feature
+  representation.
+- `score` and future numeric feature columns: fixed-point decimal or integer
+  physical types, not text payload parsing in the replay hot path.
+- `return_bps`: current audit JSONL stores this as a JSON number. A typed
+  Parquet adapter should prefer integer basis points (`Int64`) or an Arrow
+  decimal type over `Float64`.
+- `feature_recipe_hash`: reviewer-friendly hex `Utf8` first, with
+  `asof.hash_encoding = "hex"`. Production pipelines may prefer
+  `FixedSizeBinary(32)` for the same BLAKE3 bytes.
+- `payload`: only keep this as an optional compatibility column. If typed
+  columns exist, they should be the adapter contract and the pipe payload should
+  be reconstructed at the boundary rather than treated as the source of truth.
 
-Sequencing should stay explicit. Block on PR #11 only if it lands quickly and
-its `FeatureDType` shape is stable. If it slips, land a thin payload-`Utf8`
-Parquet adapter first to prove the Arrow boundary, then promote to typed feature
-columns in a follow-up. Do not bundle storing parsed `FeatureValues` on `Event`
-into the Arrow work; that is a separate architectural cleanup.
+Sequencing should stay explicit. Land a thin payload-`Utf8` Parquet adapter
+first if typed feature columns would expand the scope too far, then promote to
+typed feature columns in a follow-up. Do not bundle storing parsed
+`FeatureValues` on `Event` into the Arrow work; that is a separate
+architectural cleanup.
 
-## Engine State Representation
+## Out-Of-Core Replay And Check Scaling
 
-The benchmark shows that dense symbol-indexed state is the right direction for
-large replay workloads. Production replay now builds a collision-checked symbol
-catalog before the hot loop, keeps stable `SymbolId` values in audit records,
-and uses replay-local `SymbolSlot` values to index a vector-backed
-`StateStore`.
+The v1 CLI is a deterministic batch harness. It reads pipe events into memory,
+sorts the full vector by `(received_time, received_sequence_number, event_id)`,
+and then replays. That is acceptable for inspectable fixtures and adversarial
+benchmarks, but it is not a streaming architecture for 50GB tick files.
+
+The production ingestion path should require Arrow/Parquet row groups sorted by
+received-time order, or at least sorted closely enough that replay can use a
+bounded reorder buffer. Late arrivals can then be handled with a min-heap or
+watermark policy instead of a global in-memory sort. Physical row shuffling
+should remain a regression test for determinism, not the expected production
+layout.
+
+The same distinction applies to the causality check methods. The replay state
+update path is fast, but prefix-equivalence and future-mutation methods
+intentionally rerun or mutate multiple prefixes. The default 32-cutoff sample is
+a deterministic large-input guardrail, not a claim that the falsification
+harness is fully incremental. A production checker should reuse prefix
+transcripts, avoid deep whole-log clones, and turn these methods into
+incremental commitments over sorted input partitions.
+
+## Strategy Layer Handoff: Python Bindings And IPC
+
+This repository stops at the signal layer and emits audited
+`PredictionRecord`s. Downstream strategies are a different system: they consume
+signal streams, maintain portfolio state, apply risk controls, size orders, and
+score fills. In most quant teams, that downstream research and strategy work is
+Python-first.
+
+The Rust kernel should therefore expose a stable handoff boundary rather than
+forcing strategy authors to work inside the CLI. Two evolution paths are
+compatible with the current crate split:
+
+- Zero-copy FFI: package the replay engine as a Python wheel with PyO3 and
+  Arrow/Polars-compatible buffers. Researchers should be able to pass
+  Arrow-backed historical data from Python into Rust replay and receive an
+  audited Polars DataFrame or Arrow table back with minimal serialization.
+- Operational IPC: for live, paper-trading, or batch platform integration, run
+  the Rust causality cage as a separate process upstream of Python strategy
+  daemons. Unix domain sockets, gRPC over TCP, or another small framed protocol
+  can stream evaluated `SignalEvaluation`s or finalized `PredictionRecord`s
+  while keeping the strict as-of boundary in Rust.
+
+The strategic split is intentional: Rust owns deterministic replay and
+causality enforcement; Python owns rapid research iteration, portfolio logic,
+and strategy analytics over the certified prediction stream.

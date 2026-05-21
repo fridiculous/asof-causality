@@ -588,7 +588,55 @@ impl Error for SensitivityError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{parse_pipe_events, WindowedFeatureSentimentSignal, WindowedZScoreSignal};
+    use crate::{
+        parse_pipe_events, AsOfView, Signal, SignalEvaluation, SymbolSlot, FIXED_DECIMAL_SCALE,
+    };
+
+    #[derive(Clone, Copy)]
+    struct WindowedFeatureTestSignal {
+        window: usize,
+    }
+
+    impl Signal for WindowedFeatureTestSignal {
+        fn name(&self) -> &'static str {
+            "windowed-feature-sentiment"
+        }
+
+        fn config_descriptor(&self) -> String {
+            format!("window={}", self.window)
+        }
+
+        fn evaluate(
+            &self,
+            view: AsOfView<'_>,
+            symbol: SymbolSlot,
+            _as_of_timestamp: u64,
+        ) -> SignalEvaluation {
+            view.windowed_snapshot(symbol, self.window)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct ZScoreTestSignal;
+
+    impl Signal for ZScoreTestSignal {
+        fn name(&self) -> &'static str {
+            "windowed-zscore"
+        }
+
+        fn config_descriptor(&self) -> String {
+            "window=5;threshold=1".to_string()
+        }
+
+        fn evaluate(
+            &self,
+            view: AsOfView<'_>,
+            symbol: SymbolSlot,
+            _as_of_timestamp: u64,
+        ) -> SignalEvaluation {
+            view.score_window_snapshot(symbol, 5, FIXED_DECIMAL_SCALE)
+        }
+    }
 
     #[test]
     fn shift_transforms_only_selected_roles_and_preserves_identity() {
@@ -752,7 +800,7 @@ p1|250|250|4|prediction|XYZ|
             PolicyPoint::shift_features("same", -2),
         ];
         let error =
-            run_sensitivity_sweep(&events, &policies, WindowedFeatureSentimentSignal::new(5))
+            run_sensitivity_sweep(&events, &policies, WindowedFeatureTestSignal { window: 5 })
                 .unwrap_err();
 
         assert_eq!(
@@ -775,7 +823,7 @@ p2|140|140|6|prediction|XYZ|
         )
         .unwrap();
         let policies = [PolicyPoint::shift_features("shift_features_minus_10", -10)];
-        let sweep = run_sensitivity_sweep(&events, &policies, WindowedZScoreSignal::new()).unwrap();
+        let sweep = run_sensitivity_sweep(&events, &policies, ZScoreTestSignal).unwrap();
         let result = &sweep.results[0];
 
         assert_eq!(result.run.events_transformed, 4);

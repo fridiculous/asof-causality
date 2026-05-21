@@ -80,6 +80,15 @@ impl SymbolCatalog {
             });
         }
 
+        let expected = SymbolId::from_label(label);
+        if expected != symbol_id {
+            return Err(ParseEventError::SymbolIdentityMismatch {
+                symbol: label.to_string(),
+                expected,
+                actual: symbol_id,
+            });
+        }
+
         let slot = SymbolSlot::new(self.labels_by_slot.len());
         self.slots_by_label.insert(label.to_string(), slot);
         self.slots_by_id.insert(symbol_id, slot);
@@ -191,6 +200,32 @@ mod tests {
         assert!(matches!(
             error,
             ParseEventError::SymbolIdentityMismatch { symbol, .. } if symbol == "AAPL"
+        ));
+    }
+
+    #[test]
+    fn symbol_catalog_rejects_first_seen_label_identity_mismatch() {
+        let mut events = [Event::new(
+            "a1",
+            1,
+            1,
+            1,
+            EventRole::Feature,
+            "AAPL",
+            "sentiment=positive",
+        )];
+        events[0].symbol_key = SymbolId(99);
+
+        let error = SymbolCatalog::from_events(&events).unwrap_err();
+        let expected = SymbolId::from_label("AAPL");
+
+        assert!(matches!(
+            error,
+            ParseEventError::SymbolIdentityMismatch {
+                symbol,
+                expected: actual_expected,
+                actual,
+            } if symbol == "AAPL" && actual_expected == expected && actual == SymbolId(99)
         ));
     }
 }

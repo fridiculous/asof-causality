@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/fridiculous/asof-causality/docs/sensitivity.manifest.schema.json",
-  "title": "asof-causality sensitivity manifest",
+  "$id": "https://github.com/fridiculous/asof-causality/schemas/sensitivity.manifest.schema.json",
+  "title": "asof sensitivity manifest",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -38,10 +38,10 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "sensitivity-v1"
+      "const": "sensitivity-v2"
     },
     "tool": {
-      "const": "asof-causality"
+      "const": "asof"
     },
     "hash_algorithm": {
       "const": "blake3"

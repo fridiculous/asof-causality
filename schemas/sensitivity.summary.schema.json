@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/fridiculous/asof-causality/docs/sensitivity.summary.schema.json",
-  "title": "asof-causality sensitivity summary record",
+  "$id": "https://github.com/fridiculous/asof-causality/schemas/sensitivity.summary.schema.json",
+  "title": "asof sensitivity summary record",
   "type": "object",
   "additionalProperties": false,
   "required": [

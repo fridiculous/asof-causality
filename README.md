@@ -1,495 +1,90 @@
 # asof-causality
 
-asof-causality is a deterministic falsification harness for temporal leakage.
-It tests whether a historical prediction only used data that was knowable at
-the exact replay key when the prediction was made.
+asof-causality validates whether a historical signal used only data that was actually available when the prediction was made.
 
-Most backtests ask, "Did the signal work?" This repo asks the prior systems
-question: "Could the signal or training-data pipeline have known what it used
-at that time?" Temporal leakage shows up in backtests, time-series training
-data, and automated research workflows whenever historical code can see rows
-that were not actually available yet.
+Most backtests ask, "Did this signal make money?" This asks the prior question: "Could this signal have known the inputs it used at that replay key?" It catches temporal leakage before a strategy backtest turns leaked signals into fake Sharpe.
 
-The engine enforces a two-clock event model, restricts signal code to an opaque
-as-of view, records immutable `PredictionRecord`s with input provenance, and
-ships a negative control that shows the exact impossible records a naive
-observed-time replay would emit. It evaluates causality, not predictive alpha.
+It is not a backtester. It is a point-in-time signal verifier that sits upstream of strategy simulation, portfolio construction, fills, and PnL.
+
+## Setup
+
+Requires Rust 1.95+; `rustup` uses the pinned [`rust-toolchain.toml`](rust-toolchain.toml).
+
+```sh
+git clone https://github.com/fridiculous/asof-causality.git
+cd asof-causality
+```
+
+Optional, to put the `asof` binary on your `PATH`:
+
+```sh
+cargo install --path crates/asof-cli
+```
 
 ## 30-Second Demo
 
 ```sh
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
+cargo run -p asof-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 ```
 
-Expected diagnostic:
-
 ```text
-asof-causality negative-control
-  fixture  examples/lookahead-negative-control.pipe
-  events   12
-  signal   windowed-feature-sentiment
-
 ENGINE A: received-time replay (correct)
-  ordering             (received_time, received_sequence_number, event_id)
-  transcript_hash      ed03706f6f79c31f
   impossible           0
   VERDICT              PASS
 
+...
+
 ENGINE B: observed-time replay (deliberately broken baseline)
-  ordering             (observed_time, received_sequence_number, event_id)
-  transcript_hash      f7b67d321cac694e
   impossible           3
   VERDICT              FAIL
-
-LEAKED PREDICTION RECORDS (engine B)
-
-  p_before_same_time_sequence at (95, 4, p_before_same_time_sequence)
-    signal_value     0
-    leaked_input     n_same_time_later  at (95, 5, n_same_time_later)
-    violation        input received_sequence_number > prediction received_sequence_number at same received_time
-    interpretation   prediction at t=95 used same-timestamp event that sorts after it
-
-  p_before_late_feature at (120, 6, p_before_late_feature)
-    signal_value     1
-    leaked_input     n_late_positive    at (150, 7, n_late_positive)
-    violation        input replay key > prediction replay key by delta=30
-    interpretation   prediction at t=120 used event that arrived at t=150
-
-  p_before_correction at (170, 10, p_before_correction)
-    signal_value     1
-    leaked_input     c_late_negative    at (180, 9, c_late_negative)
-    violation        input replay key > prediction replay key by delta=10
-    interpretation   prediction at t=170 used correction received at t=180
-
-DIAGNOSTIC
-  the broken engine produced 3 impossible PredictionRecords across 3 distinct leak classes
-  the correct engine produced 0 impossible PredictionRecords
-  the audit invariant catches the failure mode the engine is designed to prevent
 ```
 
-The correct engine orders by
-`(received_time, received_sequence_number, event_id)`. The broken baseline
-orders by `(observed_time, received_sequence_number, event_id)`, so it leaks a
-same-timestamp later received sequence, a late feature, and a late correction
-into predictions that could not have used them in live replay.
+The broken engine sorts by `observed_time`, so late data leaks into earlier predictions. The correct engine sorts by `(received_time, received_sequence_number, event_id)` and emits zero impossible `PredictionRecord`s.
 
-## What This Builds
+When installed, the binary is `asof`; during development, use `cargo run -p asof-cli --` as the prefix.
 
-- a Rust workspace with a reusable core crate and CLI
-- a pipe-delimited event format with `observed_time` and `received_time`
-- canonical event roles: `feature`, `feature_correction`, `prediction`, and
-  `outcome`
-- deterministic replay by `(received_time, received_sequence_number, event_id)`
-- a restricted signal API:
-  `evaluate(AsOfView, symbol_slot, as_of_timestamp)`
-- `SignalEvaluation` output from signals, containing signal value and input
-  provenance
-- built-in single-input, windowed multi-input, fixed-point Z-score, and
-  volatility-adjusted momentum signals
-- immutable `PredictionRecord` output with input-event provenance
-- JSONL audit output with its schema documented in `docs/audit.schema.json`
-- sensitivity summary/detail/manifest contracts documented in
-  `docs/sensitivity.*.schema.json`
-- dense symbol slots in replay state, with stable symbol IDs in prediction records
-  rendered back to human symbols in transcripts
-- adversarial leakage checks for late arrivals, feature corrections, outcomes, and
-  shuffled physical input
-- a `manifest.json` run certificate that links inputs, outputs, checks, signal
-  version, invocation, toolchain, and transcript hash
-- a synthetic throughput benchmark comparing string-keyed state with dense
-  symbol-slot state
+## Run It On Your Signal
 
-The kernel is signal-agnostic. Feature payload fields have explicit
-`FeatureDType`s: `sentiment` is text parsed by the legacy label fixtures, while
-`score` is `FixedDecimal { scale: 6 }` for deterministic numeric replay. There
-is intentionally no separate ML-semantic `FeatureValueKind` layer yet. The
-built-ins include fixed-point numeric signals and `vol-adjusted-momentum` as a
-recognizable fast/slow moving-average crossover gated by realized volatility.
-Fixed-point arithmetic is used for cross-architecture transcript determinism;
-if a Z-score comparison would overflow checked `i128` arithmetic, the built-in
-numeric signal fails closed to neutral rather than producing a directional
-record from saturated math.
-The non-trivial part is the correctness cage around the signal: all of them
-receive only an opaque as-of view and return `SignalEvaluation` provenance that
-the replay engine records.
-
-## Quick Start
-
-Install Rust 1.78+ if needed, then:
+For a built-in signal:
 
 ```sh
-cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
-cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
-cargo run -p asof-causality-cli -- audit examples/late-arrival.pipe
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
-cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- check examples/alfred-payems-revision.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --scenario lookahead --lookahead-range 0..100 --steps 4 --details --out runs/alfred-sensitivity
-cargo run -p asof-causality-cli -- sensitivity examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment --scenario late-arrivals --out runs/late-arrival-sensitivity
-cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
-make verify-real-data-demo
-make verify-real-revision-demo
-cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
-cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
-cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
-cargo test
+cargo run -p asof-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 ```
 
-This repository has no runtime network dependency. Most fixtures are synthetic;
-`examples/alfred-dgs10-sp500.pipe` is a small checked-in real-data fixture
-derived from public ALFRED/FRED CSV downloads. `make verify-real-data-demo`
-rebuilds that fixture from the source CSVs and checks it byte-for-byte.
-`examples/alfred-payems-revision.pipe` is a separate ALFRED-only fixture with a
-real PAYEMS revision. `examples/alfred-payems-revisions-2020.pipe` is the
-larger version for sensitivity exploration: 133 actual events across 2020-2021,
-including 76 feature corrections and 23 predictions. `make
-verify-real-revision-demo` rebuilds both from the source vintages. Those
-verification commands require internet access to the public CSV endpoints, but
-they do not require an API key, an LLM key, CUDA, or a database.
+Then run `replay`, `audit`, and `sensitivity` for the same `--signal`.
 
-## Event Format
+For your own signal, write it in Rust:
 
-```text
-event_id|observed_time|received_time|received_sequence_number|role|symbol|payload
-```
+1. Implement [`asof_causality::Signal`](crates/asof-causality/src/signal.rs) using the opaque `AsOfView`.
+2. Register it in [`asof-signals`](crates/asof-signals/src/lib.rs) with a stable name and config descriptor.
+3. Run the CLI with `--signal your-signal-name`.
 
-Events are replayed by
-`(received_time, received_sequence_number, event_id)`, not by physical file
-order or observed time. `received_sequence_number` is the deterministic
-receipt-order tie breaker for rows with the same `received_time`. The pair
-`(received_time, received_sequence_number)` and the `event_id` must both be
-unique; ambiguous receipt positions are rejected before replay. A late event may
-influence future `PredictionRecord`s, but it cannot mutate old ones.
+The Rust boundary is intentional: the signal can inspect only the as-of view, not the full event stream. Python strategy and backtest code consume audited artifacts downstream.
 
-There is intentionally no `--safety-lag` flag. The artifact proves exact
-receipt-time causality, `input.received_time <= prediction_time`. Conservative
-availability lags can be represented by shifting feature `received_time`s
-forward before replay; a built-in lag option would need first-class state
-semantics to avoid dropping older eligible inputs from the bounded as-of view.
-See [docs/architecture.md](docs/architecture.md#why-there-is-no-safety-lag-option).
+Built-ins are validation fixtures, not alpha claims: `last-feature-sentiment`, `windowed-feature-sentiment`, `windowed-zscore`, and `vol-adjusted-momentum`.
 
-The canonical roles are:
+## What A Green Run Proves
 
-| Role | Meaning |
-|---|---|
-| `feature` | Source information the signal may use after `received_time` |
-| `feature_correction` | Append-only revision to earlier feature information |
-| `prediction` | Scheduled point where replay evaluates the signal and records a `PredictionRecord` |
-| `outcome` | Future evaluation data excluded from signal state |
+A green run proves that each emitted `PredictionRecord` is causal with respect to the event history provided. It exercises five properties through eight check methods: receipt-time causality, on-time-vs-late contrast, correction handling, outcome separation, and deterministic replay.
 
-Built-in feature payload fields are:
+It does not prove alpha, data authenticity, survivorship correctness, fill realism, portfolio correctness, or PnL.
 
-| Field | DType | Meaning |
-|---|---|---|
-| `sentiment` | `Text` | Legacy fixture label parsed as `negative`, `neutral`, or `positive` |
-| `score` | `FixedDecimal { scale: 6 }` | Deterministic numeric value used by fixed-point signals |
+## Why This Is Credible
 
-## Current Commands
+- Signals receive an opaque `AsOfView`, not the full event stream.
+- Short-window state and provenance are fixed-size and allocation-free in replay.
+- Checks rerun prefixes, mutate future rows, and use negative controls.
+- Audit JSONL and manifests bind signal identity, inputs, hashes, and tool context.
 
-```sh
-cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
-```
+The cage prevents mechanical lookahead through the replay API; it does not prevent a signal author or upstream data feed from encoding out-of-band knowledge.
 
-Prints deterministic `PredictionRecord`s and a transcript hash.
+## Where Next
 
-Use `--signal windowed-feature-sentiment` to run the same replay through the
-bounded multi-input signal, `--signal windowed-zscore` for fixed-decimal
-`score=...` fields, `--signal vol-adjusted-momentum` for a fixed-point
-trend-following signal. The default is `last-feature-sentiment`.
-
-```sh
-cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
-```
-
-Runs the adversarial replay suite against the fixture.
-
-For large generated files, `check` samples 32 received-time cutoffs by default
-for the expensive prefix-equivalence and future-mutation checks. Use
-`--exhaustive` for the full adversarial sweep on small fixtures, or
-`--max-cutoffs N` to set the deterministic cutoff sample size.
-
-```sh
-cargo run -p asof-causality-cli -- audit examples/late-arrival.pipe --signal windowed-feature-sentiment
-```
-
-Emits one JSON object per replay-derived `PredictionRecord`. Each record
-includes the prediction replay key, signal, symbol, signal value, ordered input
-event IDs, optional maximum input replay key, BLAKE3 `feature_recipe_hash`,
-`causally_valid`, optional `matched_stored_prediction`, and optional `outcome`.
-The machine-readable contract lives in
-[docs/audit.schema.json](docs/audit.schema.json). Use `--out path` to write the
-same JSONL stream to a file.
-
-To audit stored predictions instead of only emitting the replay-derived audit
-surface:
-
-```sh
-cargo run -p asof-causality-cli -- audit events.pipe stored_predictions.jsonl outcomes.pipe --out audit.jsonl
-```
-
-Stored predictions are matched by `(symbol, prediction_replay_key)` and should
-include `signal_value` plus `feature_recipe_hash`. Use
-`--allow-missing-recipe-hash` only for legacy stored predictions that can be
-matched on `signal_value` alone. Outcomes are attached only when they explicitly
-name `prediction_replay_key`; the audit record carries `return_bps` but does not
-compute PnL or scoring metrics. Use `--outcomes path` to attach outcome
-attributions without supplying stored predictions.
-
-```sh
-cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
-```
-
-Generates a deterministic pipe fixture with a fixed seed. The `late-heavy`
-scenario intentionally shuffles physical file order; replay still sorts by
-`(received_time, received_sequence_number, event_id)`. Every generated file
-includes a small sentinel late-arrival received sequence so the contrast checks
-have a known adversarial case even when random rates are low.
-
-```sh
-cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
-```
-
-Runs the start-to-finish path: generate an adversarial fixture, replay it, run
-the checks, and write `events.pipe`, `predictions.pipe`, `checks.txt`, and
-`summary.md`.
-
-It also writes `manifest.json`, the run certificate for the output directory.
-The manifest links the fixture hash, prediction-output hash, checks-output hash,
-transcript hash, hash algorithm, invocation, UTC run timestamp, check counts,
-Rust toolchain, and optional Git commit. A reviewer can compare the manifest and
-artifacts to verify that a run's predictions, checks, and reported transcript
-belong to the same execution. The machine-readable manifest contract lives in
-[docs/manifest.schema.json](docs/manifest.schema.json).
-
-Generated `runs/` artifacts are intentionally ignored by git so stale local
-snapshots do not become part of the source artifact. Use
-`make run-suite-late-heavy` to rebuild the canonical local `runs/late-heavy`
-directory.
-
-```sh
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
-```
-
-Runs a negative-control fixture through the correct received-time replay and a
-deliberately broken observed-time baseline. The fixture contains seed features,
-a late positive feature, and a late negative feature correction; a backtester
-ordered by observed time leaks both late records into earlier predictions.
-
-```sh
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
-```
-
-The windowed signal makes multi-input provenance visible. The expected
-demonstration is:
-
-```text
-95:4:p_before_same_time_sequence|XYZ|0|n_seed_negative,n_seed_positive,n_seed_negative_2,n_same_time_later|95:5:n_same_time_later
-120:6:p_before_late_feature|XYZ|1|n_seed_negative,n_seed_positive,n_seed_negative_2,n_same_time_later,n_late_positive|150:7:n_late_positive
-170:10:p_before_correction|XYZ|1|n_seed_positive,n_seed_negative_2,n_same_time_later,n_late_positive,c_late_negative|180:9:c_late_negative
-```
-
-The leaky baseline is intentionally included as a negative control; it shows the
-class of impossible prediction that the normal engine prevents.
-
-```sh
-cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
-```
-
-The numeric fixture exercises the same boundary with continuous inputs. In the
-broken observed-time baseline, `p_before_late_score` can see `px_late_spike`
-before it was received. The received-time engine cannot, and the audit invariant
-marks the spike as a future input. Numeric `score=...` payloads are parsed into
-scaled integers, so replay decisions do not depend on architecture-specific
-floating-point behavior.
-
-```sh
-cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal vol-adjusted-momentum
-```
-
-The same fixture can be replayed through `vol-adjusted-momentum`, a standard
-moving-average crossover shape with a realized-volatility gate, implemented with
-the same fixed-point numeric view.
-
-```sh
-cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
-```
-
-This is the lookahead-bias falsification harness for the repo's real-data
-path. The fixture uses ALFRED DGS10 Treasury-rate vintages as daily features
-and FRED SP500 closes as next-day outcomes. It demonstrates that a daily SP500
-prediction cannot use a same-day DGS10 observation until that row appears in the
-next ALFRED vintage. See
-[docs/real-data-demo.md](docs/real-data-demo.md) for source URLs and mapping.
-
-```sh
-cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --scenario lookahead --lookahead-range 0..100 --steps 4 --details --out runs/alfred-sensitivity
-```
-
-Runs a stability sweep outside the strict kernel: the baseline uses received
-time, and the lookahead range removes 0% through 100% of each affected
-feature's own `(received_time - observed_time)` lag. The command writes
-`summary.jsonl`, a primary `sensitivity-curve.svg` with baseline x=0 and
-sampled lookahead percentages on the x-axis, secondary static SVG charts
-(`flip-rate.svg` and `input-change.svg`), optional `details.jsonl`, and
-`manifest.json` with policy descriptors and transcript hashes.
-`--lookahead-range` accepts whole percentages or percentages with up to two
-fractional digits, such as `0..100`, `12.5..87.5`, or `99.99..100`.
-`0%` is represented by the strict baseline row, not by a separate comparison
-policy. In summary and manifest records, `events_transformed` means rows whose
-`received_time` actually changed after applying the policy.
-
-Late-arrival attribution is a separate sensitivity scenario:
-
-```sh
-cargo run -p asof-causality-cli -- sensitivity examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment --scenario late-arrivals --out runs/late-arrival-sensitivity
-```
-
-This builds automatic cumulative percent-of-lag samples from late feature
-arrivals. The output adds `late-arrival-impact.svg`, a cumulative exposure
-curve: x is the percent of each late-arrival lag removed and y is admitted new
-input admissions as a share of the maximum sampled cumulative exposure.
-The y-axis tick labels include absolute admission counts, the chart note gives
-the 100% replay's changed-prediction count, and point tooltips include
-min/median/p90/max lag removed. When event timestamps parse as `YYYYMMDDHHMM`,
-those tooltip lag amounts are shown as calendar durations; otherwise they stay
-in fixture-native units.
-`--steps N` controls the sample grain, so `--steps 20` samples 5%, 10%, ...,
-100%. V1 still accepts raw
-`--shift-features` integer offsets as an expert mode, but typed durations such
-as `-1d` are deferred until timestamp semantics are first-class. Sensitivity
-descriptors and the manifest record
-`calendar_aware: false`; on `YYYYMMDDHHMM` fixtures like ALFRED, intermediate
-lookahead percentages are synthetic ordered-integer stresses, not calendar
-durations. The `late-arrivals` scenario is also percent-of-each-event-lag
-replay, not a calendar duration shift: each late feature/correction row is moved
-toward its own observed time by the sampled percentage.
-
-The PAYEMS fixture anchors an actual ALFRED correction:
-
-```sh
-cargo run -p asof-causality-cli -- check examples/alfred-payems-revision.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- negative-control examples/alfred-payems-revision.pipe --signal windowed-zscore
-```
-
-It compares the PAYEMS `2019-01-01` observation across two ALFRED vintages:
-`150587` in the `2020-02-01` vintage and `150134` in the `2020-03-01` vintage.
-The second row is encoded as `feature_correction`, so strict received-time
-replay must not let `p_after_initial_before_revision` use the revised value.
-
-For a larger correction-heavy sample, use the 2020-2021 PAYEMS fixture:
-
-```sh
-cargo run -p asof-causality-cli -- check examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- negative-control examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- sensitivity examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore --scenario late-arrivals --out runs/alfred-payems-large-sensitivity
-```
-
-This larger fixture has 133 actual events, 76 feature corrections, and 23
-predictions. It is useful for seeing a cumulative late-arrival sensitivity
-curve instead of a single hand-inspectable correction case.
-
-```sh
-cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
-```
-
-Generates synthetic events and reports replay throughput for two state
-representations: string-keyed map state and dense symbol-slot vector state.
-
-## Why It Is Non-Trivial
-
-The project does not try to find alpha. It builds the infrastructure required
-before alpha research can be trusted:
-
-- signals return `SignalEvaluation`; they do not create `PredictionRecord`s
-- `PredictionRecord`s are immutable audit records created by replay
-- every `PredictionRecord` records the event IDs the signal evaluation used
-- multi-input `SignalEvaluation`s carry up to eight input event keys inline by
-  design
-- prediction provenance is stored as compact inline event keys and rendered to
-  human-readable IDs outside the replay path
-- `max_input_replay_key <= prediction_replay_key` is checked
-- outcomes are computed after replay and cannot affect prior `PredictionRecord`s
-- prefix-equivalence and future-mutation tests make leakage falsifiable
-- replay is deterministic even when the physical input file is shuffled
-
-See [docs/architecture.md](docs/architecture.md) and
-[docs/measurements.md](docs/measurements.md) for the implementation shape and
-measurement notes. See [docs/roadmap.md](docs/roadmap.md) for the planned
-strategy layer, recipe-hash extension, and Parquet adapter.
-
-## Compared To Backtesters
-
-Many backtesting tools focus on simulating a portfolio over economic time.
-asof-causality focuses on a narrower contract: whether a `PredictionRecord`
-could have known every input its `SignalEvaluation` used at prediction time.
-The negative-control fixture is shipped with the repo so that the leak class is
-falsifiable, not just described.
-
-## Run Certificates
-
-`run-suite` writes a `manifest.json` beside the generated fixture, predictions,
-checks, and summary. The manifest is a compact linkage proof for the run: it
-records the invocation, run timestamp, source commit context, workspace dirty
-flag, Rust toolchain, fixture hash, prediction-output hash, checks-output hash,
-and final transcript hash. Public artifact hashes in the manifest use BLAKE3,
-and the JSON contract is documented in
-[docs/manifest.schema.json](docs/manifest.schema.json).
-
-That means the result is not just "the CLI printed PASS." The output directory
-contains enough identity to answer: which data, which signal, which executable
-context, which checks, and which transcript produced this result?
-
-## Testing And Mutation Checks
-
-The normal gate is:
-
-```sh
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --workspace
-```
-
-The test suite includes fixture regressions, proptest-generated event streams,
-CLI integration checks, JSON Schema validation for audit, run-suite manifest,
-and sensitivity output, and snapshots for stable user-visible command output.
-
-For mutation testing, install `cargo-mutants` and run this manually before
-claiming the causality kernel is hardened:
-
-```sh
-cargo mutants \
-  -f crates/asof-causality-core/src/checks.rs \
-  -f crates/asof-causality-core/src/replay.rs \
-  -f crates/asof-causality-core/src/log.rs
-```
-
-This is intentionally not a PR gate; it is a heavier review tool for checking
-whether causality-critical tests kill behavioral mutations.
-
-## Why Rust Here
-
-The causality boundary depends on hiding future state from signal code and
-making replay deterministic. Rust is useful for that narrow job: the core API
-keeps mutable replay state crate-private, exposes only an opaque `AsOfView`, and
-stores hot-path provenance in fixed-size values rather than heap-heavy records.
-The repo keeps the interface small enough that a Python research pipeline could
-call this as an external verifier without moving all research logic into Rust.
-
-## Signal Boundary
-
-Each built-in signal earns a different piece of the causality story:
-`last-feature-sentiment` proves the minimal single-input path,
-`windowed-feature-sentiment` proves bounded multi-input provenance,
-`windowed-zscore` proves deterministic fixed-point numeric window math over a
-declared `FeatureDType`, and `vol-adjusted-momentum` proves a recognizable
-finance-style signal can run inside the same `AsOfView` boundary. None of these
-are alpha claims; they are test fixtures for the replay cage.
-
-## Scope Of Conclusions
-
-Synthetic fixtures prove point-in-time replay semantics and make leakage tests
-repeatable. They do not prove market predictiveness, production data quality, or
-exchange-grade latency. The benchmark is a single-node throughput measurement,
-not a claim of HFT suitability.
+- [docs/demo.md](docs/demo.md): quant-facing workflow
+- [docs/cli.md](docs/cli.md): commands
+- [docs/audit-artifacts.md](docs/audit-artifacts.md): JSONL, manifests, schemas
+- [docs/success-criteria.md](docs/success-criteria.md): check list and pass criteria
+- [docs/architecture.md](docs/architecture.md): bitemporal kernel design
+- [docs/problem.md](docs/problem.md): prior art and scope
+- [docs/roadmap.md](docs/roadmap.md): limitations and production path
+- [docs/measurements.md](docs/measurements.md): benchmark methodology

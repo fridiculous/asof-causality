@@ -138,7 +138,10 @@ impl PredictionLog {
         output
     }
 
-    /// Returns the legacy 64-bit transcript checksum.
+    /// Returns the legacy 64-bit transcript checksum used by internal equality checks.
+    ///
+    /// This is a non-cryptographic FNV-1a checksum. User-facing artifacts and
+    /// manifests use [`PredictionLog::transcript_digest`] instead.
     pub fn transcript_hash(&self) -> u64 {
         fnv1a64(self.transcript().as_bytes())
     }

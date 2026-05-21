@@ -16,21 +16,21 @@ build:
 	cargo build --release --locked
 
 release-smoke: build
-	target/release/asof-causality replay examples/late-arrival.pipe
-	target/release/asof-causality check examples/late-arrival.pipe
-	target/release/asof-causality negative-control examples/lookahead-negative-control.pipe
+	target/release/asof replay examples/late-arrival.pipe
+	target/release/asof check examples/late-arrival.pipe
+	target/release/asof negative-control examples/lookahead-negative-control.pipe
 
 package:
-	cargo package --locked --allow-dirty -p asof-causality-core
+	cargo package --locked --allow-dirty -p asof-causality
 
 replay:
-	cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
+	cargo run -p asof-cli -- replay examples/late-arrival.pipe
 
 check-fixture:
-	cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
+	cargo run -p asof-cli -- check examples/late-arrival.pipe
 
 run-suite-late-heavy:
-	cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
+	cargo run -p asof-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
 
 verify-real-data-demo:
 	uv run --script scripts/rebuild-alfred-example.py --check
@@ -40,4 +40,4 @@ verify-real-revision-demo:
 	uv run --script scripts/rebuild-alfred-revision-example.py --variant large --check
 
 bench:
-	cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
+	cargo run -p asof-cli -- bench --events 1000000 --symbols 1024

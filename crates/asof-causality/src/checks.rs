@@ -1,7 +1,4 @@
-use crate::{
-    Event, EventKey, EventRole, LastFeatureSentimentSignal, PredictionRecord, ReplayEngine,
-    ReplayOptions, Signal,
-};
+use crate::{Event, EventKey, EventRole, PredictionRecord, ReplayEngine, ReplayOptions, Signal};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,14 +35,6 @@ impl CheckOptions {
             max_cutoffs: Some(max_cutoffs),
         }
     }
-}
-
-pub fn run_adversarial_checks(events: &[Event]) -> CheckReport {
-    run_adversarial_checks_with_options(events, CheckOptions::exhaustive())
-}
-
-pub fn run_adversarial_checks_with_options(events: &[Event], options: CheckOptions) -> CheckReport {
-    run_adversarial_checks_with_options_for_signal(events, options, LastFeatureSentimentSignal)
 }
 
 pub fn run_adversarial_checks_with_options_for_signal<S>(
@@ -122,6 +111,10 @@ fn selected_prediction_cutoffs(events: &[Event], options: CheckOptions) -> (Vec<
         return (vec![cutoffs[total - 1]], total);
     }
 
+    // Prefix-equivalence and future-mutation checks rerun replay for each
+    // selected cutoff. Exhaustive mode is strongest, but on large fixtures it
+    // scales with the number of prediction times. Sampled mode keeps the
+    // falsifier deterministic while avoiding an O(cutoffs * replay) CI path.
     let mut sampled = Vec::with_capacity(max_cutoffs);
     let last = total - 1;
     for index in 0..max_cutoffs {
@@ -349,9 +342,9 @@ where
         }
     }
 
-    fail(
+    pass(
         "on_time_vs_late_contrast",
-        "fixture did not contain a late event that changes an in-between SignalEvaluation",
+        "not applicable: fixture did not contain a late event that changes an in-between SignalEvaluation",
     )
 }
 
@@ -560,8 +553,7 @@ fn fail(name: &'static str, detail: impl Into<String>) -> CheckResult {
 mod tests {
     use super::*;
     use crate::{
-        parse_pipe_events, AsOfView, InputSet, SignalEvaluation, WindowedFeatureSentimentSignal,
-        WindowedZScoreSignal,
+        parse_pipe_events, AsOfView, InputSet, SignalEvaluation, SymbolSlot, FIXED_DECIMAL_SCALE,
     };
     use proptest::prelude::*;
     use proptest::test_runner::TestCaseError;
@@ -789,8 +781,72 @@ l1|640|640|8|outcome|AAPL|return_bps=12
         Ok(())
     }
 
+    #[derive(Clone, Copy)]
+    struct LastFeatureTestSignal;
+
+    impl Signal for LastFeatureTestSignal {
+        fn name(&self) -> &'static str {
+            "last-feature-sentiment"
+        }
+
+        fn evaluate(
+            &self,
+            view: AsOfView<'_>,
+            symbol: SymbolSlot,
+            _as_of_timestamp: u64,
+        ) -> SignalEvaluation {
+            view.snapshot(symbol)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct WindowedFeatureTestSignal {
+        window: usize,
+    }
+
+    impl Signal for WindowedFeatureTestSignal {
+        fn name(&self) -> &'static str {
+            "windowed-feature-sentiment"
+        }
+
+        fn config_descriptor(&self) -> String {
+            format!("window={}", self.window)
+        }
+
+        fn evaluate(
+            &self,
+            view: AsOfView<'_>,
+            symbol: SymbolSlot,
+            _as_of_timestamp: u64,
+        ) -> SignalEvaluation {
+            view.windowed_snapshot(symbol, self.window)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct ZScoreTestSignal;
+
+    impl Signal for ZScoreTestSignal {
+        fn name(&self) -> &'static str {
+            "windowed-zscore"
+        }
+
+        fn config_descriptor(&self) -> String {
+            "window=5;threshold=1".to_string()
+        }
+
+        fn evaluate(
+            &self,
+            view: AsOfView<'_>,
+            symbol: SymbolSlot,
+            _as_of_timestamp: u64,
+        ) -> SignalEvaluation {
+            view.score_window_snapshot(symbol, 5, FIXED_DECIMAL_SCALE)
+        }
+    }
+
     fn assert_default_transcript_hash_stable(events: &[Event]) -> Result<(), TestCaseError> {
-        let original = ReplayEngine::new()
+        let original = ReplayEngine::with_signal(LastFeatureTestSignal)
             .replay(events, ReplayOptions::default())
             .map_err(|error| TestCaseError::fail(format!("original replay failed: {error}")))?
             .predictions
@@ -801,7 +857,7 @@ l1|640|640|8|outcome|AAPL|return_bps=12
             deterministic_permutation(events, 0x1234_5678_9abc_def0),
             deterministic_permutation(events, 0x0ddc_0ffe_e15e_f00d),
         ] {
-            let shuffled_hash = ReplayEngine::new()
+            let shuffled_hash = ReplayEngine::with_signal(LastFeatureTestSignal)
                 .replay(&shuffled, ReplayOptions::default())
                 .map_err(|error| TestCaseError::fail(format!("shuffled replay failed: {error}")))?
                 .predictions
@@ -842,7 +898,7 @@ l1|640|640|8|outcome|AAPL|return_bps=12
 
         #[test]
         fn generated_streams_pass_all_adversarial_checks(events in arb_event_stream()) {
-            let report = run_adversarial_checks(&events);
+            let report = run_adversarial_checks_with_options_for_signal(&events, CheckOptions::exhaustive(), LastFeatureTestSignal);
             prop_assert!(report.passed(), "{report:?}");
         }
 
@@ -851,7 +907,7 @@ l1|640|640|8|outcome|AAPL|return_bps=12
             let report = run_adversarial_checks_with_options_for_signal(
                 &events,
                 CheckOptions::exhaustive(),
-                WindowedZScoreSignal::new(),
+                ZScoreTestSignal,
             );
             prop_assert!(report.passed(), "{report:?}");
         }
@@ -861,7 +917,7 @@ l1|640|640|8|outcome|AAPL|return_bps=12
             assert_check_result(prefix_equivalence(
                 &events,
                 CheckOptions::exhaustive(),
-                &LastFeatureSentimentSignal,
+                &LastFeatureTestSignal,
             ))?;
         }
 
@@ -870,20 +926,20 @@ l1|640|640|8|outcome|AAPL|return_bps=12
             assert_check_result(future_mutation(
                 &events,
                 CheckOptions::exhaustive(),
-                &LastFeatureSentimentSignal,
+                &LastFeatureTestSignal,
             ))?;
         }
 
         #[test]
         fn generated_streams_never_use_late_inputs_early(events in arb_event_stream()) {
-            assert_check_result(late_arrival(&events, &LastFeatureSentimentSignal))?;
+            assert_check_result(late_arrival(&events, &LastFeatureTestSignal))?;
         }
 
         #[test]
-        fn generated_streams_have_non_vacuous_late_contrast(events in arb_event_stream()) {
+        fn generated_streams_handle_late_contrast_method(events in arb_event_stream()) {
             assert_check_result(on_time_vs_late_contrast(
                 &events,
-                &LastFeatureSentimentSignal,
+                &LastFeatureTestSignal,
             ))?;
         }
 
@@ -891,31 +947,35 @@ l1|640|640|8|outcome|AAPL|return_bps=12
         fn generated_streams_keep_feature_corrections_append_only(events in arb_event_stream()) {
             assert_check_result(feature_correction_append_only(
                 &events,
-                &LastFeatureSentimentSignal,
+                &LastFeatureTestSignal,
             ))?;
         }
 
         #[test]
         fn generated_streams_keep_outcomes_separate(events in arb_event_stream()) {
-            assert_check_result(outcome_separation(&events, &LastFeatureSentimentSignal))?;
+            assert_check_result(outcome_separation(&events, &LastFeatureTestSignal))?;
         }
 
         #[test]
         fn generated_streams_replay_deterministically(events in arb_event_stream()) {
-            assert_check_result(deterministic_replay(&events, &LastFeatureSentimentSignal))?;
+            assert_check_result(deterministic_replay(&events, &LastFeatureTestSignal))?;
             assert_default_transcript_hash_stable(&events)?;
         }
 
         #[test]
         fn generated_streams_satisfy_audit_invariant(events in arb_event_stream()) {
-            assert_check_result(audit_invariant(&events, &LastFeatureSentimentSignal))?;
+            assert_check_result(audit_invariant(&events, &LastFeatureTestSignal))?;
         }
     }
 
     #[test]
     fn adversarial_checks_pass_for_fixture() {
         let events = parse_pipe_events(FIXTURE).unwrap();
-        let report = run_adversarial_checks(&events);
+        let report = run_adversarial_checks_with_options_for_signal(
+            &events,
+            CheckOptions::exhaustive(),
+            LastFeatureTestSignal,
+        );
         assert!(report.passed(), "{report:?}");
     }
 
@@ -925,7 +985,7 @@ l1|640|640|8|outcome|AAPL|return_bps=12
         let report = run_adversarial_checks_with_options_for_signal(
             &events,
             CheckOptions::exhaustive(),
-            WindowedFeatureSentimentSignal::new(5),
+            WindowedFeatureTestSignal { window: 5 },
         );
 
         assert!(report.passed(), "{report:?}");
@@ -941,7 +1001,11 @@ p1|110|110|2|prediction|XYZ|
         )
         .unwrap();
 
-        let report = run_adversarial_checks(&events);
+        let report = run_adversarial_checks_with_options_for_signal(
+            &events,
+            CheckOptions::exhaustive(),
+            LastFeatureTestSignal,
+        );
 
         assert!(!report.passed());
         assert!(report

@@ -4,6 +4,12 @@ This file records the measured result shipped with the artifact. These numbers
 are local to the machine and build profile below; they are evidence for this
 implementation shape, not universal constants.
 
+The command names in this file are current for the `asof-cli` package and the
+installed `asof` binary. The throughput table is a recorded single-run
+microbenchmark; rerun `make bench` before using it as a fresh performance claim.
+
+Last refreshed: 2026-05-21.
+
 ## Machine
 
 ```text
@@ -19,7 +25,7 @@ Build: release for bench, dev for replay/check
 Command:
 
 ```text
-cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
+cargo run -p asof-cli -- replay examples/late-arrival.pipe
 ```
 
 Output:
@@ -31,31 +37,32 @@ prediction_replay_key|symbol|signal_value|input_event_ids|max_input_replay_key
 590:4:p2|AAPL|1|n1|585:2:n1
 610:5:p3|AAPL|1|n1|585:2:n1
 620:7:p4|AAPL|-1|c1|615:6:c1
-transcript_hash=d959650f0492c42e
+transcript_hash=019c2d5a38370ab3dd3b88b4bd14a933907c1c6e9ed7b164977fec1ff52232b7
 outcomes_seen=1
 ```
 
 The `check` command also reverses the physical input order and verifies that the
-same transcript hash is produced.
+same transcript hash is produced. User-facing CLI and manifest output use the
+64-character BLAKE3 transcript digest so run artifacts can be compared directly.
 
 ## Adversarial Checks
 
 Command:
 
 ```text
-cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
+cargo run -p asof-cli -- check examples/late-arrival.pipe
 ```
 
 Result:
 
 ```text
-asof-causality check
+asof check
   fixture    examples/late-arrival.pipe
   events     7
   signal     last-feature-sentiment
   cutoffs    all 4 (max 32)
 
-ADVERSARIAL CHECKS                                         8/8 PASS
+CHECK METHODS                                              8/8 PASS
   [PASS]  prefix_equivalence               all received-time prefixes matched full replay
   [PASS]  future_mutation                  mutating future rows did not change prior PredictionRecords
   [PASS]  late_arrival                     late events were not used before their replay key
@@ -66,22 +73,22 @@ ADVERSARIAL CHECKS                                         8/8 PASS
   [PASS]  audit_invariant                  all PredictionRecords satisfy max_input_replay_key <= prediction_replay_key
 
 PROVENANCE
-  transcript_hash      d959650f0492c42e
+  transcript_hash      019c2d5a38370ab3dd3b88b4bd14a933907c1c6e9ed7b164977fec1ff52232b7
   predictions_emitted  4
   outcomes_separated   1
 ```
 
-The most important contrast is `on_time_vs_late_contrast`: moving event `n1`
-from received-after to received-before changes the 580 `SignalEvaluation` from
-`0` to `1`. That proves the engine is using received-time knowledge, not merely
-ignoring late events.
+The contrast method is `on_time_vs_late_contrast`: moving event `n1` from
+received-after to received-before changes the 580 `SignalEvaluation` from `0`
+to `1`. That shows this fixture contains a non-vacuous late-arrival case; it is
+one of five properties exercised by the eight methods above.
 
 ## Generated Scenario
 
 Command:
 
 ```text
-cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
+cargo run -p asof-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 ```
 
 Result:
@@ -92,44 +99,44 @@ generated path=runs/late-heavy.pipe scenario=late-heavy seed=42 data_events=1000
 
 The generated file is deterministic for seed `42` and physically shuffled by
 default in this scenario. It also includes a fixed sentinel late-arrival
-received sequence before the random body, so the on-time-vs-late contrast check has a
-known adversarial case. Running `check runs/late-heavy.pipe` samples 32
-received-time cutoffs for the expensive prefix and future-mutation checks and
-still exercises the direct late-arrival, feature-correction, outcome, replay, and audit
-checks across the full generated file.
+received sequence before the random body, so the on-time-vs-late contrast method
+has a known adversarial case. Running `check runs/late-heavy.pipe` samples 32
+received-time cutoffs for the expensive prefix and future-mutation methods and
+still exercises late-arrival, feature-correction, outcome, replay, and audit
+methods across the full generated file.
 
 ## Leaky Baseline
 
 Command:
 
 ```text
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
+cargo run -p asof-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 ```
 
 Expected interpretation:
 
 ```text
-asof-causality negative-control
+asof negative-control
   fixture  examples/lookahead-negative-control.pipe
   events   12
-  signal   last-feature-sentiment
+  signal   windowed-feature-sentiment
 
 ENGINE A: received-time replay (correct)
   ordering             (received_time, received_sequence_number, event_id)
-  transcript_hash      643d89a73fb1a868
+  transcript_hash      7e2a3e7078b03955af6d45364d2921ee59cfecb751292d31957c2da3a28277e2
   impossible           0
   VERDICT              PASS
 
 ENGINE B: observed-time replay (deliberately broken baseline)
   ordering             (observed_time, received_sequence_number, event_id)
-  transcript_hash      5e2b2c91fab15484
+  transcript_hash      2a3418748f96dbf80783eaaa5689d67dac4f600034a129d51412fd2a81ac4f31
   impossible           3
   VERDICT              FAIL
 
 LEAKED PREDICTION RECORDS (engine B)
 
   p_before_same_time_sequence at (95, 4, p_before_same_time_sequence)
-    signal_value     1
+    signal_value     0
     leaked_input     n_same_time_later  at (95, 5, n_same_time_later)
     violation        input received_sequence_number > prediction received_sequence_number at same received_time
     interpretation   prediction at t=95 used same-timestamp event that sorts after it
@@ -141,7 +148,7 @@ LEAKED PREDICTION RECORDS (engine B)
     interpretation   prediction at t=120 used event that arrived at t=150
 
   p_before_correction at (170, 10, p_before_correction)
-    signal_value     -1
+    signal_value     1
     leaked_input     c_late_negative    at (180, 9, c_late_negative)
     violation        input replay key > prediction replay key by delta=10
     interpretation   prediction at t=170 used correction received at t=180
@@ -159,37 +166,23 @@ It also lets later predictions use records received at `150` and `180`. Those
 predictions are impossible in live replay, and the audit invariant catches them
 as `max_input_replay_key > prediction_replay_key`.
 
-The same fixture also exercises the bounded multi-input signal:
-
-```text
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
-```
-
-The leaky baseline then renders multi-input provenance directly:
-
-```text
-95:4:p_before_same_time_sequence|XYZ|0|n_seed_negative,n_seed_positive,n_seed_negative_2,n_same_time_later|95:5:n_same_time_later
-120:6:p_before_late_feature|XYZ|1|n_seed_negative,n_seed_positive,n_seed_negative_2,n_same_time_later,n_late_positive|150:7:n_late_positive
-170:10:p_before_correction|XYZ|1|n_seed_positive,n_seed_negative_2,n_same_time_later,n_late_positive,c_late_negative|180:9:c_late_negative
-```
-
 ## Throughput
 
 Command:
 
 ```text
-cargo run --release -p asof-causality-cli -- bench --events 1000000 --symbols 1024
+cargo run --release -p asof-cli -- bench --events 1000000 --symbols 1024
 ```
 
 Single-run result:
 
 | Representation | Events | Symbols | Elapsed ms | Events/sec |
 |---|---:|---:|---:|---:|
-| string map | 1,000,000 | 1,024 | 55.725 | 17,945,119 |
-| symbol slot vec | 1,000,000 | 1,024 | 0.443 | 2,256,063,170 |
+| string map | 1,000,000 | 1,024 | 60.805 | 16,445,948 |
+| symbol slot vec | 1,000,000 | 1,024 | 0.447 | 2,239,014,833 |
 
-The dense symbol-slot vector representation was about 126x faster on this
-microbenchmark. This does not mean full replay is 126x faster; it isolates one
+The dense symbol-slot vector representation was about 136x faster on this
+microbenchmark. This does not mean full replay is 136x faster; it isolates one
 hot representation decision: map lookup by string versus direct indexed state.
 Production replay still pays for catalog validation and event slotting before
 the hot loop, so its end-to-end speedup should be smaller than this microbench.
@@ -209,8 +202,11 @@ indexes, and `PredictionRecord` keeps the stable `SymbolId` for audit output.
 Prediction provenance follows the same shape: input provenance is stored as
 compact inline event keys (`InputSet::Empty`, `InputSet::One`, or fixed-capacity
 `InputSet::Many`) and rendered back to human-readable event IDs only when
-producing the transcript. The windowed built-in signal uses that bounded inline
-set so multi-input provenance does not allocate a `Vec` per prediction.
+producing the transcript. Per-symbol state uses the same eight-observation
+window, so the current engine is deliberately short-window; it does not retain
+older feature history for long moving averages. The windowed built-in signal
+uses that bounded inline set so multi-input provenance does not allocate a `Vec`
+per prediction.
 
 ## Scope Of Conclusions
 

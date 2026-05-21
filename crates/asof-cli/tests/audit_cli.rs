@@ -13,7 +13,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn cli() -> Result<Command, Box<dyn std::error::Error>> {
-    let mut command = Command::cargo_bin("asof-causality")?;
+    let mut command = Command::cargo_bin("asof")?;
     command.current_dir(repo_root());
     Ok(command)
 }
@@ -157,7 +157,7 @@ fn audit_jsonl_validates_against_schema() -> TestResult {
         "--signal",
         "windowed-feature-sentiment",
     ])?;
-    let schema_path = repo_root().join("docs/audit.schema.json");
+    let schema_path = repo_root().join("schemas/audit.schema.json");
     let validator = schema_validator(&schema_path)?;
     let stdout = stdout_text(&output);
     let records = stdout
@@ -222,7 +222,7 @@ fn negative_control_reports_four_leaks_for_alfred_fixture() -> TestResult {
 }
 
 #[test]
-fn check_exits_nonzero_when_invariant_fails() -> TestResult {
+fn check_allows_fixtures_without_late_contrast_case() -> TestResult {
     let temp = TempDir::new()?;
     let fixture = temp.path().join("no-contrast.pipe");
     fs::write(
@@ -236,10 +236,35 @@ p1|110|110|2|prediction|XYZ|
     cli()?
         .args(["check", fixture.to_str().unwrap(), "--exhaustive"])
         .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "[PASS]  on_time_vs_late_contrast         not applicable:",
+        ))
+        .stderr(predicate::str::is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn check_exits_nonzero_when_replay_order_is_invalid() -> TestResult {
+    let temp = TempDir::new()?;
+    let fixture = temp.path().join("duplicate-receipt.pipe");
+    fs::write(
+        &fixture,
+        "\
+f1|100|100|1|feature|XYZ|sentiment=positive
+f2|101|100|1|feature|XYZ|sentiment=negative
+p1|110|110|2|prediction|XYZ|
+",
+    )?;
+
+    cli()?
+        .args(["check", fixture.to_str().unwrap(), "--exhaustive"])
+        .assert()
         .failure()
-        .stdout(predicate::str::contains("[FAIL]  on_time_vs_late_contrast"))
+        .stdout(predicate::str::contains("[FAIL]  prefix_equivalence"))
         .stderr(predicate::str::contains(
-            "error: one or more adversarial checks failed",
+            "error: one or more causality check methods failed",
         ));
 
     Ok(())
@@ -266,7 +291,7 @@ fn run_suite_writes_expected_artifacts_and_valid_manifest() -> TestResult {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("asof-causality run-suite"))
+        .stdout(predicate::str::contains("asof run-suite"))
         .stdout(predicate::str::contains("ARTIFACTS"))
         .stdout(predicate::str::contains("manifest.json"))
         .stderr(predicate::str::is_empty());
@@ -286,8 +311,8 @@ fn run_suite_writes_expected_artifacts_and_valid_manifest() -> TestResult {
 
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(out_dir.join("manifest.json"))?)?;
-    validate_json(&repo_root().join("docs/manifest.schema.json"), &manifest)?;
-    assert_eq!(manifest["schema_version"], 3);
+    validate_json(&repo_root().join("schemas/manifest.schema.json"), &manifest)?;
+    assert_eq!(manifest["schema_version"], 4);
     assert_eq!(manifest["checks_passed"].as_bool(), Some(true));
 
     Ok(())
@@ -341,7 +366,7 @@ fn unknown_top_level_command_prints_help_to_stdout() -> TestResult {
         .assert()
         .success()
         .stdout(predicate::str::contains("usage:"))
-        .stdout(predicate::str::contains("asof-causality negative-control"))
+        .stdout(predicate::str::contains("asof negative-control"))
         .stderr(predicate::str::is_empty());
 
     Ok(())
@@ -350,13 +375,14 @@ fn unknown_top_level_command_prints_help_to_stdout() -> TestResult {
 #[test]
 fn replay_stdout_snapshot() -> TestResult {
     let output = success_output(&["replay", "examples/late-arrival.pipe"])?;
-    insta::assert_snapshot!(stdout_text(&output), @r###"replay path=examples/late-arrival.pipe signal=last-feature-sentiment events=7
+    insta::assert_snapshot!(stdout_text(&output), @r###"
+replay path=examples/late-arrival.pipe signal=last-feature-sentiment events=7
 prediction_replay_key|symbol|signal_value|input_event_ids|max_input_replay_key
 580:3:p1|AAPL|0|-|-
 590:4:p2|AAPL|1|n1|585:2:n1
 610:5:p3|AAPL|1|n1|585:2:n1
 620:7:p4|AAPL|-1|c1|615:6:c1
-transcript_hash=d959650f0492c42e
+transcript_hash=019c2d5a38370ab3dd3b88b4bd14a933907c1c6e9ed7b164977fec1ff52232b7
 outcomes_seen=1
 "###);
 
@@ -366,13 +392,14 @@ outcomes_seen=1
 #[test]
 fn check_stdout_snapshot() -> TestResult {
     let output = success_output(&["check", "examples/late-arrival.pipe", "--exhaustive"])?;
-    insta::assert_snapshot!(stdout_text(&output), @r###"asof-causality check
+    insta::assert_snapshot!(stdout_text(&output), @r###"
+asof check
   fixture    examples/late-arrival.pipe
   events     7
   signal     last-feature-sentiment
   cutoffs    exhaustive (4)
 
-ADVERSARIAL CHECKS                                         8/8 PASS
+CHECK METHODS                                              8/8 PASS
   [PASS]  prefix_equivalence               all received-time prefixes matched full replay
   [PASS]  future_mutation                  mutating future rows did not change prior PredictionRecords
   [PASS]  late_arrival                     late events were not used before their replay key
@@ -383,7 +410,7 @@ ADVERSARIAL CHECKS                                         8/8 PASS
   [PASS]  audit_invariant                  all PredictionRecords satisfy max_input_replay_key <= prediction_replay_key
 
 PROVENANCE
-  transcript_hash      d959650f0492c42e
+  transcript_hash      019c2d5a38370ab3dd3b88b4bd14a933907c1c6e9ed7b164977fec1ff52232b7
   predictions_emitted  4
   outcomes_separated   1
 "###);
@@ -399,20 +426,21 @@ fn negative_control_stdout_snapshot() -> TestResult {
         "--signal",
         "windowed-feature-sentiment",
     ])?;
-    insta::assert_snapshot!(stdout_text(&output), @r###"asof-causality negative-control
+    insta::assert_snapshot!(stdout_text(&output), @r###"
+asof negative-control
   fixture  examples/lookahead-negative-control.pipe
   events   12
   signal   windowed-feature-sentiment
 
 ENGINE A: received-time replay (correct)
   ordering             (received_time, received_sequence_number, event_id)
-  transcript_hash      ed03706f6f79c31f
+  transcript_hash      7e2a3e7078b03955af6d45364d2921ee59cfecb751292d31957c2da3a28277e2
   impossible           0
   VERDICT              PASS
 
 ENGINE B: observed-time replay (deliberately broken baseline)
   ordering             (observed_time, received_sequence_number, event_id)
-  transcript_hash      f7b67d321cac694e
+  transcript_hash      2a3418748f96dbf80783eaaa5689d67dac4f600034a129d51412fd2a81ac4f31
   impossible           3
   VERDICT              FAIL
 

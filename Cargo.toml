@@ -1,7 +1,8 @@
 [workspace]
 members = [
-    "crates/asof-causality-core",
-    "crates/asof-causality-cli",
+    "crates/asof-causality",
+    "crates/asof-signals",
+    "crates/asof-cli",
 ]
 resolver = "2"
 
