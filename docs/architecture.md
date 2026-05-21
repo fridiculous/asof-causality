@@ -32,9 +32,12 @@ replay-local `SymbolSlot` and can query `AsOfView`, but cannot construct it,
 mutate it, or access the full event list through the signal API. This prevents
 mechanical lookahead through the kernel surface; it does not detect semantic or
 out-of-band knowledge encoded by the signal author or upstream data. The kernel
-has no built-in default signal. `Signal::evaluate` also receives the
-`as_of_timestamp` for the replay event being evaluated; the view contains only
-state received by that replay key.
+has no built-in default signal.
+
+`Signal::evaluate` also receives `as_of_timestamp` for the replay event being
+evaluated. That timestamp is informational for signal logic; it is not the
+filtering mechanism. Causality comes from replay order: the engine applies only
+events available at the prediction's replay key before constructing `AsOfView`.
 
 The `asof-signals` crate registers the built-ins. `last-feature-sentiment`
 returns the latest feature value and cites one input event.
@@ -65,15 +68,18 @@ floating-point arithmetic.
 For a public real-data demonstration of the same bitemporal boundary on
 ALFRED/FRED source data, see [demo.md](demo.md).
 
-`InputSet::Many` stores up to eight event keys inline. That cap is deliberate:
-it keeps `PredictionRecord`s fixed-size and allocation-free in the replay path.
-Signals that need larger provenance should use a separate compact recipe hash or
-snapshot manifest rather than growing per-prediction heap state.
+`InputSet::Many` stores up to eight event keys inline, and per-symbol
+`SymbolState` also remembers only the most recent eight feature observations.
+That cap is deliberate: it keeps both state reads and `PredictionRecord`
+provenance fixed-size and allocation-free in the replay path. It also means the
+current engine cannot compute a 50-observation mean from internal state. Signals
+that need larger history or provenance should use a separate compact recipe hash
+or snapshot manifest rather than growing per-prediction heap state.
 
-That larger-window path is not proven by the current inline provenance cage. The
-checked-in demo covers bounded built-in signals over text and fixed-decimal
-payloads; recipe-hash-backed snapshots, larger input sets, and richer numeric
-representations are roadmap items.
+That larger-window path is not proven by the current inline state/provenance
+cage. The checked-in demo covers bounded built-in signals over text and
+fixed-decimal payloads; recipe-hash-backed snapshots, larger input sets, and
+richer numeric representations are roadmap items.
 
 The CLI `audit` command renders those records as JSONL. The public shape is
 documented in `schemas/audit.schema.json`. The JSONL audit record includes a
@@ -142,6 +148,12 @@ commits to the signal name, signal configuration descriptor, and ordered input
 event keys. It does not separately commit to event payload values or replay
 ordering metadata. Later schema versions can commit to fuller feature recipes or
 input-value snapshots without changing the causality invariant.
+
+The input keys inside that recipe are compact FNV-1a 64-bit `EventKey`s, not
+BLAKE3 hashes. Event and symbol catalogs validate the labels they derive from
+and reject collisions before replay. BLAKE3 is used for recipe digests, event
+stream hashes, transcript digests, and manifests; compact IDs remain
+non-cryptographic identities.
 
 Symbols follow the same hot-path shape. `Event` keeps the original symbol string
 for input and transcript rendering. Replay builds a symbol catalog once,

@@ -22,9 +22,10 @@ pub struct SignalEvaluation {
 
 #[derive(Debug, Clone, PartialEq)]
 struct SymbolState {
-    // Fixed-size recent state keeps signal evaluation allocation-free. This is
-    // deliberately a short-window engine until larger recipe/snapshot
-    // commitments replace per-prediction inline provenance.
+    // Fixed-size recent state keeps signal evaluation allocation-free. The cap
+    // is real state history, not only output provenance: the 9th observation
+    // evicts the oldest one. This is deliberately a short-window engine until
+    // larger recipe/snapshot commitments replace bounded in-memory history.
     recent: [FeatureObservation; MAX_INPUTS_PER_PREDICTION],
     recent_len: usize,
 }
@@ -125,7 +126,9 @@ impl StateWriter<'_> {
 ///
 /// This is the correctness cage. Signal code can query only state that replay
 /// has already applied for the current symbol slot; it cannot scan the full
-/// event list, mutate state, or reach future rows through the type surface.
+/// event list, mutate state, or reach future rows through the type surface. The
+/// view itself does not apply a timestamp filter; replay order decides which
+/// events have been applied before constructing this view.
 pub struct AsOfView<'a> {
     store: &'a StateStore,
 }

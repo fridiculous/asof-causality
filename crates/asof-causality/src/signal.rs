@@ -8,6 +8,11 @@ use crate::{AsOfView, SignalEvaluation, SymbolSlot};
 /// signal author or input data.
 pub trait Signal {
     /// Evaluates signal state from the opaque as-of view.
+    ///
+    /// `as_of_timestamp` is the prediction event's timestamp for signal logic
+    /// that needs to know the evaluation time. It is not the cutoff mechanism:
+    /// the replay engine has already limited `view` by applying only events
+    /// available at the prediction's replay key.
     fn evaluate(
         &self,
         view: AsOfView<'_>,

@@ -63,10 +63,11 @@ hashes, a feature recipe, or snapshot manifest without changing the core
 causality invariant.
 
 That extension is not proven by the current artifact. The checked-in signals
-exercise short-window inline provenance, text fixture payloads, and fixed-point
-numeric payloads. Signals requiring more than eight cited inputs,
-non-fixed-point numeric representations, or recipe-hash-backed snapshots need a
-follow-up design and tests before they should be treated as covered by the cage.
+exercise short-window inline state/provenance, text fixture payloads, and
+fixed-point numeric payloads. Signals requiring more than eight remembered
+observations or cited inputs, non-fixed-point numeric representations, or
+recipe-hash-backed snapshots need a follow-up design and tests before they
+should be treated as covered by the cage.
 
 ## Arrow/Parquet Production Boundary
 

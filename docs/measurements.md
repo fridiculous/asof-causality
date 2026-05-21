@@ -202,8 +202,11 @@ indexes, and `PredictionRecord` keeps the stable `SymbolId` for audit output.
 Prediction provenance follows the same shape: input provenance is stored as
 compact inline event keys (`InputSet::Empty`, `InputSet::One`, or fixed-capacity
 `InputSet::Many`) and rendered back to human-readable event IDs only when
-producing the transcript. The windowed built-in signal uses that bounded inline
-set so multi-input provenance does not allocate a `Vec` per prediction.
+producing the transcript. Per-symbol state uses the same eight-observation
+window, so the current engine is deliberately short-window; it does not retain
+older feature history for long moving averages. The windowed built-in signal
+uses that bounded inline set so multi-input provenance does not allocate a `Vec`
+per prediction.
 
 ## Scope Of Conclusions
 

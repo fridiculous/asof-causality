@@ -72,7 +72,7 @@ It does not prove alpha, data authenticity, survivorship correctness, fill reali
 ## Why This Is Credible
 
 - Signals receive an opaque `AsOfView`, not the full event stream.
-- Short-window provenance is fixed-size and allocation-free in replay.
+- Short-window state and provenance are fixed-size and allocation-free in replay.
 - Checks rerun prefixes, mutate future rows, and use negative controls.
 - Audit JSONL and manifests bind signal identity, inputs, hashes, and tool context.
 
