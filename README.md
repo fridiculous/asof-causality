@@ -210,6 +210,25 @@ decimal literals.
 - Larger-window signals should use a compact recipe digest or snapshot manifest
   instead of trying to place every input key in the prediction record. See
   [Recipe Hashes](docs/roadmap.md#recipe-hashes).
+- CLI outcome attachment currently joins on `(symbol, prediction_replay_key)`.
+  That is strict and unambiguous for replay-derived fixtures, but it is not the
+  natural production outcome join. Production strategy/outcome APIs should join
+  on economic keys such as `(symbol, target_timestamp, horizon)` and resolve
+  replay identity internally. See
+  [Outcome Join Semantics](docs/roadmap.md#outcome-join-semantics).
+- `sentiment` payloads and `last-feature-sentiment` are legacy fixture domains
+  kept to prove the signal API can handle non-numeric labels. Production quant
+  features should move toward typed numeric Arrow/Parquet columns and
+  deterministic fixed-point or integer math.
+- The v1 pipe CLI is a batch engine: it reads the event file into memory and
+  globally sorts by `(received_time, received_sequence_number, event_id)`.
+  Shuffled fixtures test deterministic batch replay, not out-of-core streaming.
+  Large tick datasets need pre-sorted Arrow/Parquet row groups plus a bounded
+  reorder window.
+- The adversarial `check` command samples 32 cutoffs by default on large inputs
+  because prefix-equivalence and future-mutation checks replay/mutate multiple
+  prefixes. The replay hot path is fast, but the falsification harness is not
+  yet an incremental proof engine.
 
 ## Scale And I/O
 

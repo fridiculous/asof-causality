@@ -33,6 +33,25 @@ identity is the data fixture hash, prediction output hash, checks output hash,
 transcript hash, and per-record recipe hash. Commit and toolchain metadata are
 useful context, not proof that a run is trustworthy.
 
+## Outcome Join Semantics
+
+The current CLI outcome attachment is deliberately strict:
+`(symbol, prediction_replay_key)` must match exactly. That is useful for
+fixtures, regression tests, and second-pass audits where outcomes are generated
+after replay has already produced stable prediction keys. It is not the right
+primary API for production outcome data.
+
+Market outcome datasets are normally keyed by economic target identity: symbol,
+target timestamp, horizon, close/open convention, and sometimes venue or
+corporate-action policy. They should not need to know an internal replay key
+before the causality engine has emitted a `PredictionRecord`.
+
+The production outcome adapter should therefore accept target keys such as
+`(symbol, target_timestamp, horizon)` or an explicit target event ID, join them
+to replay-derived predictions inside the platform, and then write the resolved
+`prediction_replay_key` into the final audit artifact. The replay key remains
+the immutable audit identity; it should not be the only user-facing join handle.
+
 ## Recipe Hashes
 
 `PredictionRecord` stores a bounded inline set of input event keys plus a fixed
@@ -95,7 +114,11 @@ The typed schema should avoid treating the export as only JSONL-in-Parquet:
 - `symbol_id`: fixed-width integer identity for joins and audit records.
 - `symbol`: dictionary-encoded UTF-8 label for display and analyst queries.
 - `sentiment`: dictionary-encoded UTF-8 for the low-cardinality sentiment
-  domain, including generated mutation markers if they appear in fixtures.
+  fixture domain, including generated mutation markers if they appear in tests.
+  It is retained for API coverage, not as the intended production quant feature
+  representation.
+- `score` and future numeric feature columns: fixed-point decimal or integer
+  physical types, not text payload parsing in the replay hot path.
 - `return_bps`: current audit JSONL stores this as a JSON number. A typed
   Parquet adapter should prefer integer basis points (`Int64`) or an Arrow
   decimal type over `Float64`.
@@ -107,6 +130,28 @@ first if typed feature columns would expand the scope too far, then promote to
 typed feature columns in a follow-up. Do not bundle storing parsed
 `FeatureValues` on `Event` into the Arrow work; that is a separate
 architectural cleanup.
+
+## Out-Of-Core Replay And Check Scaling
+
+The v1 CLI is a deterministic batch harness. It reads pipe events into memory,
+sorts the full vector by `(received_time, received_sequence_number, event_id)`,
+and then replays. That is acceptable for inspectable fixtures and adversarial
+benchmarks, but it is not a streaming architecture for 50GB tick files.
+
+The production ingestion path should require Arrow/Parquet row groups sorted by
+received-time order, or at least sorted closely enough that replay can use a
+bounded reorder buffer. Late arrivals can then be handled with a min-heap or
+watermark policy instead of a global in-memory sort. Physical row shuffling
+should remain a regression test for determinism, not the expected production
+layout.
+
+The same distinction applies to adversarial checks. The replay state update path
+is fast, but prefix-equivalence and future-mutation checks intentionally rerun
+or mutate multiple prefixes. The default 32-cutoff sample is a deterministic
+large-input guardrail, not a claim that the falsification harness is fully
+incremental. A production checker should reuse prefix transcripts, avoid deep
+whole-log clones, and turn these checks into incremental commitments over
+sorted input partitions.
 
 ## Strategy Layer Handoff: Python Bindings And IPC
 

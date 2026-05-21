@@ -72,9 +72,11 @@ The CLI `audit` command renders those records as JSONL. The public shape is
 documented in `docs/audit.schema.json`. The JSONL audit record includes a BLAKE3
 `feature_recipe_hash`, `causally_valid`, optional
 `matched_stored_prediction`, and optional outcome attribution. Stored
-predictions are matched by `(symbol, prediction_replay_key)`. Outcomes must
-explicitly name the prediction replay key; the CLI attaches outcome values to
-audit records but does not score them.
+predictions are matched by `(symbol, prediction_replay_key)`. The current CLI
+outcome attachment uses the same strict replay key so fixture audits are
+unambiguous; it attaches outcome values to audit records but does not score
+them. Production outcome joins should use economic target keys and resolve
+replay identity inside the platform boundary.
 
 ## Ingestion Boundary
 
