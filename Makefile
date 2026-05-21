@@ -21,7 +21,7 @@ release-smoke: build
 	target/release/asof-causality negative-control examples/lookahead-negative-control.pipe
 
 package:
-	cargo package --locked --allow-dirty --list -p asof-causality-core
+	cargo package --locked --allow-dirty -p asof-causality-core
 
 replay:
 	cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe

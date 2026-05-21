@@ -56,4 +56,4 @@ jobs:
         run: target/release/asof-causality negative-control examples/lookahead-negative-control.pipe
       - name: Core package dry run
         if: matrix.os == 'ubuntu-latest'
-        run: cargo package --locked --allow-dirty --list -p asof-causality-core
+        run: cargo package --locked --allow-dirty -p asof-causality-core
