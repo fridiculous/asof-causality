@@ -52,7 +52,7 @@ research environment.
 ## Commands
 
 ```sh
-python3 scripts/rebuild-alfred-demo.py --check
+uv run --script scripts/rebuild-alfred-example.py --check
 cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- replay examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal windowed-zscore

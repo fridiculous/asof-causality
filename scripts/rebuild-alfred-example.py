@@ -1,8 +1,13 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
 """Rebuild the checked-in ALFRED/FRED real-data causality fixture.
 
 This script intentionally uses only the Python standard library so a reviewer
 can regenerate the fixture without project-specific dependencies or API keys.
+It prefers curl for HTTP fetches when available and falls back to urllib.
 """
 
 from __future__ import annotations
@@ -12,12 +17,16 @@ import csv
 import difflib
 import io
 import os
+import shutil
 import ssl
+import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 
@@ -79,7 +88,7 @@ class PredictionRow:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Rebuild examples/alfred-dgs10-sp500.pipe from public FRED/ALFRED CSVs."
+        description="Rebuild the ALFRED/FRED example pipe from public source CSVs."
     )
     parser.add_argument(
         "--out",
@@ -194,10 +203,58 @@ def fetch_sp500_closes() -> dict[str, Decimal]:
 
 
 def fetch_csv(url: str) -> list[dict[str, str]]:
-    request = Request(url, headers={"User-Agent": "asof-causality-repro/1.0"})
-    with urlopen(request, timeout=30, context=ssl_context()) as response:
-        body = response.read().decode("utf-8-sig")
+    body = fetch_url(url)
     return list(csv.DictReader(io.StringIO(body)))
+
+
+def fetch_url(url: str) -> str:
+    if shutil.which("curl"):
+        return fetch_url_with_curl(url)
+    return fetch_url_with_urllib(url)
+
+
+def fetch_url_with_curl(url: str) -> str:
+    result = subprocess.run(
+        [
+            "curl",
+            "--fail",
+            "--http1.1",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "30",
+            "--retry",
+            "3",
+            "--retry-all-errors",
+            "--retry-delay",
+            "1",
+            url,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"curl failed for {url}: {result.stderr.strip()}")
+    return result.stdout
+
+
+def fetch_url_with_urllib(url: str) -> str:
+    request = Request(url, headers={"User-Agent": "asof-causality-repro/1.0"})
+    last_error: BaseException | None = None
+
+    for attempt in range(1, 4):
+        try:
+            with urlopen(request, timeout=90, context=ssl_context()) as response:
+                return response.read().decode("utf-8-sig")
+        except (TimeoutError, URLError) as error:
+            last_error = error
+            if attempt == 3:
+                break
+            time.sleep(attempt)
+
+    raise RuntimeError(f"failed to fetch {request.full_url}") from last_error
 
 
 def ssl_context() -> ssl.SSLContext:

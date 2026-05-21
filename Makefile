@@ -14,7 +14,7 @@ check-fixture:
 	cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
 
 verify-real-data-demo:
-	python3 scripts/rebuild-alfred-demo.py --check
+	uv run --script scripts/rebuild-alfred-example.py --check
 
 bench:
 	cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
