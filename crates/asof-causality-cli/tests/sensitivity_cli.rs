@@ -18,6 +18,8 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
             "--signal",
             "windowed-zscore",
             "--shift-features",
+            "-5000",
+            "--shift-features",
             "-10000",
             "--observed-time-leaky",
             "--details",
@@ -36,11 +38,13 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
     let summary_path = out_dir.join("summary.jsonl");
     let details_path = out_dir.join("details.jsonl");
     let manifest_path = out_dir.join("manifest.json");
+    let sensitivity_curve_svg_path = out_dir.join("sensitivity-curve.svg");
     let flip_rate_svg_path = out_dir.join("flip-rate.svg");
     let input_change_svg_path = out_dir.join("input-change.svg");
     assert!(summary_path.is_file());
     assert!(details_path.is_file());
     assert!(manifest_path.is_file());
+    assert!(sensitivity_curve_svg_path.is_file());
     assert!(flip_rate_svg_path.is_file());
     assert!(input_change_svg_path.is_file());
 
@@ -49,12 +53,13 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
         .lines()
         .map(|line| serde_json::from_str(line).expect("summary row should parse"))
         .collect();
-    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.len(), 4);
     assert_eq!(rows[0]["policy_name"], "strict_received_time");
-    assert_eq!(rows[1]["policy_name"], "shift_features_minus_10000");
-    assert_eq!(rows[2]["policy_name"], "observed_time_leaky");
-    assert_eq!(rows[2]["category"], "realistic_failure");
-    assert!(rows[2]["new_input_uses"].as_u64().unwrap() > 0);
+    assert_eq!(rows[1]["policy_name"], "shift_features_minus_5000");
+    assert_eq!(rows[2]["policy_name"], "shift_features_minus_10000");
+    assert_eq!(rows[3]["policy_name"], "observed_time_leaky");
+    assert_eq!(rows[3]["category"], "realistic_failure");
+    assert!(rows[3]["new_input_uses"].as_u64().unwrap() > 0);
 
     let details = fs::read_to_string(&details_path).expect("details should be readable");
     assert!(!details.trim().is_empty());
@@ -64,8 +69,12 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
     .expect("manifest should parse");
     assert_eq!(manifest["schema_version"], "sensitivity-v1");
     assert_eq!(manifest["signal"], "windowed-zscore");
-    assert_eq!(manifest["policies"].as_array().unwrap().len(), 3);
+    assert_eq!(manifest["policies"].as_array().unwrap().len(), 4);
     assert_eq!(manifest["details_path"], details_path.display().to_string());
+    assert_eq!(
+        manifest["sensitivity_curve_svg_path"],
+        sensitivity_curve_svg_path.display().to_string()
+    );
     assert_eq!(
         manifest["flip_rate_svg_path"],
         flip_rate_svg_path.display().to_string()
@@ -74,8 +83,23 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
         manifest["input_change_svg_path"],
         input_change_svg_path.display().to_string()
     );
+    assert!(
+        manifest["sensitivity_curve_svg_hash"]
+            .as_str()
+            .unwrap()
+            .len()
+            == 64
+    );
     assert!(manifest["flip_rate_svg_hash"].as_str().unwrap().len() == 64);
     assert!(manifest["input_change_svg_hash"].as_str().unwrap().len() == 64);
+
+    let sensitivity_curve_svg =
+        fs::read_to_string(&sensitivity_curve_svg_path).expect("curve svg should read");
+    assert!(sensitivity_curve_svg.contains("<svg"));
+    assert!(sensitivity_curve_svg.contains("Sensitivity Curve"));
+    assert!(sensitivity_curve_svg.contains("sampled offsets"));
+    assert!(sensitivity_curve_svg.contains("baseline"));
+    assert!(sensitivity_curve_svg.contains("observed-time endpoint"));
 
     let flip_rate_svg = fs::read_to_string(&flip_rate_svg_path).expect("flip svg should read");
     assert!(flip_rate_svg.contains("<svg"));

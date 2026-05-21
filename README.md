@@ -263,17 +263,18 @@ next ALFRED vintage. See
 [docs/real-data-demo.md](docs/real-data-demo.md) for source URLs and mapping.
 
 ```sh
-cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --shift-features -10000 --observed-time-leaky --details --out runs/alfred-sensitivity
+cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --shift-features -5000 --shift-features -10000 --observed-time-leaky --details --out runs/alfred-sensitivity
 ```
 
 Runs a stability sweep outside the strict kernel: the baseline uses received
 time, the synthetic stress policy shifts feature receipt times by a raw integer
 offset in fixture-native units, and the observed-time endpoint measures the
-naive lookahead failure mode. The command writes `summary.jsonl`, static SVG
-charts (`flip-rate.svg` and `input-change.svg`), optional `details.jsonl`, and
-`manifest.json` with policy descriptors and transcript hashes. V1 accepts
-integer shifts only; typed durations such as `-1d` are deferred until timestamp
-semantics are first-class.
+naive lookahead failure mode. The command writes `summary.jsonl`, a primary
+`sensitivity-curve.svg` with baseline x=0 and each sampled shift on the x-axis,
+secondary static SVG charts (`flip-rate.svg` and `input-change.svg`), optional
+`details.jsonl`, and `manifest.json` with policy descriptors and transcript
+hashes. V1 accepts integer shifts only; typed durations such as `-1d` are
+deferred until timestamp semantics are first-class.
 
 ```sh
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024

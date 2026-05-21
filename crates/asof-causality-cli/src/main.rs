@@ -254,11 +254,14 @@ fn sensitivity(args: &[String]) -> Result<(), Box<dyn Error>> {
     let summary_path = sensitivity_args.out_dir.join("summary.jsonl");
     let details_path = sensitivity_args.out_dir.join("details.jsonl");
     let manifest_path = sensitivity_args.out_dir.join("manifest.json");
+    let sensitivity_curve_svg_path = sensitivity_args.out_dir.join("sensitivity-curve.svg");
     let flip_rate_svg_path = sensitivity_args.out_dir.join("flip-rate.svg");
     let input_change_svg_path = sensitivity_args.out_dir.join("input-change.svg");
 
     let summary_jsonl = format_sensitivity_summary_jsonl(sensitivity_args.signal, &sweep);
     write_file(&summary_path, &summary_jsonl)?;
+    let sensitivity_curve_svg = format_sensitivity_curve_svg(&sweep);
+    write_file(&sensitivity_curve_svg_path, &sensitivity_curve_svg)?;
     let flip_rate_svg = format_sensitivity_flip_rate_svg(&sweep);
     write_file(&flip_rate_svg_path, &flip_rate_svg)?;
     let input_change_svg = format_sensitivity_input_change_svg(&sweep);
@@ -279,6 +282,8 @@ fn sensitivity(args: &[String]) -> Result<(), Box<dyn Error>> {
         sweep: &sweep,
         summary_path: &summary_path,
         summary_jsonl: &summary_jsonl,
+        sensitivity_curve_svg_path: &sensitivity_curve_svg_path,
+        sensitivity_curve_svg: &sensitivity_curve_svg,
         flip_rate_svg_path: &flip_rate_svg_path,
         flip_rate_svg: &flip_rate_svg,
         input_change_svg_path: &input_change_svg_path,
@@ -291,11 +296,14 @@ fn sensitivity(args: &[String]) -> Result<(), Box<dyn Error>> {
     print_sensitivity_stdout(
         &sensitivity_args,
         &sweep,
-        &summary_path,
-        &flip_rate_svg_path,
-        &input_change_svg_path,
-        sensitivity_args.details.then_some(details_path.as_path()),
-        &manifest_path,
+        SensitivityArtifactPaths {
+            summary: &summary_path,
+            sensitivity_curve_svg: &sensitivity_curve_svg_path,
+            flip_rate_svg: &flip_rate_svg_path,
+            input_change_svg: &input_change_svg_path,
+            details: sensitivity_args.details.then_some(details_path.as_path()),
+            manifest: &manifest_path,
+        },
     );
 
     Ok(())
@@ -1125,12 +1133,23 @@ struct SensitivityManifestInputs<'a> {
     sweep: &'a SensitivitySweep,
     summary_path: &'a Path,
     summary_jsonl: &'a str,
+    sensitivity_curve_svg_path: &'a Path,
+    sensitivity_curve_svg: &'a str,
     flip_rate_svg_path: &'a Path,
     flip_rate_svg: &'a str,
     input_change_svg_path: &'a Path,
     input_change_svg: &'a str,
     details_path: Option<&'a Path>,
     details_jsonl: Option<&'a str>,
+}
+
+struct SensitivityArtifactPaths<'a> {
+    summary: &'a Path,
+    sensitivity_curve_svg: &'a Path,
+    flip_rate_svg: &'a Path,
+    input_change_svg: &'a Path,
+    details: Option<&'a Path>,
+    manifest: &'a Path,
 }
 
 fn format_sensitivity_summary_jsonl(signal: SignalChoice, sweep: &SensitivitySweep) -> String {
@@ -1252,6 +1271,333 @@ fn format_sensitivity_input_change_svg(sweep: &SensitivitySweep) -> String {
             .collect::<Vec<_>>(),
         max_value,
     )
+}
+
+fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
+    let mut points = Vec::new();
+    points.push(SensitivityCurvePoint {
+        label: sweep.baseline.policy.name.clone(),
+        category: sweep.baseline.policy.category.as_str().to_string(),
+        x: 0.0,
+        y: 0.0,
+    });
+
+    for result in &sweep.results {
+        if let PolicyKind::ReceivedTimeShift { shift, .. } = &result.run.policy.kind {
+            points.push(SensitivityCurvePoint {
+                label: result.run.policy.name.clone(),
+                category: result.run.policy.category.as_str().to_string(),
+                x: -(*shift as f64),
+                y: result.summary.flip_rate,
+            });
+        }
+    }
+
+    points.sort_by(|left, right| {
+        left.x
+            .total_cmp(&right.x)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+
+    let leaky_endpoint = sweep.results.iter().find(|result| {
+        matches!(
+            result.run.policy.kind,
+            PolicyKind::ReplayOrderOverride {
+                order: ReplayOrder::ObservedTimeLeaky
+            }
+        )
+    });
+    let leaky_flip_rate = leaky_endpoint.map(|result| result.summary.flip_rate);
+    let first_effect = points
+        .iter()
+        .filter(|point| point.label != sweep.baseline.policy.name)
+        .find(|point| point.y > 0.0);
+
+    let sampled_offsets = summarize_sampled_offsets(&points);
+    let first_effect_label = first_effect
+        .map(|point| {
+            format!(
+                "first sampled effect: x={} via {} at {}",
+                format_axis_number(point.x),
+                point.label,
+                format_percent(point.y)
+            )
+        })
+        .unwrap_or_else(|| "first sampled effect: not observed in numeric shift samples".into());
+    let endpoint_label = leaky_endpoint
+        .map(|result| {
+            format!(
+                "{} endpoint: {} flip, {} new input uses",
+                result.run.policy.name,
+                format_percent(result.summary.flip_rate),
+                result.summary.new_input_uses
+            )
+        })
+        .unwrap_or_else(|| "observed-time endpoint: not sampled".into());
+    let subtitle =
+        "x = lookahead stress (-received_time_shift) in fixture-native integer units; y = flip rate";
+
+    let width = 860_f64;
+    let height = 520_f64;
+    let left = 92_f64;
+    let right = 42_f64;
+    let top = 126_f64;
+    let bottom = 104_f64;
+    let plot_width = width - left - right;
+    let plot_height = height - top - bottom;
+
+    let (mut x_min, mut x_max) = points.iter().fold((0.0_f64, 0.0_f64), |(min, max), point| {
+        (min.min(point.x), max.max(point.x))
+    });
+    if (x_max - x_min).abs() < f64::EPSILON {
+        x_min -= 1.0;
+        x_max += 1.0;
+    }
+
+    let observed_y_max = points
+        .iter()
+        .map(|point| point.y)
+        .chain(leaky_flip_rate)
+        .fold(0.0_f64, f64::max);
+    let y_max = nice_flip_axis_max(observed_y_max);
+
+    let x_to_px = |x: f64| left + ((x - x_min) / (x_max - x_min)) * plot_width;
+    let y_to_px = |y: f64| top + ((y_max - y) / y_max) * plot_height;
+
+    let mut svg = String::new();
+    let _ = writeln!(
+        svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" viewBox="0 0 {width:.0} {height:.0}">"#
+    );
+    let _ = writeln!(
+        svg,
+        "<title id=\"title\">Sensitivity Curve</title><desc id=\"desc\">{}</desc>",
+        xml_escape(subtitle)
+    );
+    svg.push_str(
+        r##"<rect width="100%" height="100%" fill="#ffffff"/>
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+  .title { font-size: 22px; font-weight: 700; }
+  .subtitle { font-size: 13px; fill: #64748b; }
+  .note { font-size: 12px; fill: #475569; }
+  .axis-label { font-size: 12px; font-weight: 650; fill: #334155; }
+  .tick { font-size: 11px; fill: #64748b; }
+  .grid { stroke: #e2e8f0; stroke-width: 1; }
+  .axis { stroke: #94a3b8; stroke-width: 1.25; }
+  .curve { fill: none; stroke: #2563eb; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  .endpoint { stroke: #dc2626; stroke-width: 1.5; stroke-dasharray: 5 5; }
+  .point-label { font-size: 11px; fill: #334155; }
+</style>
+"##,
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="34" class="title">Sensitivity Curve</text>"#
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="56" class="subtitle">{}</text>"#,
+        xml_escape(subtitle)
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="78" class="note">sampled offsets: {}; no interpolation between points</text>"#,
+        xml_escape(&sampled_offsets)
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="98" class="note">{}</text>"#,
+        xml_escape(&first_effect_label)
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="520" y="98" class="note">{}</text>"#,
+        xml_escape(&endpoint_label)
+    );
+
+    for step in 0..=4 {
+        let ratio = step as f64 / 4.0;
+        let y_value = y_max * ratio;
+        let y = y_to_px(y_value);
+        let _ = writeln!(
+            svg,
+            r#"<line x1="{left:.0}" y1="{y:.2}" x2="{:.0}" y2="{y:.2}" class="grid"/>"#,
+            left + plot_width
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{:.0}" y="{:.2}" class="tick" text-anchor="end">{}</text>"#,
+            left - 10.0,
+            y + 4.0,
+            xml_escape(&format_percent(y_value))
+        );
+    }
+
+    let x_tick_values = curve_x_ticks(&points, x_min, x_max);
+    for x_value in x_tick_values {
+        let x = x_to_px(x_value);
+        let _ = writeln!(
+            svg,
+            r#"<line x1="{x:.2}" y1="{top:.0}" x2="{x:.2}" y2="{:.0}" class="grid"/>"#,
+            top + plot_height
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{x:.2}" y="{:.0}" class="tick" text-anchor="middle">{}</text>"#,
+            top + plot_height + 22.0,
+            xml_escape(&format_axis_number(x_value))
+        );
+    }
+
+    let axis_bottom = top + plot_height;
+    let axis_right = left + plot_width;
+    let _ = writeln!(
+        svg,
+        r#"<line x1="{left:.0}" y1="{top:.0}" x2="{left:.0}" y2="{axis_bottom:.0}" class="axis"/>"#
+    );
+    let _ = writeln!(
+        svg,
+        r#"<line x1="{left:.0}" y1="{axis_bottom:.0}" x2="{axis_right:.0}" y2="{axis_bottom:.0}" class="axis"/>"#
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="{:.0}" y="{}" class="axis-label" text-anchor="middle">lookahead stress (-shift, fixture-native units)</text>"#,
+        left + plot_width / 2.0,
+        height - 26.0
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="22" y="{:.0}" class="axis-label" transform="rotate(-90 22 {:.0})" text-anchor="middle">flip rate</text>"#,
+        top + plot_height / 2.0,
+        top + plot_height / 2.0
+    );
+
+    if let Some(endpoint_y) = leaky_flip_rate {
+        let y = y_to_px(endpoint_y);
+        let _ = writeln!(
+            svg,
+            r#"<line x1="{left:.0}" y1="{y:.2}" x2="{axis_right:.0}" y2="{y:.2}" class="endpoint"/>"#
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{:.0}" y="{:.2}" class="point-label" text-anchor="start">observed-time endpoint</text>"#,
+            left + 8.0,
+            y - 8.0
+        );
+    }
+
+    if points.len() > 1 {
+        let polyline = points
+            .iter()
+            .map(|point| format!("{:.2},{:.2}", x_to_px(point.x), y_to_px(point.y)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let _ = writeln!(svg, r#"<polyline points="{polyline}" class="curve"/>"#);
+    }
+
+    for point in &points {
+        let x = x_to_px(point.x);
+        let y = y_to_px(point.y);
+        let fill = category_color(&point.category);
+        let label = if point.label == sweep.baseline.policy.name {
+            "baseline".to_string()
+        } else {
+            format!(
+                "{} {}",
+                format_axis_number(point.x),
+                format_percent(point.y)
+            )
+        };
+        let _ = writeln!(
+            svg,
+            r##"<circle cx="{x:.2}" cy="{y:.2}" r="5" fill="{fill}" stroke="#ffffff" stroke-width="2"/>"##
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{x:.2}" y="{:.2}" class="point-label" text-anchor="middle">{}</text>"#,
+            y - 12.0,
+            xml_escape(&label)
+        );
+    }
+
+    if points.len() == 1 {
+        let _ = writeln!(
+            svg,
+            r#"<text x="{}" y="{}" class="note" text-anchor="middle">No numeric shift policies were provided; only the strict baseline can be plotted on this axis.</text>"#,
+            left + plot_width / 2.0,
+            top + plot_height / 2.0
+        );
+    }
+
+    svg.push_str("</svg>\n");
+    svg
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SensitivityCurvePoint {
+    label: String,
+    category: String,
+    x: f64,
+    y: f64,
+}
+
+fn nice_flip_axis_max(value: f64) -> f64 {
+    if value <= 0.01 {
+        0.01
+    } else if value <= 0.05 {
+        0.05
+    } else if value <= 0.10 {
+        0.10
+    } else if value <= 0.25 {
+        0.25
+    } else if value <= 0.50 {
+        0.50
+    } else {
+        1.0
+    }
+}
+
+fn summarize_sampled_offsets(points: &[SensitivityCurvePoint]) -> String {
+    let mut labels = points
+        .iter()
+        .map(|point| format_axis_number(point.x))
+        .collect::<Vec<_>>();
+    labels.dedup();
+    if labels.len() <= 8 {
+        labels.join(", ")
+    } else {
+        format!(
+            "{} explicit offsets from {} to {}",
+            labels.len(),
+            labels.first().expect("offset labels should not be empty"),
+            labels.last().expect("offset labels should not be empty")
+        )
+    }
+}
+
+fn curve_x_ticks(points: &[SensitivityCurvePoint], x_min: f64, x_max: f64) -> Vec<f64> {
+    let mut sampled = points.iter().map(|point| point.x).collect::<Vec<_>>();
+    sampled.dedup_by(|left, right| (*left - *right).abs() < f64::EPSILON);
+    if sampled.len() <= 6 {
+        return sampled;
+    }
+
+    (0..=4)
+        .map(|step| x_min + (x_max - x_min) * step as f64 / 4.0)
+        .collect()
+}
+
+fn format_axis_number(value: f64) -> String {
+    if (value - value.round()).abs() < f64::EPSILON {
+        format!("{:.0}", value)
+    } else {
+        format!("{value:.2}")
+    }
+}
+
+fn format_percent(value: f64) -> String {
+    format!("{:.1}%", value * 100.0)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1470,6 +1816,8 @@ fn format_sensitivity_manifest_json(inputs: SensitivityManifestInputs<'_>) -> St
         "policies": policies,
         "summary_path": inputs.summary_path.display().to_string(),
         "summary_hash": asof_causality_core::blake3_hex(inputs.summary_jsonl.as_bytes()),
+        "sensitivity_curve_svg_path": inputs.sensitivity_curve_svg_path.display().to_string(),
+        "sensitivity_curve_svg_hash": asof_causality_core::blake3_hex(inputs.sensitivity_curve_svg.as_bytes()),
         "flip_rate_svg_path": inputs.flip_rate_svg_path.display().to_string(),
         "flip_rate_svg_hash": asof_causality_core::blake3_hex(inputs.flip_rate_svg.as_bytes()),
         "input_change_svg_path": inputs.input_change_svg_path.display().to_string(),
@@ -1535,11 +1883,7 @@ fn replay_order_name(order: ReplayOrder) -> &'static str {
 fn print_sensitivity_stdout(
     args: &SensitivityArgs,
     sweep: &SensitivitySweep,
-    summary_path: &Path,
-    flip_rate_svg_path: &Path,
-    input_change_svg_path: &Path,
-    details_path: Option<&Path>,
-    manifest_path: &Path,
+    artifacts: SensitivityArtifactPaths<'_>,
 ) {
     println!("asof-causality sensitivity");
     println!("  fixture   {}", args.events_path);
@@ -1564,13 +1908,14 @@ fn print_sensitivity_stdout(
     }
     println!();
     println!("ARTIFACTS  {}", args.out_dir.display());
-    println!("  summary   {}", summary_path.display());
-    println!("  flip svg  {}", flip_rate_svg_path.display());
-    println!("  input svg {}", input_change_svg_path.display());
-    if let Some(details_path) = details_path {
-        println!("  details   {}", details_path.display());
+    println!("  summary    {}", artifacts.summary.display());
+    println!("  curve svg  {}", artifacts.sensitivity_curve_svg.display());
+    println!("  flip svg   {}", artifacts.flip_rate_svg.display());
+    println!("  input svg  {}", artifacts.input_change_svg.display());
+    if let Some(details_path) = artifacts.details {
+        println!("  details    {}", details_path.display());
     }
-    println!("  manifest  {}", manifest_path.display());
+    println!("  manifest   {}", artifacts.manifest.display());
 }
 
 fn load_stored_predictions(
