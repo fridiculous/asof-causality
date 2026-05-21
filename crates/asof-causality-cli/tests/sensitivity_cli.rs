@@ -36,9 +36,13 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
     let summary_path = out_dir.join("summary.jsonl");
     let details_path = out_dir.join("details.jsonl");
     let manifest_path = out_dir.join("manifest.json");
+    let flip_rate_svg_path = out_dir.join("flip-rate.svg");
+    let input_change_svg_path = out_dir.join("input-change.svg");
     assert!(summary_path.is_file());
     assert!(details_path.is_file());
     assert!(manifest_path.is_file());
+    assert!(flip_rate_svg_path.is_file());
+    assert!(input_change_svg_path.is_file());
 
     let summary = fs::read_to_string(&summary_path).expect("summary should be readable");
     let rows: Vec<Value> = summary
@@ -62,6 +66,21 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
     assert_eq!(manifest["signal"], "windowed-zscore");
     assert_eq!(manifest["policies"].as_array().unwrap().len(), 3);
     assert_eq!(manifest["details_path"], details_path.display().to_string());
+    assert_eq!(
+        manifest["flip_rate_svg_path"],
+        flip_rate_svg_path.display().to_string()
+    );
+    assert_eq!(
+        manifest["input_change_svg_path"],
+        input_change_svg_path.display().to_string()
+    );
+    assert!(manifest["flip_rate_svg_hash"].as_str().unwrap().len() == 64);
+    assert!(manifest["input_change_svg_hash"].as_str().unwrap().len() == 64);
+
+    let flip_rate_svg = fs::read_to_string(&flip_rate_svg_path).expect("flip svg should read");
+    assert!(flip_rate_svg.contains("<svg"));
+    assert!(flip_rate_svg.contains("Sensitivity Flip Rate"));
+    assert!(flip_rate_svg.contains("observed_time_leaky"));
 
     let _ = fs::remove_dir_all(out_dir);
 }

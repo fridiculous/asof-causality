@@ -269,10 +269,11 @@ cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe 
 Runs a stability sweep outside the strict kernel: the baseline uses received
 time, the synthetic stress policy shifts feature receipt times by a raw integer
 offset in fixture-native units, and the observed-time endpoint measures the
-naive lookahead failure mode. The command writes `summary.jsonl`,
-`details.jsonl`, and `manifest.json` with policy descriptors and transcript
-hashes. V1 accepts integer shifts only; typed durations such as `-1d` are
-deferred until timestamp semantics are first-class.
+naive lookahead failure mode. The command writes `summary.jsonl`, static SVG
+charts (`flip-rate.svg` and `input-change.svg`), optional `details.jsonl`, and
+`manifest.json` with policy descriptors and transcript hashes. V1 accepts
+integer shifts only; typed durations such as `-1d` are deferred until timestamp
+semantics are first-class.
 
 ```sh
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024

@@ -254,9 +254,15 @@ fn sensitivity(args: &[String]) -> Result<(), Box<dyn Error>> {
     let summary_path = sensitivity_args.out_dir.join("summary.jsonl");
     let details_path = sensitivity_args.out_dir.join("details.jsonl");
     let manifest_path = sensitivity_args.out_dir.join("manifest.json");
+    let flip_rate_svg_path = sensitivity_args.out_dir.join("flip-rate.svg");
+    let input_change_svg_path = sensitivity_args.out_dir.join("input-change.svg");
 
     let summary_jsonl = format_sensitivity_summary_jsonl(sensitivity_args.signal, &sweep);
     write_file(&summary_path, &summary_jsonl)?;
+    let flip_rate_svg = format_sensitivity_flip_rate_svg(&sweep);
+    write_file(&flip_rate_svg_path, &flip_rate_svg)?;
+    let input_change_svg = format_sensitivity_input_change_svg(&sweep);
+    write_file(&input_change_svg_path, &input_change_svg)?;
 
     let details_jsonl = if sensitivity_args.details {
         let details_jsonl = format_sensitivity_details_jsonl(&sweep);
@@ -273,6 +279,10 @@ fn sensitivity(args: &[String]) -> Result<(), Box<dyn Error>> {
         sweep: &sweep,
         summary_path: &summary_path,
         summary_jsonl: &summary_jsonl,
+        flip_rate_svg_path: &flip_rate_svg_path,
+        flip_rate_svg: &flip_rate_svg,
+        input_change_svg_path: &input_change_svg_path,
+        input_change_svg: &input_change_svg,
         details_path: sensitivity_args.details.then_some(details_path.as_path()),
         details_jsonl: details_jsonl.as_deref(),
     });
@@ -282,6 +292,8 @@ fn sensitivity(args: &[String]) -> Result<(), Box<dyn Error>> {
         &sensitivity_args,
         &sweep,
         &summary_path,
+        &flip_rate_svg_path,
+        &input_change_svg_path,
         sensitivity_args.details.then_some(details_path.as_path()),
         &manifest_path,
     );
@@ -1113,6 +1125,10 @@ struct SensitivityManifestInputs<'a> {
     sweep: &'a SensitivitySweep,
     summary_path: &'a Path,
     summary_jsonl: &'a str,
+    flip_rate_svg_path: &'a Path,
+    flip_rate_svg: &'a str,
+    input_change_svg_path: &'a Path,
+    input_change_svg: &'a str,
     details_path: Option<&'a Path>,
     details_jsonl: Option<&'a str>,
 }
@@ -1197,6 +1213,185 @@ fn format_sensitivity_details_jsonl(sweep: &SensitivitySweep) -> String {
     text
 }
 
+fn format_sensitivity_flip_rate_svg(sweep: &SensitivitySweep) -> String {
+    let rows = sensitivity_chart_rows(sweep);
+    format_bar_chart_svg(
+        "Sensitivity Flip Rate",
+        "share of predictions whose signal value changed",
+        &rows
+            .iter()
+            .map(|row| ChartRow {
+                label: row.label.clone(),
+                category: row.category.clone(),
+                value: row.flip_rate,
+                value_label: format!("{:.1}%", row.flip_rate * 100.0),
+            })
+            .collect::<Vec<_>>(),
+        1.0,
+    )
+}
+
+fn format_sensitivity_input_change_svg(sweep: &SensitivitySweep) -> String {
+    let rows = sensitivity_chart_rows(sweep);
+    let max_value = rows
+        .iter()
+        .map(|row| row.new_input_uses as f64)
+        .fold(0.0, f64::max)
+        .max(1.0);
+    format_bar_chart_svg(
+        "New Inputs Admitted",
+        "new input-event uses admitted by each comparison policy",
+        &rows
+            .iter()
+            .map(|row| ChartRow {
+                label: row.label.clone(),
+                category: row.category.clone(),
+                value: row.new_input_uses as f64,
+                value_label: row.new_input_uses.to_string(),
+            })
+            .collect::<Vec<_>>(),
+        max_value,
+    )
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SensitivityChartRow {
+    label: String,
+    category: String,
+    flip_rate: f64,
+    new_input_uses: usize,
+}
+
+fn sensitivity_chart_rows(sweep: &SensitivitySweep) -> Vec<SensitivityChartRow> {
+    sweep
+        .results
+        .iter()
+        .map(|result| SensitivityChartRow {
+            label: result.run.policy.name.clone(),
+            category: result.run.policy.category.as_str().to_string(),
+            flip_rate: result.summary.flip_rate,
+            new_input_uses: result.summary.new_input_uses,
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ChartRow {
+    label: String,
+    category: String,
+    value: f64,
+    value_label: String,
+}
+
+fn format_bar_chart_svg(title: &str, subtitle: &str, rows: &[ChartRow], max_value: f64) -> String {
+    let row_height = 44_usize;
+    let top = 78_usize;
+    let bottom = 42_usize;
+    let left = 230_usize;
+    let chart_width = 420_f64;
+    let width = 760_usize;
+    let height = top + bottom + rows.len().max(1) * row_height;
+    let mut svg = String::new();
+
+    let _ = writeln!(
+        svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" viewBox="0 0 {width} {height}">"#
+    );
+    let _ = writeln!(svg, "<title id=\"title\">{}</title>", xml_escape(title));
+    let _ = writeln!(svg, "<desc id=\"desc\">{}</desc>", xml_escape(subtitle));
+    svg.push_str(
+        r##"<rect width="100%" height="100%" fill="#ffffff"/>
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+  .title { font-size: 22px; font-weight: 700; }
+  .subtitle { font-size: 13px; fill: #64748b; }
+  .label { font-size: 12px; }
+  .category { font-size: 11px; fill: #64748b; }
+  .value { font-size: 12px; font-weight: 700; }
+  .axis { stroke: #cbd5e1; stroke-width: 1; }
+</style>
+"##,
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="34" class="title">{}</text>"#,
+        xml_escape(title)
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="56" class="subtitle">{}</text>"#,
+        xml_escape(subtitle)
+    );
+    let axis_y = height - bottom + 2;
+    let _ = writeln!(
+        svg,
+        r#"<line x1="{left}" y1="{axis_y}" x2="{}" y2="{axis_y}" class="axis"/>"#,
+        left as f64 + chart_width
+    );
+
+    if rows.is_empty() {
+        let _ = writeln!(
+            svg,
+            r#"<text x="28" y="{top}" class="subtitle">No comparison policies were emitted.</text>"#
+        );
+    }
+
+    for (index, row) in rows.iter().enumerate() {
+        let y = top + index * row_height;
+        let bar_y = y + 10;
+        let label_y = y + 16;
+        let category_y = y + 32;
+        let normalized = if max_value <= 0.0 {
+            0.0
+        } else {
+            (row.value / max_value).clamp(0.0, 1.0)
+        };
+        let bar_width = (normalized * chart_width).max(if row.value > 0.0 { 2.0 } else { 0.0 });
+        let fill = category_color(&row.category);
+        let value_x = left as f64 + bar_width + 10.0;
+
+        let _ = writeln!(
+            svg,
+            r#"<text x="28" y="{label_y}" class="label">{}</text>"#,
+            xml_escape(&row.label)
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="28" y="{category_y}" class="category">{}</text>"#,
+            xml_escape(&row.category)
+        );
+        let _ = writeln!(
+            svg,
+            r#"<rect x="{left}" y="{bar_y}" width="{bar_width:.2}" height="18" rx="3" fill="{fill}"/>"#
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{value_x:.2}" y="{}" class="value">{}</text>"#,
+            bar_y + 14,
+            xml_escape(&row.value_label)
+        );
+    }
+
+    svg.push_str("</svg>\n");
+    svg
+}
+
+fn category_color(category: &str) -> &'static str {
+    match category {
+        "realistic_failure" => "#dc2626",
+        "synthetic_stress" => "#2563eb",
+        _ => "#475569",
+    }
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 fn sensitivity_detail_json(
     sweep: &SensitivitySweep,
     result: &SensitivityPolicyResult,
@@ -1275,6 +1470,10 @@ fn format_sensitivity_manifest_json(inputs: SensitivityManifestInputs<'_>) -> St
         "policies": policies,
         "summary_path": inputs.summary_path.display().to_string(),
         "summary_hash": asof_causality_core::blake3_hex(inputs.summary_jsonl.as_bytes()),
+        "flip_rate_svg_path": inputs.flip_rate_svg_path.display().to_string(),
+        "flip_rate_svg_hash": asof_causality_core::blake3_hex(inputs.flip_rate_svg.as_bytes()),
+        "input_change_svg_path": inputs.input_change_svg_path.display().to_string(),
+        "input_change_svg_hash": asof_causality_core::blake3_hex(inputs.input_change_svg.as_bytes()),
         "details_path": details_path,
         "details_hash": details_hash,
     });
@@ -1337,6 +1536,8 @@ fn print_sensitivity_stdout(
     args: &SensitivityArgs,
     sweep: &SensitivitySweep,
     summary_path: &Path,
+    flip_rate_svg_path: &Path,
+    input_change_svg_path: &Path,
     details_path: Option<&Path>,
     manifest_path: &Path,
 ) {
@@ -1364,6 +1565,8 @@ fn print_sensitivity_stdout(
     println!();
     println!("ARTIFACTS  {}", args.out_dir.display());
     println!("  summary   {}", summary_path.display());
+    println!("  flip svg  {}", flip_rate_svg_path.display());
+    println!("  input svg {}", input_change_svg_path.display());
     if let Some(details_path) = details_path {
         println!("  details   {}", details_path.display());
     }
