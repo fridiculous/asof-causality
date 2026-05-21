@@ -130,8 +130,14 @@ fn observed_time_baseline_leaks_on_negative_control() {
         .expect("negative fixture should emit prediction at 95");
 
     assert_eq!(same_time_sequence_leak.max_input_received_time, 95);
-    assert_eq!(same_time_sequence_leak.prediction_sequence, 4);
-    assert_eq!(same_time_sequence_leak.max_input_sequence, 5);
+    assert_eq!(
+        same_time_sequence_leak.prediction_received_sequence_number,
+        4
+    );
+    assert_eq!(
+        same_time_sequence_leak.max_input_received_sequence_number,
+        5
+    );
 
     let late_feature_leak = output
         .predictions
@@ -174,7 +180,7 @@ fn windowed_signal_records_multi_input_provenance() {
 
     assert_eq!(before_late_feature.input_event_ids_used.len(), 4);
     assert_eq!(before_late_feature.max_input_received_time, 95);
-    assert_eq!(before_late_feature.max_input_sequence, 5);
+    assert_eq!(before_late_feature.max_input_received_sequence_number, 5);
 }
 
 #[test]
@@ -273,7 +279,7 @@ fn alfred_fixture_blocks_same_day_vintage_until_received() {
 
     assert_eq!(prediction.prediction_time, 202003181600);
     assert_eq!(prediction.max_input_received_time, 202003180900);
-    assert_eq!(prediction.max_input_sequence, 7);
+    assert_eq!(prediction.max_input_received_sequence_number, 7);
     assert!(!prediction.input_event_ids_used.contains_key(blocked_input));
 }
 
@@ -301,7 +307,7 @@ fn observed_time_baseline_leaks_alfred_same_day_vintage() {
         .expect("ALFRED fixture should emit the 2020-03-18 prediction");
 
     assert_eq!(leaked.max_input_received_time, 202003190900);
-    assert_eq!(leaked.max_input_sequence, 9);
+    assert_eq!(leaked.max_input_received_sequence_number, 9);
     assert!(leaked.input_event_ids_used.contains_key(same_day_vintage));
     assert!(leaked.max_input_received_time > leaked.prediction_time);
 }

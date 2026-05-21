@@ -1,5 +1,5 @@
 use crate::catalog::SymbolCatalog;
-use crate::{Event, EventKey, InputSet, ParseEventError, SymbolId};
+use crate::{Event, EventKey, InputSet, ParseEventError, ReplayKey, SymbolId};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
@@ -13,8 +13,8 @@ pub struct PredictionRecord {
     pub prediction_event_key: EventKey,
     /// Received time of the prediction event.
     pub prediction_time: u64,
-    /// Sequence of the prediction event.
-    pub prediction_sequence: u64,
+    /// Received sequence number of the prediction event.
+    pub prediction_received_sequence_number: u64,
     /// Symbol identifier for the prediction.
     pub symbol: SymbolId,
     /// Signal value emitted at the prediction replay key.
@@ -23,8 +23,8 @@ pub struct PredictionRecord {
     pub input_event_ids_used: InputSet,
     /// Maximum input received time used by the prediction.
     pub max_input_received_time: u64,
-    /// Maximum input sequence used by the prediction.
-    pub max_input_sequence: u64,
+    /// Maximum input received sequence number used by the prediction.
+    pub max_input_received_sequence_number: u64,
     /// Event key for the maximum input replay key, when any input was used.
     pub max_input_event_key: Option<EventKey>,
     /// BLAKE3 recipe digest for the signal and input set.
@@ -42,7 +42,7 @@ impl PredictionRecord {
             "{}|{}|{}|{}|{}",
             format_replay_key(
                 self.prediction_time,
-                self.prediction_sequence,
+                self.prediction_received_sequence_number,
                 self.prediction_event_key,
                 event_labels
             ),
@@ -59,7 +59,7 @@ impl PredictionRecord {
             .map(|event_key| {
                 format_replay_key(
                     self.max_input_received_time,
-                    self.max_input_sequence,
+                    self.max_input_received_sequence_number,
                     event_key,
                     event_labels,
                 )
@@ -75,13 +75,13 @@ impl PredictionRecord {
         let max_input_event_id = label_for(max_input_event_key, event_labels);
         let prediction_event_id = label_for(self.prediction_event_key, event_labels);
 
-        (
+        ReplayKey::new(
             self.max_input_received_time,
-            self.max_input_sequence,
+            self.max_input_received_sequence_number,
             max_input_event_id.as_str(),
-        ) > (
+        ) > ReplayKey::new(
             self.prediction_time,
-            self.prediction_sequence,
+            self.prediction_received_sequence_number,
             prediction_event_id.as_str(),
         )
     }
@@ -170,10 +170,15 @@ impl PredictionLog {
     pub fn format_replay_key(
         &self,
         received_time: u64,
-        sequence: u64,
+        received_sequence_number: u64,
         event_key: EventKey,
     ) -> String {
-        format_replay_key(received_time, sequence, event_key, &self.event_labels)
+        format_replay_key(
+            received_time,
+            received_sequence_number,
+            event_key,
+            &self.event_labels,
+        )
     }
 
     /// Returns human labels for all input events in `inputs`.
@@ -189,7 +194,7 @@ impl PredictionLog {
         record.max_input_event_key.map(|event_key| {
             format_replay_key(
                 record.max_input_received_time,
-                record.max_input_sequence,
+                record.max_input_received_sequence_number,
                 event_key,
                 &self.event_labels,
             )
@@ -211,14 +216,14 @@ fn event_labels(events: &[Event]) -> BTreeMap<EventKey, String> {
 
 fn format_replay_key(
     received_time: u64,
-    sequence: u64,
+    received_sequence_number: u64,
     event_key: EventKey,
     event_labels: &BTreeMap<EventKey, String>,
 ) -> String {
     format!(
         "{}:{}:{}",
         received_time,
-        sequence,
+        received_sequence_number,
         label_for(event_key, event_labels)
     )
 }

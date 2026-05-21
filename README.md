@@ -11,8 +11,8 @@ data, and automated research workflows whenever historical code can see rows
 that were not actually available yet.
 
 The engine enforces a two-clock event model, restricts signal code to an opaque
-as-of view, records immutable prediction logs with input provenance, and ships
-a negative control that shows the exact impossible predictions a naive
+as-of view, records immutable `PredictionRecord`s with input provenance, and
+ships a negative control that shows the exact impossible records a naive
 observed-time replay would emit. It evaluates causality, not predictive alpha.
 
 ## 30-Second Demo
@@ -30,23 +30,23 @@ asof-causality negative-control
   signal   windowed-feature-sentiment
 
 ENGINE A: received-time replay (correct)
-  ordering             (received_time, sequence, event_id)
+  ordering             (received_time, received_sequence_number, event_id)
   transcript_hash      ed03706f6f79c31f
   impossible           0
   VERDICT              PASS
 
 ENGINE B: observed-time replay (deliberately broken baseline)
-  ordering             (observed_time, sequence, event_id)
+  ordering             (observed_time, received_sequence_number, event_id)
   transcript_hash      f7b67d321cac694e
   impossible           3
   VERDICT              FAIL
 
-LEAKED PREDICTIONS (engine B)
+LEAKED PREDICTION RECORDS (engine B)
 
   p_before_same_time_sequence at (95, 4, p_before_same_time_sequence)
     signal_value     0
     leaked_input     n_same_time_later  at (95, 5, n_same_time_later)
-    violation        input sequence > prediction sequence at same received_time
+    violation        input received_sequence_number > prediction received_sequence_number at same received_time
     interpretation   prediction at t=95 used same-timestamp event that sorts after it
 
   p_before_late_feature at (120, 6, p_before_late_feature)
@@ -62,15 +62,16 @@ LEAKED PREDICTIONS (engine B)
     interpretation   prediction at t=170 used correction received at t=180
 
 DIAGNOSTIC
-  the broken engine emitted 3 impossible predictions across 3 distinct leak classes
-  the correct engine emitted 0
+  the broken engine produced 3 impossible PredictionRecords across 3 distinct leak classes
+  the correct engine produced 0 impossible PredictionRecords
   the audit invariant catches the failure mode the engine is designed to prevent
 ```
 
-The correct engine orders by `(received_time, sequence, event_id)`. The broken
-baseline orders by `(observed_time, sequence, event_id)`, so it leaks a
-same-timestamp later sequence, a late feature, and a late correction into
-predictions that could not have used them in live replay.
+The correct engine orders by
+`(received_time, received_sequence_number, event_id)`. The broken baseline
+orders by `(observed_time, received_sequence_number, event_id)`, so it leaks a
+same-timestamp later received sequence, a late feature, and a late correction
+into predictions that could not have used them in live replay.
 
 ## What This Builds
 
@@ -78,8 +79,11 @@ predictions that could not have used them in live replay.
 - a pipe-delimited event format with `observed_time` and `received_time`
 - canonical event roles: `feature`, `feature_correction`, `prediction`, and
   `outcome`
-- deterministic replay by `(received_time, sequence, event_id)`
-- a restricted signal API that receives only an opaque `AsOfView`
+- deterministic replay by `(received_time, received_sequence_number, event_id)`
+- a restricted signal API:
+  `evaluate(AsOfView, symbol_slot, as_of_timestamp)`
+- `SignalEvaluation` output from signals, containing signal value and input
+  provenance
 - built-in single-input, windowed multi-input, fixed-point Z-score, and
   volatility-adjusted momentum signals
 - immutable `PredictionRecord` output with input-event provenance
@@ -99,8 +103,13 @@ The kernel is signal-agnostic. Feature payload fields have explicit
 is intentionally no separate ML-semantic `FeatureValueKind` layer yet. The
 built-ins include fixed-point numeric signals and `vol-adjusted-momentum` as a
 recognizable fast/slow moving-average crossover gated by realized volatility.
+Fixed-point arithmetic is used for cross-architecture transcript determinism;
+if a Z-score comparison would overflow checked `i128` arithmetic, the built-in
+numeric signal fails closed to neutral rather than producing a directional
+record from saturated math.
 The non-trivial part is the correctness cage around the signal: all of them
-receive only an opaque as-of view and emit provenance.
+receive only an opaque as-of view and return `SignalEvaluation` provenance that
+the replay engine records.
 
 ## Quick Start
 
@@ -131,12 +140,16 @@ not require an API key, CUDA, or a database.
 ## Event Format
 
 ```text
-event_id|observed_time|received_time|sequence|role|symbol|payload
+event_id|observed_time|received_time|received_sequence_number|role|symbol|payload
 ```
 
-Events are replayed by `(received_time, sequence, event_id)`, not by physical
-file order or observed time. A late event may influence future predictions, but
-it cannot mutate old predictions.
+Events are replayed by
+`(received_time, received_sequence_number, event_id)`, not by physical file
+order or observed time. `received_sequence_number` is the deterministic
+receipt-order tie breaker for rows with the same `received_time`. The pair
+`(received_time, received_sequence_number)` and the `event_id` must both be
+unique; ambiguous receipt positions are rejected before replay. A late event may
+influence future `PredictionRecord`s, but it cannot mutate old ones.
 
 There is intentionally no `--safety-lag` flag. The artifact proves exact
 receipt-time causality, `input.received_time <= prediction_time`. Conservative
@@ -151,7 +164,7 @@ The canonical roles are:
 |---|---|
 | `feature` | Source information the signal may use after `received_time` |
 | `feature_correction` | Append-only revision to earlier feature information |
-| `prediction` | Scheduled point where the signal emits a prediction |
+| `prediction` | Scheduled point where replay evaluates the signal and records a `PredictionRecord` |
 | `outcome` | Future evaluation data excluded from signal state |
 
 Built-in feature payload fields are:
@@ -167,7 +180,7 @@ Built-in feature payload fields are:
 cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
 ```
 
-Prints deterministic prediction records and a transcript hash.
+Prints deterministic `PredictionRecord`s and a transcript hash.
 
 Use `--signal windowed-feature-sentiment` to run the same replay through the
 bounded multi-input signal, `--signal windowed-zscore` for fixed-decimal
@@ -189,9 +202,9 @@ for the expensive prefix-equivalence and future-mutation checks. Use
 cargo run -p asof-causality-cli -- audit examples/late-arrival.pipe --signal windowed-feature-sentiment
 ```
 
-Emits one JSON object per replay-derived prediction. Each record includes the
-prediction replay key, signal, symbol, signal value, ordered input event IDs,
-optional maximum input replay key, BLAKE3 `feature_recipe_hash`,
+Emits one JSON object per replay-derived `PredictionRecord`. Each record
+includes the prediction replay key, signal, symbol, signal value, ordered input
+event IDs, optional maximum input replay key, BLAKE3 `feature_recipe_hash`,
 `causally_valid`, optional `matched_stored_prediction`, and optional `outcome`.
 The machine-readable contract lives in
 [docs/audit.schema.json](docs/audit.schema.json). Use `--out path` to write the
@@ -218,9 +231,9 @@ cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 10000
 
 Generates a deterministic pipe fixture with a fixed seed. The `late-heavy`
 scenario intentionally shuffles physical file order; replay still sorts by
-`(received_time, sequence, event_id)`. Every generated file includes a small
-sentinel late-arrival sequence so the contrast checks have a known adversarial
-case even when random rates are low.
+`(received_time, received_sequence_number, event_id)`. Every generated file
+includes a small sentinel late-arrival received sequence so the contrast checks
+have a known adversarial case even when random rates are low.
 
 ```sh
 cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
@@ -310,13 +323,15 @@ representations: string-keyed map state and dense symbol-slot vector state.
 The project does not try to find alpha. It builds the infrastructure required
 before alpha research can be trusted:
 
-- predictions are immutable audit records
-- every prediction records the event IDs it used
-- multi-input signals record up to eight input event keys inline by design
+- signals return `SignalEvaluation`; they do not create `PredictionRecord`s
+- `PredictionRecord`s are immutable audit records created by replay
+- every `PredictionRecord` records the event IDs the signal evaluation used
+- multi-input `SignalEvaluation`s carry up to eight input event keys inline by
+  design
 - prediction provenance is stored as compact inline event keys and rendered to
   human-readable IDs outside the replay path
 - `max_input_replay_key <= prediction_replay_key` is checked
-- outcomes are computed after predictions and cannot affect emitted predictions
+- outcomes are computed after replay and cannot affect prior `PredictionRecord`s
 - prefix-equivalence and future-mutation tests make leakage falsifiable
 - replay is deterministic even when the physical input file is shuffled
 
@@ -328,9 +343,10 @@ strategy layer, recipe-hash extension, and Parquet adapter.
 ## Compared To Backtesters
 
 Many backtesting tools focus on simulating a portfolio over economic time.
-asof-causality focuses on a narrower contract: whether a signal could have
-known every input it used at prediction time. The negative-control fixture is
-shipped with the repo so that the leak class is falsifiable, not just described.
+asof-causality focuses on a narrower contract: whether a `PredictionRecord`
+could have known every input its `SignalEvaluation` used at prediction time.
+The negative-control fixture is shipped with the repo so that the leak class is
+falsifiable, not just described.
 
 ## Run Certificates
 

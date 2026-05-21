@@ -5,6 +5,7 @@ use crate::{
     feature_recipe_hash, Event, EventRole, LastFeatureSentimentSignal, ParseEventError,
     PredictionLog, PredictionRecord, Signal,
 };
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
@@ -80,6 +81,8 @@ impl<S: Signal> ReplayEngine<S> {
         options: ReplayOptions,
         order: ReplayOrder,
     ) -> Result<ReplayOutput, ReplayError> {
+        validate_event_identity(events)?;
+
         let mut ordered = events.to_vec();
         match order {
             ReplayOrder::ReceivedTime => {
@@ -114,7 +117,7 @@ impl<S: Signal> ReplayEngine<S> {
                     state.writer().apply(event, slotted.symbol)?
                 }
                 EventRole::Prediction => {
-                    let snapshot = self.signal.predict(
+                    let snapshot = self.signal.evaluate(
                         state.as_of_view(),
                         slotted.symbol,
                         event.received_time,
@@ -122,12 +125,13 @@ impl<S: Signal> ReplayEngine<S> {
                     predictions.append(PredictionRecord {
                         prediction_event_key: event.event_key,
                         prediction_time: event.received_time,
-                        prediction_sequence: event.sequence,
+                        prediction_received_sequence_number: event.received_sequence_number,
                         symbol: event.symbol_key,
                         signal_value: snapshot.signal_value,
                         input_event_ids_used: snapshot.input_event_ids_used,
                         max_input_received_time: snapshot.max_input_received_time,
-                        max_input_sequence: snapshot.max_input_sequence,
+                        max_input_received_sequence_number: snapshot
+                            .max_input_received_sequence_number,
                         max_input_event_key: snapshot.max_input_event_key,
                         feature_recipe_hash: snapshot.feature_recipe_hash.unwrap_or_else(|| {
                             feature_recipe_hash(
@@ -158,6 +162,46 @@ impl<S: Signal> ReplayEngine<S> {
 struct SlottedEvent<'a> {
     event: &'a Event,
     symbol: SymbolSlot,
+}
+
+fn validate_event_identity(events: &[Event]) -> Result<(), ReplayError> {
+    let mut event_ids = BTreeSet::new();
+    let mut event_keys = BTreeMap::new();
+    let mut receipt_positions = BTreeMap::new();
+
+    for event in events {
+        if !event_ids.insert(event.event_id.as_str()) {
+            return Err(ParseEventError::DuplicateEventId {
+                event_id: event.event_id.clone(),
+            }
+            .into());
+        }
+
+        if let Some(first_event_id) = event_keys.insert(event.event_key, event.event_id.as_str()) {
+            if first_event_id != event.event_id.as_str() {
+                return Err(ParseEventError::EventKeyCollision {
+                    first_event_id: first_event_id.to_string(),
+                    second_event_id: event.event_id.clone(),
+                }
+                .into());
+            }
+        }
+
+        let receipt_position = (event.received_time, event.received_sequence_number);
+        if let Some(first_event_id) =
+            receipt_positions.insert(receipt_position, event.event_id.as_str())
+        {
+            return Err(ParseEventError::DuplicateReceivedSequenceNumber {
+                received_time: event.received_time,
+                received_sequence_number: event.received_sequence_number,
+                first_event_id: first_event_id.to_string(),
+                second_event_id: event.event_id.clone(),
+            }
+            .into());
+        }
+    }
+
+    Ok(())
 }
 
 /// Parses newline-delimited pipe records into events.
@@ -303,6 +347,50 @@ pm|115|115|4|prediction|MSFT|
     }
 
     #[test]
+    fn rejects_duplicate_event_ids() {
+        let events = parse_pipe_events(
+            "\
+e1|100|100|1|feature|XYZ|sentiment=positive
+e1|110|110|2|prediction|XYZ|
+",
+        )
+        .unwrap();
+
+        let error = ReplayEngine::new()
+            .replay(&events, ReplayOptions::default())
+            .unwrap_err();
+
+        assert!(matches!(
+            error.source,
+            ParseEventError::DuplicateEventId { ref event_id } if event_id == "e1"
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_received_sequence_numbers_at_same_received_time() {
+        let events = parse_pipe_events(
+            "\
+f1|100|100|1|feature|XYZ|sentiment=positive
+p1|110|100|1|prediction|XYZ|
+",
+        )
+        .unwrap();
+
+        let error = ReplayEngine::new()
+            .replay(&events, ReplayOptions::default())
+            .unwrap_err();
+
+        assert!(matches!(
+            error.source,
+            ParseEventError::DuplicateReceivedSequenceNumber {
+                received_time: 100,
+                received_sequence_number: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn windowed_signal_records_multiple_inputs() {
         let input = "\
 f1|100|100|1|feature|XYZ|sentiment=positive
@@ -319,7 +407,7 @@ p1|130|130|4|prediction|XYZ|
         assert_eq!(record.signal_value, 1);
         assert_eq!(record.input_event_ids_used.len(), 3);
         assert_eq!(record.max_input_received_time, 120);
-        assert_eq!(record.max_input_sequence, 3);
+        assert_eq!(record.max_input_received_sequence_number, 3);
         for event in events
             .iter()
             .filter(|event| event.role.updates_signal_state())
@@ -346,7 +434,7 @@ p1|140|140|5|prediction|XYZ|
         assert_eq!(record.signal_value, 1);
         assert_eq!(record.input_event_ids_used.len(), 4);
         assert_eq!(record.max_input_received_time, 130);
-        assert_eq!(record.max_input_sequence, 4);
+        assert_eq!(record.max_input_received_sequence_number, 4);
     }
 
     #[test]
@@ -367,7 +455,28 @@ p1|140|140|5|prediction|XYZ|
         assert_eq!(record.signal_value, 1);
         assert_eq!(record.input_event_ids_used.len(), 4);
         assert_eq!(record.max_input_received_time, 130);
-        assert_eq!(record.max_input_sequence, 4);
+        assert_eq!(record.max_input_received_sequence_number, 4);
+    }
+
+    #[test]
+    fn vol_adjusted_momentum_returns_zero_on_flat_series() {
+        let input = "\
+px1|100|100|1|feature|XYZ|score=10
+px2|110|110|2|feature|XYZ|score=10
+px3|120|120|3|feature|XYZ|score=10
+px4|130|130|4|feature|XYZ|score=10
+p1|140|140|5|prediction|XYZ|
+";
+        let events = parse_pipe_events(input).unwrap();
+        let output = ReplayEngine::with_signal(VolAdjustedMomentumSignal::new())
+            .replay(&events, ReplayOptions::default())
+            .unwrap();
+        let record = &output.predictions.records()[0];
+
+        assert_eq!(record.signal_value, 0);
+        assert_eq!(record.input_event_ids_used.len(), 4);
+        assert_eq!(record.max_input_received_time, 130);
+        assert_eq!(record.max_input_received_sequence_number, 4);
     }
 
     #[test]

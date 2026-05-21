@@ -2,8 +2,8 @@
 
 This fixture uses public daily Treasury-rate vintages from ALFRED and daily
 SP500 closes from FRED. It is a causality demo, not an alpha claim: the question
-is whether a daily SP500 prediction used only DGS10 observations available in
-the ALFRED vintage stream at prediction time.
+is whether each replay-derived `PredictionRecord` used only DGS10 observations
+available in the ALFRED vintage stream at prediction time.
 
 ## Data Sources
 
@@ -32,7 +32,8 @@ endpoints.
 - `received_time`: ALFRED vintage date at `09:00`, encoded as `YYYYMMDDHHMM`.
 - `score`: daily DGS10 change in percentage points, declared as
   `FeatureDType::FixedDecimal { scale: 6 }`.
-- `prediction`: SP500 daily risk-on/risk-off prediction at `16:00`.
+- `prediction`: scheduled SP500 close event at `16:00`; replay evaluates the
+  signal and appends a `PredictionRecord`.
 - `outcome`: next trading-day SP500 return in basis points, attached after the
   next close.
 
@@ -40,10 +41,10 @@ The DGS10 feature rows use ALFRED vintages. SP500 outcome rows use FRED closes;
 their `received_time` is a fixture convention for post-close attribution, not a
 vintage claim.
 
-The fixture deliberately places predictions before the next DGS10 vintage is
-available. A replay ordered by `observed_time` leaks same-day DGS10 rows into
-the SP500 close prediction. The received-time engine blocks those rows until
-the next vintage.
+The fixture deliberately places prediction events before the next DGS10 vintage
+is available. A replay ordered by `observed_time` leaks same-day DGS10 rows into
+the SP500 close evaluation. The received-time engine blocks those rows until the
+next vintage.
 
 ## Regression Target
 
@@ -51,11 +52,11 @@ The fixture includes a specific lookahead-bias trap:
 `p_20200318_close_before_vintage` is emitted at `202003181600`, but
 `dgs10_20200318_v20200319` is not received until `202003190900`.
 
-The received-time replay must not include that DGS10 vintage in the prediction's
-input provenance. The observed-time negative control should include it and mark
-the prediction as impossible. This anchors the demo in the common ALFRED vintage
-failure mode: treating today's final macro data as if it existed in yesterday's
-research environment.
+The received-time replay must not include that DGS10 vintage in the resulting
+`SignalEvaluation` input provenance. The observed-time negative control should
+include it and mark the `PredictionRecord` as impossible. This anchors the demo
+in the common ALFRED vintage failure mode: treating today's final macro data as
+if it existed in yesterday's research environment.
 
 ## Commands
 

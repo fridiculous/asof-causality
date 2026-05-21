@@ -58,6 +58,36 @@ fn validate_json(schema_path: &Path, value: &Value) -> Result<(), Box<dyn std::e
 }
 
 #[test]
+fn negative_control_cli_runs_vol_adjusted_momentum_signal() -> TestResult {
+    let events = repo_root().join("examples/zscore-lookahead.pipe");
+
+    cli()?
+        .args([
+            "negative-control",
+            events.to_str().unwrap(),
+            "--signal",
+            "vol-adjusted-momentum",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("signal   vol-adjusted-momentum"))
+        .stdout(predicate::str::contains(
+            "ENGINE A: received-time replay (correct)",
+        ))
+        .stdout(predicate::str::contains(
+            "ENGINE B: observed-time replay (deliberately broken baseline)",
+        ))
+        .stdout(predicate::str::contains(
+            "ordering             (received_time, received_sequence_number, event_id)",
+        ))
+        .stdout(predicate::str::contains("VERDICT              PASS"))
+        .stdout(predicate::str::contains("VERDICT              FAIL"))
+        .stderr(predicate::str::is_empty());
+
+    Ok(())
+}
+
+#[test]
 fn audit_cli_round_trips_stored_prediction_jsonl() -> TestResult {
     let events = repo_root().join("examples/late-arrival.pipe");
     let temp = TempDir::new()?;
@@ -161,7 +191,7 @@ fn negative_control_reports_three_leaks_for_synthetic_fixture() -> TestResult {
         .stdout(predicate::str::contains("ENGINE B: observed-time replay"))
         .stdout(predicate::str::contains("  impossible           3"))
         .stdout(predicate::str::contains(
-            "the broken engine emitted 3 impossible predictions across 3 distinct leak classes",
+            "the broken engine produced 3 impossible PredictionRecords across 3 distinct leak classes",
         ))
         .stderr(predicate::str::is_empty());
 
@@ -184,7 +214,7 @@ fn negative_control_reports_four_leaks_for_alfred_fixture() -> TestResult {
         .stdout(predicate::str::contains("ENGINE B: observed-time replay"))
         .stdout(predicate::str::contains("  impossible           4"))
         .stdout(predicate::str::contains(
-            "the broken engine emitted 4 impossible predictions",
+            "the broken engine produced 4 impossible PredictionRecords",
         ))
         .stderr(predicate::str::is_empty());
 
@@ -344,13 +374,13 @@ fn check_stdout_snapshot() -> TestResult {
 
 ADVERSARIAL CHECKS                                         8/8 PASS
   [PASS]  prefix_equivalence               all received-time prefixes matched full replay
-  [PASS]  future_mutation                  mutating future rows did not change past predictions
+  [PASS]  future_mutation                  mutating future rows did not change prior PredictionRecords
   [PASS]  late_arrival                     late events were not used before their replay key
-  [PASS]  on_time_vs_late_contrast         moving n1 earlier changed prediction at 580 from 0 to 1
-  [PASS]  feature_correction_append_only   feature corrections did not rewrite predictions emitted before receipt
-  [PASS]  outcome_separation               disabling outcomes did not change predictions
+  [PASS]  on_time_vs_late_contrast         moving n1 earlier changed SignalEvaluation at 580 from 0 to 1
+  [PASS]  feature_correction_append_only   feature corrections did not rewrite prior PredictionRecords
+  [PASS]  outcome_separation               disabling outcomes did not change PredictionRecords
   [PASS]  deterministic_replay             shuffled input produced same transcript hash
-  [PASS]  audit_invariant                  all predictions satisfy max_input_replay_key <= prediction_replay_key
+  [PASS]  audit_invariant                  all PredictionRecords satisfy max_input_replay_key <= prediction_replay_key
 
 PROVENANCE
   transcript_hash      d959650f0492c42e
@@ -375,23 +405,23 @@ fn negative_control_stdout_snapshot() -> TestResult {
   signal   windowed-feature-sentiment
 
 ENGINE A: received-time replay (correct)
-  ordering             (received_time, sequence, event_id)
+  ordering             (received_time, received_sequence_number, event_id)
   transcript_hash      ed03706f6f79c31f
   impossible           0
   VERDICT              PASS
 
 ENGINE B: observed-time replay (deliberately broken baseline)
-  ordering             (observed_time, sequence, event_id)
+  ordering             (observed_time, received_sequence_number, event_id)
   transcript_hash      f7b67d321cac694e
   impossible           3
   VERDICT              FAIL
 
-LEAKED PREDICTIONS (engine B)
+LEAKED PREDICTION RECORDS (engine B)
 
   p_before_same_time_sequence at (95, 4, p_before_same_time_sequence)
     signal_value     0
     leaked_input     n_same_time_later  at (95, 5, n_same_time_later)
-    violation        input sequence > prediction sequence at same received_time
+    violation        input received_sequence_number > prediction received_sequence_number at same received_time
     interpretation   prediction at t=95 used same-timestamp event that sorts after it
 
   p_before_late_feature at (120, 6, p_before_late_feature)
@@ -407,8 +437,8 @@ LEAKED PREDICTIONS (engine B)
     interpretation   prediction at t=170 used correction received at t=180
 
 DIAGNOSTIC
-  the broken engine emitted 3 impossible predictions across 3 distinct leak classes
-  the correct engine emitted 0
+  the broken engine produced 3 impossible PredictionRecords across 3 distinct leak classes
+  the correct engine produced 0 impossible PredictionRecords
   the audit invariant catches the failure mode the engine is designed to prevent
 "###);
 

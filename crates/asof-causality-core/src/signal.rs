@@ -1,14 +1,14 @@
-use crate::{AsOfView, FixedDecimal, SymbolSlot, SymbolSnapshot, FIXED_DECIMAL_SCALE};
+use crate::{AsOfView, FixedDecimal, SignalEvaluation, SymbolSlot, FIXED_DECIMAL_SCALE};
 
 /// Signal implementation evaluated by the replay engine at prediction events.
 pub trait Signal {
-    /// Computes a prediction from the opaque as-of view.
-    fn predict(
+    /// Evaluates signal state from the opaque as-of view.
+    fn evaluate(
         &self,
         view: AsOfView<'_>,
         symbol: SymbolSlot,
-        prediction_time: u64,
-    ) -> SymbolSnapshot;
+        as_of_timestamp: u64,
+    ) -> SignalEvaluation;
 
     /// Stable signal name used in audit records and recipe hashes.
     fn name(&self) -> &'static str;
@@ -28,12 +28,12 @@ impl Signal for LastFeatureSentimentSignal {
         "last-feature-sentiment"
     }
 
-    fn predict(
+    fn evaluate(
         &self,
         view: AsOfView<'_>,
         symbol: SymbolSlot,
-        _prediction_time: u64,
-    ) -> SymbolSnapshot {
+        _as_of_timestamp: u64,
+    ) -> SignalEvaluation {
         view.snapshot(symbol)
     }
 }
@@ -76,17 +76,17 @@ impl Signal for WindowedFeatureSentimentSignal {
         format!("window={}", self.window)
     }
 
-    fn predict(
+    fn evaluate(
         &self,
         view: AsOfView<'_>,
         symbol: SymbolSlot,
-        _prediction_time: u64,
-    ) -> SymbolSnapshot {
+        _as_of_timestamp: u64,
+    ) -> SignalEvaluation {
         view.windowed_snapshot(symbol, self.window)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Built-in signal bucketing the latest numeric score by rolling z-score.
 pub struct WindowedZScoreSignal {
     window: usize,
@@ -127,17 +127,18 @@ impl Signal for WindowedZScoreSignal {
         )
     }
 
-    fn predict(
+    fn evaluate(
         &self,
         view: AsOfView<'_>,
         symbol: SymbolSlot,
-        _prediction_time: u64,
-    ) -> SymbolSnapshot {
+        _as_of_timestamp: u64,
+    ) -> SignalEvaluation {
         view.score_window_snapshot(symbol, self.window, self.threshold_scaled)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Built-in fixed-point fast/slow moving-average crossover signal.
 pub struct VolAdjustedMomentumSignal {
     fast_window: usize,
     slow_window: usize,
@@ -146,11 +147,16 @@ pub struct VolAdjustedMomentumSignal {
 }
 
 impl VolAdjustedMomentumSignal {
+    /// Default fast moving-average window.
     pub const DEFAULT_FAST_WINDOW: usize = 2;
+    /// Default slow moving-average window.
     pub const DEFAULT_SLOW_WINDOW: usize = 4;
+    /// Default minimum trend gate.
     pub const DEFAULT_MIN_TREND: FixedDecimal = FixedDecimal::from_scaled(0);
+    /// Default realized-volatility divisor.
     pub const DEFAULT_VOLATILITY_DIVISOR: i64 = 2;
 
+    /// Creates a momentum signal using default parameters.
     pub fn new() -> Self {
         Self {
             fast_window: Self::DEFAULT_FAST_WINDOW,
@@ -179,12 +185,12 @@ impl Signal for VolAdjustedMomentumSignal {
         )
     }
 
-    fn predict(
+    fn evaluate(
         &self,
         view: AsOfView<'_>,
         symbol: SymbolSlot,
-        _prediction_time: u64,
-    ) -> SymbolSnapshot {
+        _as_of_timestamp: u64,
+    ) -> SignalEvaluation {
         view.score_momentum_snapshot(
             symbol,
             self.fast_window,

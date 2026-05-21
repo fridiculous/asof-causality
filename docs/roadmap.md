@@ -6,12 +6,14 @@ simulation, portfolio state, or research-notebook ergonomics.
 
 ## Kernel Before Strategy
 
-The current boundary is `Event -> AsOfView -> Signal -> PredictionRecord`.
-Signal code can read only the opaque as-of view and emits immutable prediction
-records with input provenance. A future strategy layer should consume those
-prediction records through its own point-in-time `StrategyView` and emit
-separate `DecisionRecord`s. Keeping those layers split preserves the simple
-invariant this repo proves:
+The current boundary is
+`Event -> ReplayKey -> AsOfView -> Signal::evaluate(as_of_timestamp) -> SignalEvaluation -> PredictionRecord`.
+Signal code can read only the opaque as-of view and returns a
+`SignalEvaluation` that the replay engine converts into an immutable
+`PredictionRecord` with input provenance. A future strategy layer should
+consume those `PredictionRecord`s through its own point-in-time `StrategyView`
+and emit separate `DecisionRecord`s. Keeping those layers split preserves the
+simple invariant this repo proves:
 
 ```text
 max_input_replay_key <= prediction_replay_key

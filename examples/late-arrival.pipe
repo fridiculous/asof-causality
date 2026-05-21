@@ -1,4 +1,4 @@
-# event_id|observed_time|received_time|sequence|role|symbol|payload
+# event_id|observed_time|received_time|received_sequence_number|role|symbol|payload
 # Physical order is intentionally not replay order.
 p1|580|580|3|prediction|AAPL|
 n1|572|585|2|feature|AAPL|sentiment=positive

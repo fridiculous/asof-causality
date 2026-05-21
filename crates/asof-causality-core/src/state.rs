@@ -4,16 +4,16 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
-/// Signal-visible state snapshot for one symbol at one prediction point.
-pub struct SymbolSnapshot {
-    /// Emitted prediction value.
+/// Signal-visible evaluation for one symbol at one replay point.
+pub struct SignalEvaluation {
+    /// Emitted signal value.
     pub signal_value: i8,
     /// Input event keys used to produce the value.
     pub input_event_ids_used: InputSet,
     /// Maximum received time among input events used by the prediction.
     pub max_input_received_time: u64,
-    /// Maximum sequence among input events at the maximum replay key.
-    pub max_input_sequence: u64,
+    /// Maximum received sequence number among input events used by the prediction.
+    pub max_input_received_sequence_number: u64,
     /// Event key for the maximum input replay key, when an input exists.
     pub max_input_event_key: Option<EventKey>,
     /// Optional precomputed feature recipe hash supplied by a signal.
@@ -64,7 +64,7 @@ struct FeatureObservation {
     score: Option<FixedDecimal>,
     input_key: EventKey,
     received_time: u64,
-    sequence: u64,
+    received_sequence_number: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -107,7 +107,7 @@ impl StateWriter<'_> {
             score: values.score,
             input_key: event.event_key,
             received_time: event.received_time,
-            sequence: event.sequence,
+            received_sequence_number: event.received_sequence_number,
         });
 
         Ok(())
@@ -122,7 +122,7 @@ pub struct AsOfView<'a> {
 
 impl AsOfView<'_> {
     /// Returns the latest received sentiment snapshot for `symbol`.
-    pub fn snapshot(&self, symbol: SymbolSlot) -> SymbolSnapshot {
+    pub fn snapshot(&self, symbol: SymbolSlot) -> SignalEvaluation {
         let state = &self.store.by_symbol_slot[symbol.as_usize()];
         match state
             .recent_window(MAX_INPUTS_PER_PREDICTION)
@@ -131,11 +131,11 @@ impl AsOfView<'_> {
             .find(|observation| observation.sentiment.is_some())
             .copied()
         {
-            Some(observation) => SymbolSnapshot {
+            Some(observation) => SignalEvaluation {
                 signal_value: observation.sentiment.unwrap().signal_value(),
                 input_event_ids_used: InputSet::one(observation.input_key),
                 max_input_received_time: observation.received_time,
-                max_input_sequence: observation.sequence,
+                max_input_received_sequence_number: observation.received_sequence_number,
                 max_input_event_key: Some(observation.input_key),
                 feature_recipe_hash: None,
             },
@@ -144,7 +144,7 @@ impl AsOfView<'_> {
     }
 
     /// Returns a bounded recent sentiment-window snapshot for `symbol`.
-    pub fn windowed_snapshot(&self, symbol: SymbolSlot, window: usize) -> SymbolSnapshot {
+    pub fn windowed_snapshot(&self, symbol: SymbolSlot, window: usize) -> SignalEvaluation {
         let state = &self.store.by_symbol_slot[symbol.as_usize()];
 
         let observations = recent_observations_with_sentiment(state, window);
@@ -161,22 +161,22 @@ impl AsOfView<'_> {
             signal_sum += i16::from(observation.sentiment.unwrap().signal_value());
             if (
                 observation.received_time,
-                observation.sequence,
+                observation.received_sequence_number,
                 observation.input_key,
             ) > (
                 max_observation.received_time,
-                max_observation.sequence,
+                max_observation.received_sequence_number,
                 max_observation.input_key,
             ) {
                 max_observation = *observation;
             }
         }
 
-        SymbolSnapshot {
+        SignalEvaluation {
             signal_value: signal_sum.signum() as i8,
             input_event_ids_used: InputSet::from_ordered_keys(&keys[..observations.len()]),
             max_input_received_time: max_observation.received_time,
-            max_input_sequence: max_observation.sequence,
+            max_input_received_sequence_number: max_observation.received_sequence_number,
             max_input_event_key: Some(max_observation.input_key),
             feature_recipe_hash: None,
         }
@@ -188,7 +188,7 @@ impl AsOfView<'_> {
         symbol: SymbolSlot,
         window: usize,
         threshold_scaled: i64,
-    ) -> SymbolSnapshot {
+    ) -> SignalEvaluation {
         let state = &self.store.by_symbol_slot[symbol.as_usize()];
 
         let observations = recent_observations_with_score(state, window);
@@ -202,6 +202,7 @@ impl AsOfView<'_> {
         )
     }
 
+    /// Returns a fixed-point volatility-adjusted momentum signal evaluation.
     pub fn score_momentum_snapshot(
         &self,
         symbol: SymbolSlot,
@@ -209,7 +210,7 @@ impl AsOfView<'_> {
         slow_window: usize,
         min_trend: FixedDecimal,
         volatility_divisor: i64,
-    ) -> SymbolSnapshot {
+    ) -> SignalEvaluation {
         let state = &self.store.by_symbol_slot[symbol.as_usize()];
 
         let slow_window = slow_window.clamp(1, MAX_INPUTS_PER_PREDICTION);
@@ -228,9 +229,9 @@ impl AsOfView<'_> {
         let volatility = i128::from(mean_absolute_deviation(&observations, slow_mean).scaled());
         let volatility_gate = volatility / i128::from(volatility_divisor.max(1));
         let threshold = i128::from(min_trend.scaled()).abs().max(volatility_gate);
-        let signal_value = if trend >= threshold {
+        let signal_value = if trend > 0 && trend >= threshold {
             1
-        } else if trend <= -threshold {
+        } else if trend < 0 && trend <= -threshold {
             -1
         } else {
             0
@@ -279,41 +280,58 @@ fn zscore_signal_value(observations: &[FeatureObservation], threshold_scaled: i6
         .iter()
         .map(|observation| i128::from(score_from_filtered_observation(observation).scaled()))
         .sum::<i128>();
-    let sum_squared_deviations = observations
-        .iter()
-        .map(|observation| {
-            let delta =
-                i128::from(score_from_filtered_observation(observation).scaled()) * count - sum;
-            delta * delta
-        })
-        .sum::<i128>();
+    let mut sum_squared_deviations = 0_i128;
+    for observation in observations {
+        let Some(delta) = i128::from(score_from_filtered_observation(observation).scaled())
+            .checked_mul(count)
+            .and_then(|value| value.checked_sub(sum))
+        else {
+            return 0;
+        };
+        let Some(squared_delta) = delta.checked_mul(delta) else {
+            return 0;
+        };
+        let Some(next_sum) = sum_squared_deviations.checked_add(squared_delta) else {
+            return 0;
+        };
+        sum_squared_deviations = next_sum;
+    }
     if sum_squared_deviations == 0 {
         return 0;
     }
 
-    let latest_delta = i128::from(
+    let Some(latest_delta) = i128::from(
         score_from_filtered_observation(
             observations
                 .last()
                 .expect("observation length is checked before z-score calculation"),
         )
         .scaled(),
-    ) * count
-        - sum;
+    )
+    .checked_mul(count)
+    .and_then(|value| value.checked_sub(sum)) else {
+        return 0;
+    };
     if latest_delta == 0 {
         return 0;
     }
 
-    let threshold = i128::from(threshold_scaled.saturating_abs());
+    let threshold = i128::from(threshold_scaled).abs();
     let scale = i128::from(FIXED_DECIMAL_SCALE);
-    let lhs = latest_delta
-        .saturating_mul(latest_delta)
-        .saturating_mul(count)
-        .saturating_mul(scale)
-        .saturating_mul(scale);
-    let rhs = threshold
-        .saturating_mul(threshold)
-        .saturating_mul(sum_squared_deviations);
+    let Some(lhs) = latest_delta
+        .checked_mul(latest_delta)
+        .and_then(|value| value.checked_mul(count))
+        .and_then(|value| value.checked_mul(scale))
+        .and_then(|value| value.checked_mul(scale))
+    else {
+        return 0;
+    };
+    let Some(rhs) = threshold
+        .checked_mul(threshold)
+        .and_then(|value| value.checked_mul(sum_squared_deviations))
+    else {
+        return 0;
+    };
 
     if lhs < rhs {
         return 0;
@@ -362,7 +380,7 @@ fn fixed_decimal_from_i128(value: i128) -> FixedDecimal {
 fn score_snapshot_from_observations(
     observations: &[FeatureObservation],
     signal_value: i8,
-) -> SymbolSnapshot {
+) -> SignalEvaluation {
     let mut keys = [EventKey::default(); MAX_INPUTS_PER_PREDICTION];
     let mut max_observation = observations[0];
 
@@ -370,33 +388,33 @@ fn score_snapshot_from_observations(
         keys[index] = observation.input_key;
         if (
             observation.received_time,
-            observation.sequence,
+            observation.received_sequence_number,
             observation.input_key,
         ) > (
             max_observation.received_time,
-            max_observation.sequence,
+            max_observation.received_sequence_number,
             max_observation.input_key,
         ) {
             max_observation = *observation;
         }
     }
 
-    SymbolSnapshot {
+    SignalEvaluation {
         signal_value,
         input_event_ids_used: InputSet::from_ordered_keys(&keys[..observations.len()]),
         max_input_received_time: max_observation.received_time,
-        max_input_sequence: max_observation.sequence,
+        max_input_received_sequence_number: max_observation.received_sequence_number,
         max_input_event_key: Some(max_observation.input_key),
         feature_recipe_hash: None,
     }
 }
 
-fn empty_snapshot() -> SymbolSnapshot {
-    SymbolSnapshot {
+fn empty_snapshot() -> SignalEvaluation {
+    SignalEvaluation {
         signal_value: 0,
         input_event_ids_used: InputSet::empty(),
         max_input_received_time: 0,
-        max_input_sequence: 0,
+        max_input_received_sequence_number: 0,
         max_input_event_key: None,
         feature_recipe_hash: None,
     }
@@ -465,7 +483,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(snapshot.max_input_received_time, 30);
-        assert_eq!(snapshot.max_input_sequence, 3);
+        assert_eq!(snapshot.max_input_received_sequence_number, 3);
     }
 
     #[test]
@@ -486,6 +504,67 @@ mod tests {
         assert_eq!(snapshot.signal_value, 1);
         assert_eq!(snapshot.input_event_ids_used.len(), 4);
         assert_eq!(snapshot.max_input_event_key, Some(events[3].event_key));
+    }
+
+    #[test]
+    fn score_window_snapshot_returns_zero_when_checked_zscore_comparison_overflows() {
+        let events = [
+            Event::new(
+                "px1",
+                10,
+                10,
+                1,
+                EventRole::Feature,
+                "XYZ",
+                "score=1000000000000",
+            ),
+            Event::new("px2", 20, 20, 2, EventRole::Feature, "XYZ", "score=0"),
+            Event::new("px3", 30, 30, 3, EventRole::Feature, "XYZ", "score=0"),
+            Event::new("px4", 40, 40, 4, EventRole::Feature, "XYZ", "score=0"),
+            Event::new("px5", 50, 50, 5, EventRole::Feature, "XYZ", "score=0"),
+        ];
+        let (store, catalog) = store_with_events(&events);
+        let symbol = catalog.slot_for_event(&events[0]).unwrap();
+
+        let snapshot = store
+            .as_of_view()
+            .score_window_snapshot(symbol, 5, FIXED_DECIMAL_SCALE);
+
+        assert_eq!(snapshot.signal_value, 0);
+        assert_eq!(snapshot.input_event_ids_used.len(), 5);
+        assert_eq!(snapshot.max_input_event_key, Some(events[4].event_key));
+    }
+
+    #[test]
+    fn score_window_snapshot_returns_zero_when_squared_deviation_overflows() {
+        let events = [
+            Event::new("px1", 10, 10, 1, EventRole::Feature, "XYZ", "score=0"),
+            Event::new("px2", 20, 20, 2, EventRole::Feature, "XYZ", "score=0"),
+            Event::new("px3", 30, 30, 3, EventRole::Feature, "XYZ", "score=0"),
+            Event::new("px4", 40, 40, 4, EventRole::Feature, "XYZ", "score=0"),
+            Event::new("px5", 50, 50, 5, EventRole::Feature, "XYZ", "score=0"),
+            Event::new("px6", 60, 60, 6, EventRole::Feature, "XYZ", "score=0"),
+            Event::new("px7", 70, 70, 7, EventRole::Feature, "XYZ", "score=0"),
+            Event::new(
+                "px8",
+                80,
+                80,
+                8,
+                EventRole::Feature,
+                "XYZ",
+                "score=4000000000000",
+            ),
+        ];
+        let (store, catalog) = store_with_events(&events);
+        let symbol = catalog.slot_for_event(&events[0]).unwrap();
+
+        let snapshot = store
+            .as_of_view()
+            .score_window_snapshot(symbol, 8, FIXED_DECIMAL_SCALE);
+
+        assert_eq!(snapshot.signal_value, 0);
+        assert_eq!(snapshot.input_event_ids_used.len(), 8);
+        assert_eq!(snapshot.max_input_event_key, Some(events[7].event_key));
     }
 
     #[test]

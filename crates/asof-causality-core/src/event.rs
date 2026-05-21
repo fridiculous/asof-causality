@@ -3,14 +3,24 @@ use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
 
+/// Fixed decimal scale used for numeric feature payloads.
 pub const FIXED_DECIMAL_SCALE: i64 = 1_000_000;
+/// Number of fractional digits represented by `FixedDecimal`.
 pub const FIXED_DECIMAL_SCALE_DIGITS: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Deterministic feature value representation.
 pub enum FeatureDType {
-    FixedDecimal { scale: usize },
+    /// Signed fixed-point decimal with the given number of fractional digits.
+    FixedDecimal {
+        /// Number of fractional decimal digits.
+        scale: usize,
+    },
+    /// Signed 64-bit integer.
     Int64,
+    /// Boolean value.
     Bool,
+    /// Text value.
     Text,
 }
 
@@ -26,24 +36,31 @@ impl fmt::Display for FeatureDType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Declares the deterministic representation for a built-in feature field.
 pub struct FeatureSpec {
+    /// Payload field name.
     pub name: &'static str,
+    /// Deterministic representation used when parsing the field.
     pub dtype: FeatureDType,
 }
 
 impl FeatureSpec {
+    /// Creates a feature specification.
     pub const fn new(name: &'static str, dtype: FeatureDType) -> Self {
         Self { name, dtype }
     }
 }
 
+/// Built-in sentiment feature specification.
 pub const SENTIMENT_FEATURE: FeatureSpec = FeatureSpec::new("sentiment", FeatureDType::Text);
+/// Built-in numeric score feature specification.
 pub const SCORE_FEATURE: FeatureSpec = FeatureSpec::new(
     "score",
     FeatureDType::FixedDecimal {
         scale: FIXED_DECIMAL_SCALE_DIGITS,
     },
 );
+/// Built-in feature specifications recognized by the core parser.
 pub const BUILTIN_FEATURE_SPECS: [FeatureSpec; 2] = [SENTIMENT_FEATURE, SCORE_FEATURE];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +103,28 @@ impl FromStr for EventRole {
             "prediction" | "predict" => Ok(Self::Prediction),
             "outcome" | "label" => Ok(Self::Outcome),
             other => Err(ParseEventError::InvalidRole(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Typed replay ordering key.
+pub struct ReplayKey<'a> {
+    /// Replay timestamp.
+    pub time: u64,
+    /// Tie-breaker within the replay timestamp.
+    pub received_sequence_number: u64,
+    /// Human-readable event identifier.
+    pub event_id: &'a str,
+}
+
+impl<'a> ReplayKey<'a> {
+    /// Creates a replay key.
+    pub const fn new(time: u64, received_sequence_number: u64, event_id: &'a str) -> Self {
+        Self {
+            time,
+            received_sequence_number,
+            event_id,
         }
     }
 }
@@ -196,8 +235,8 @@ pub struct Event {
     pub observed_time: u64,
     /// Time the event became available to the replay engine.
     pub received_time: u64,
-    /// Tie-breaker within the replay timestamp.
-    pub sequence: u64,
+    /// Tie-breaker within the received timestamp.
+    pub received_sequence_number: u64,
     /// Event role controlling how replay handles the row.
     pub role: EventRole,
     /// Stable compact key derived from `symbol`.
@@ -214,7 +253,7 @@ impl Event {
         event_id: impl Into<String>,
         observed_time: u64,
         received_time: u64,
-        sequence: u64,
+        received_sequence_number: u64,
         role: EventRole,
         symbol: impl Into<String>,
         payload: impl Into<String>,
@@ -226,7 +265,7 @@ impl Event {
             event_id,
             observed_time,
             received_time,
-            sequence,
+            received_sequence_number,
             role,
             symbol_key: SymbolId::from_label(&symbol),
             symbol,
@@ -255,7 +294,7 @@ impl Event {
             event_id,
             parse_u64("observed_time", fields[1])?,
             parse_u64("received_time", fields[2])?,
-            parse_u64("sequence", fields[3])?,
+            parse_u64("received_sequence_number", fields[3])?,
             fields[4].parse()?,
             required("symbol", fields[5])?,
             fields[6].trim(),
@@ -269,7 +308,7 @@ impl Event {
             self.event_id,
             self.observed_time,
             self.received_time,
-            self.sequence,
+            self.received_sequence_number,
             self.role.as_str(),
             self.symbol,
             self.payload
@@ -277,13 +316,21 @@ impl Event {
     }
 
     /// Returns the correct replay ordering key.
-    pub fn replay_key(&self) -> (u64, u64, &str) {
-        (self.received_time, self.sequence, self.event_id.as_str())
+    pub fn replay_key(&self) -> ReplayKey<'_> {
+        ReplayKey::new(
+            self.received_time,
+            self.received_sequence_number,
+            self.event_id.as_str(),
+        )
     }
 
     /// Returns the deliberately leaky observed-time ordering key.
-    pub fn observed_key(&self) -> (u64, u64, &str) {
-        (self.observed_time, self.sequence, self.event_id.as_str())
+    pub fn observed_key(&self) -> ReplayKey<'_> {
+        ReplayKey::new(
+            self.observed_time,
+            self.received_sequence_number,
+            self.event_id.as_str(),
+        )
     }
 
     /// Parses the optional `sentiment` payload field for feature roles.
@@ -333,10 +380,10 @@ impl Event {
     pub fn with_mutated_future_payload(&self) -> Self {
         let mut mutated = self.clone();
         if mutated.role.updates_signal_state() {
-            if payload_field(&mutated.payload, "score").is_some() {
-                mutated.payload = "score=-999,mutated=true".to_string();
+            if payload_field(&mutated.payload, SCORE_FEATURE.name).is_some() {
+                mutated.payload = format!("{}=-999,mutated=true", SCORE_FEATURE.name);
             } else {
-                mutated.payload = "sentiment=negative,mutated=true".to_string();
+                mutated.payload = format!("{}=negative,mutated=true", SENTIMENT_FEATURE.name);
             }
         } else {
             mutated.payload = format!("{},mutated=true", mutated.payload);
@@ -398,6 +445,29 @@ pub enum ParseEventError {
         /// Stable id from the lookup event.
         symbol_id: SymbolId,
     },
+    /// Duplicate human event identifier.
+    DuplicateEventId {
+        /// Duplicated event identifier.
+        event_id: String,
+    },
+    /// Collision between two derived event keys.
+    EventKeyCollision {
+        /// First event identifier that produced the key.
+        first_event_id: String,
+        /// Second event identifier that produced the same key.
+        second_event_id: String,
+    },
+    /// Duplicate receipt-order position.
+    DuplicateReceivedSequenceNumber {
+        /// Duplicated received timestamp.
+        received_time: u64,
+        /// Duplicated received sequence number at that timestamp.
+        received_sequence_number: u64,
+        /// First event identifier at the receipt position.
+        first_event_id: String,
+        /// Second event identifier at the same receipt position.
+        second_event_id: String,
+    },
     /// A feature event did not contain any supported feature value.
     MissingPayloadField {
         /// Event identifier for the malformed row.
@@ -442,6 +512,23 @@ impl fmt::Display for ParseEventError {
                 f,
                 "symbol {symbol} with id {:016x} was not present in the symbol catalog",
                 symbol_id.0
+            ),
+            Self::DuplicateEventId { event_id } => write!(f, "duplicate event_id: {event_id}"),
+            Self::EventKeyCollision {
+                first_event_id,
+                second_event_id,
+            } => write!(
+                f,
+                "event key collision between event_ids {first_event_id} and {second_event_id}"
+            ),
+            Self::DuplicateReceivedSequenceNumber {
+                received_time,
+                received_sequence_number,
+                first_event_id,
+                second_event_id,
+            } => write!(
+                f,
+                "duplicate received_sequence_number {received_sequence_number} at received_time {received_time}: {first_event_id} and {second_event_id}"
             ),
             Self::MissingPayloadField { event_id, field } => {
                 write!(f, "event {event_id} is missing payload field {field}")
@@ -606,6 +693,17 @@ mod tests {
         );
         assert_eq!(BUILTIN_FEATURE_SPECS, [SENTIMENT_FEATURE, SCORE_FEATURE]);
         assert_eq!(SCORE_FEATURE.dtype.to_string(), "fixed_decimal(scale=6)");
+    }
+
+    #[test]
+    fn mutates_score_payload_through_feature_spec_name() {
+        let event = Event::from_pipe_record("px1|1|1|1|feature|AAPL|score=0.73").unwrap();
+        let mutated = event.with_mutated_future_payload();
+
+        assert_eq!(
+            mutated.payload,
+            format!("{}=-999,mutated=true", SCORE_FEATURE.name)
+        );
     }
 
     #[test]
