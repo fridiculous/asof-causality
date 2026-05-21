@@ -40,6 +40,24 @@ fn run_sensitivity(args: &[String]) {
     );
 }
 
+fn run_sensitivity_failure(args: &[String]) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_asof-causality"))
+        .args(args)
+        .output()
+        .expect("sensitivity command should run");
+    assert!(
+        !output.status.success(),
+        "command should fail\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
 fn read_json(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).expect("json file should be readable"))
         .expect("json file should parse")
@@ -212,6 +230,22 @@ fn tiny_late_arrival_fixture(dir: &Path) -> PathBuf {
 f_seed|10|10|1|feature|XYZ|sentiment=negative
 p_early|50|50|2|prediction|XYZ|
 n_late|40|80|3|feature|XYZ|sentiment=positive
+p_late|90|90|4|prediction|XYZ|
+",
+    )
+    .expect("tiny fixture should write");
+    fixture
+}
+
+fn tiny_no_late_arrival_fixture(dir: &Path) -> PathBuf {
+    let fixture = dir.join("tiny-no-late-arrival.pipe");
+    fs::write(
+        &fixture,
+        "\
+# event_id|observed_time|received_time|received_sequence_number|role|symbol|payload
+f_seed|10|10|1|feature|XYZ|sentiment=negative
+p_early|50|50|2|prediction|XYZ|
+f_next|60|60|3|feature|XYZ|sentiment=positive
 p_late|90|90|4|prediction|XYZ|
 ",
     )
@@ -542,6 +576,127 @@ fn sensitivity_cli_accepts_late_arrival_scenario() {
     assert!(!late_svg.contains(">late_arrivals_lag_"));
 
     let _ = fs::remove_dir_all(out_dir);
+}
+
+#[test]
+fn sensitivity_cli_rejects_invalid_lookahead_percentages() {
+    let repo_root = repo_root();
+    let events = repo_root.join("examples/late-arrival.pipe");
+    let temp = TempDir::new().expect("tempdir should create");
+
+    for (range, expected_error) in [
+        (
+            "100.001..100.001",
+            "lookahead percentage supports at most two fractional digits",
+        ),
+        (
+            "99.999..100",
+            "lookahead percentage supports at most two fractional digits",
+        ),
+        ("101..101", "lookahead percentage must be between 0 and 100"),
+    ] {
+        let out_dir = temp.path().join(range.replace('.', "_"));
+        let output = run_sensitivity_failure(&[
+            "sensitivity".to_string(),
+            events.display().to_string(),
+            "--lookahead-range".to_string(),
+            range.to_string(),
+            "--steps".to_string(),
+            "4".to_string(),
+            "--out".to_string(),
+            out_dir.display().to_string(),
+        ]);
+
+        assert!(
+            output.contains(expected_error),
+            "{range} should fail with {expected_error}; got:\n{output}"
+        );
+    }
+}
+
+#[test]
+fn sensitivity_cli_zero_shift_reports_no_transformed_events() {
+    let temp = TempDir::new().expect("tempdir should create");
+    let fixture = tiny_late_arrival_fixture(temp.path());
+    let out_dir = temp.path().join("zero-shift");
+
+    run_sensitivity(&[
+        "sensitivity".to_string(),
+        fixture.display().to_string(),
+        "--signal".to_string(),
+        "last-feature-sentiment".to_string(),
+        "--shift-features".to_string(),
+        "0".to_string(),
+        "--out".to_string(),
+        out_dir.display().to_string(),
+    ]);
+
+    let rows = read_jsonl(&out_dir.join("summary.jsonl"));
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["policy_name"], "strict_received_time");
+    assert_eq!(rows[1]["policy_name"], "shift_features_0");
+    assert_eq!(rows[1]["events_transformed"], 0);
+    assert_eq!(
+        rows[1]["transformed_fixture_hash"],
+        rows[0]["transformed_fixture_hash"]
+    );
+    assert_eq!(rows[1]["transcript_hash"], rows[0]["transcript_hash"]);
+    assert_eq!(rows[1]["predictions_with_signal_change"], 0);
+    assert_eq!(rows[1]["new_input_uses"], 0);
+}
+
+#[test]
+fn sensitivity_cli_rejects_incompatible_scenario_args() {
+    let repo_root = repo_root();
+    let events = repo_root.join("examples/late-arrival.pipe");
+    let temp = TempDir::new().expect("tempdir should create");
+    let output = run_sensitivity_failure(&[
+        "sensitivity".to_string(),
+        events.display().to_string(),
+        "--scenario".to_string(),
+        "late-arrivals".to_string(),
+        "--lookahead-range".to_string(),
+        "0..100".to_string(),
+        "--out".to_string(),
+        temp.path().join("incompatible").display().to_string(),
+    ]);
+
+    assert!(output.contains("--scenario late-arrivals cannot be combined with --lookahead-range"));
+}
+
+#[test]
+fn sensitivity_cli_rejects_late_arrivals_without_late_features() {
+    let temp = TempDir::new().expect("tempdir should create");
+    let fixture = tiny_no_late_arrival_fixture(temp.path());
+    let output = run_sensitivity_failure(&[
+        "sensitivity".to_string(),
+        fixture.display().to_string(),
+        "--signal".to_string(),
+        "last-feature-sentiment".to_string(),
+        "--scenario".to_string(),
+        "late-arrivals".to_string(),
+        "--out".to_string(),
+        temp.path().join("no-late").display().to_string(),
+    ]);
+
+    assert!(output.contains("found no late feature arrivals"));
+}
+
+#[test]
+fn sensitivity_cli_rejects_duplicate_policy_names() {
+    let repo_root = repo_root();
+    let events = repo_root.join("examples/late-arrival.pipe");
+    let temp = TempDir::new().expect("tempdir should create");
+    let output = run_sensitivity_failure(&[
+        "sensitivity".to_string(),
+        events.display().to_string(),
+        "--observed-time-leaky".to_string(),
+        "--observed-time-leaky".to_string(),
+        "--out".to_string(),
+        temp.path().join("duplicate-policy").display().to_string(),
+    ]);
+
+    assert!(output.contains("duplicate sensitivity policy: observed_time_leaky"));
 }
 
 #[test]

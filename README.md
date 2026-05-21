@@ -334,6 +334,11 @@ feature's own `(received_time - observed_time)` lag. The command writes
 sampled lookahead percentages on the x-axis, secondary static SVG charts
 (`flip-rate.svg` and `input-change.svg`), optional `details.jsonl`, and
 `manifest.json` with policy descriptors and transcript hashes.
+`--lookahead-range` accepts whole percentages or percentages with up to two
+fractional digits, such as `0..100`, `12.5..87.5`, or `99.99..100`.
+`0%` is represented by the strict baseline row, not by a separate comparison
+policy. In summary and manifest records, `events_transformed` means rows whose
+`received_time` actually changed after applying the policy.
 
 Late-arrival attribution is a separate sensitivity scenario:
 
@@ -357,7 +362,9 @@ as `-1d` are deferred until timestamp semantics are first-class. Sensitivity
 descriptors and the manifest record
 `calendar_aware: false`; on `YYYYMMDDHHMM` fixtures like ALFRED, intermediate
 lookahead percentages are synthetic ordered-integer stresses, not calendar
-durations.
+durations. The `late-arrivals` scenario is also percent-of-each-event-lag
+replay, not a calendar duration shift: each late feature/correction row is moved
+toward its own observed time by the sampled percentage.
 
 The PAYEMS fixture anchors an actual ALFRED correction:
 

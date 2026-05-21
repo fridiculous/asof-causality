@@ -42,7 +42,8 @@
     },
     "events_transformed": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 0,
+      "description": "Number of event rows whose received_time actually changed after applying this policy."
     },
     "predictions": {
       "type": "integer",
