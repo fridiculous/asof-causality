@@ -2769,12 +2769,15 @@ struct ChartRow {
 }
 
 fn format_bar_chart_svg(title: &str, subtitle: &str, rows: &[ChartRow], max_value: f64) -> String {
-    let row_height = 52_usize;
-    let top = 84_usize;
-    let bottom = 42_usize;
-    let left = 300_usize;
-    let chart_width = 470_f64;
+    let compact = rows.len() > 24;
+    let row_height = if compact { 26_usize } else { 42_usize };
+    let top = if compact { 66_usize } else { 76_usize };
+    let bottom = if compact { 28_usize } else { 36_usize };
+    let left = if compact { 286_usize } else { 300_usize };
     let width = 900_usize;
+    let chart_width = (width - left - 82) as f64;
+    let bar_height = if compact { 12_usize } else { 16_usize };
+    let bar_radius = if compact { 2_usize } else { 3_usize };
     let height = top + bottom + rows.len().max(1) * row_height;
     let mut svg = String::new();
 
@@ -2793,6 +2796,8 @@ fn format_bar_chart_svg(title: &str, subtitle: &str, rows: &[ChartRow], max_valu
   .label { font-size: 12px; font-weight: 650; }
   .detail { font-size: 10px; fill: #64748b; }
   .value { font-size: 12px; font-weight: 700; }
+  .label-compact { font-size: 9px; font-weight: 650; }
+  .value-compact { font-size: 9px; font-weight: 700; }
   .axis { stroke: #cbd5e1; stroke-width: 1; }
 </style>
 "##,
@@ -2823,9 +2828,13 @@ fn format_bar_chart_svg(title: &str, subtitle: &str, rows: &[ChartRow], max_valu
 
     for (index, row) in rows.iter().enumerate() {
         let y = top + index * row_height;
-        let bar_y = y + 13;
-        let label_y = y + 16;
-        let detail_y = y + 34;
+        let (bar_y, label_y, detail_y, value_y) = if compact {
+            let bar_y = y + 7;
+            (bar_y, y + 17, y + 17, bar_y + 10)
+        } else {
+            let bar_y = y + 11;
+            (bar_y, y + 15, y + 31, bar_y + 13)
+        };
         let normalized = if max_value <= 0.0 {
             0.0
         } else {
@@ -2839,22 +2848,25 @@ fn format_bar_chart_svg(title: &str, subtitle: &str, rows: &[ChartRow], max_valu
         let _ = writeln!(svg, "<title>{}</title>", xml_escape(&row.tooltip));
         let _ = writeln!(
             svg,
-            r#"<text x="28" y="{label_y}" class="label">{}</text>"#,
+            r#"<text x="28" y="{label_y}" class="{}">{}</text>"#,
+            if compact { "label-compact" } else { "label" },
             xml_escape(&row.label)
         );
+        if !compact {
+            let _ = writeln!(
+                svg,
+                r#"<text x="28" y="{detail_y}" class="detail">{}</text>"#,
+                xml_escape(&row.detail)
+            );
+        }
         let _ = writeln!(
             svg,
-            r#"<text x="28" y="{detail_y}" class="detail">{}</text>"#,
-            xml_escape(&row.detail)
+            r#"<rect x="{left}" y="{bar_y}" width="{bar_width:.2}" height="{bar_height}" rx="{bar_radius}" fill="{fill}"/>"#
         );
         let _ = writeln!(
             svg,
-            r#"<rect x="{left}" y="{bar_y}" width="{bar_width:.2}" height="18" rx="3" fill="{fill}"/>"#
-        );
-        let _ = writeln!(
-            svg,
-            r#"<text x="{value_x:.2}" y="{}" class="value">{}</text>"#,
-            bar_y + 14,
+            r#"<text x="{value_x:.2}" y="{value_y}" class="{}">{}</text>"#,
+            if compact { "value-compact" } else { "value" },
             xml_escape(&row.value_label)
         );
         let _ = writeln!(svg, "</g>");
