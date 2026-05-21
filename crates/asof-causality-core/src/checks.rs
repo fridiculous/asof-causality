@@ -305,12 +305,14 @@ where
         let moved_received_time = late_event.observed_time;
         let before_sequence = (moved_received_time == target_prediction.prediction_time)
             .then_some(target_prediction.prediction_received_sequence_number);
-        let moved_received_sequence_number = available_received_sequence_number(
+        let Some(moved_received_sequence_number) = available_received_sequence_number(
             &on_time,
             late_event.event_id.as_str(),
             moved_received_time,
             before_sequence,
-        );
+        ) else {
+            continue;
+        };
         for event in &mut on_time {
             if event.event_id == late_event.event_id {
                 event.received_time = moved_received_time;
@@ -519,7 +521,7 @@ fn available_received_sequence_number(
     moving_event_id: &str,
     received_time: u64,
     before_sequence: Option<u64>,
-) -> u64 {
+) -> Option<u64> {
     let used = events
         .iter()
         .filter(|event| event.event_id != moving_event_id && event.received_time == received_time)
@@ -529,12 +531,12 @@ fn available_received_sequence_number(
     let mut candidate = 0_u64;
     loop {
         if before_sequence.is_some_and(|limit| candidate >= limit) {
-            return before_sequence.unwrap_or(candidate).saturating_sub(1);
+            return None;
         }
         if !used.contains(&candidate) {
-            return candidate;
+            return Some(candidate);
         }
-        candidate += 1;
+        candidate = candidate.checked_add(1)?;
     }
 }
 
@@ -946,6 +948,40 @@ p1|110|110|2|prediction|XYZ|
             .results
             .iter()
             .any(|result| !result.passed && result.detail.contains("replay failed")));
+    }
+
+    #[test]
+    fn available_received_sequence_number_returns_none_when_prefix_is_full() {
+        let events = parse_pipe_events(
+            "\
+f0|100|100|0|feature|XYZ|sentiment=positive
+f1|100|100|1|feature|XYZ|sentiment=negative
+moving|90|110|2|feature|XYZ|sentiment=positive
+",
+        )
+        .unwrap();
+
+        assert_eq!(
+            available_received_sequence_number(&events, "moving", 100, Some(2)),
+            None
+        );
+    }
+
+    #[test]
+    fn available_received_sequence_number_finds_unused_prefix_slot() {
+        let events = parse_pipe_events(
+            "\
+f0|100|100|0|feature|XYZ|sentiment=positive
+f2|100|100|2|feature|XYZ|sentiment=negative
+moving|90|110|3|feature|XYZ|sentiment=positive
+",
+        )
+        .unwrap();
+
+        assert_eq!(
+            available_received_sequence_number(&events, "moving", 100, Some(3)),
+            Some(1)
+        );
     }
 
     #[test]
