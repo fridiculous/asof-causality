@@ -601,11 +601,7 @@ fn parse_percent_bps(value: &str) -> Result<u16, Box<dyn Error>> {
     while fractional_digits.len() < 2 {
         fractional_digits.push('0');
     }
-    let fractional_bps = if fractional_digits.is_empty() {
-        0
-    } else {
-        fractional_digits.parse::<u16>()?
-    };
+    let fractional_bps = fractional_digits.parse::<u16>()?;
     let bps = whole
         .checked_mul(100)
         .and_then(|value| value.checked_add(fractional_bps))
@@ -4467,6 +4463,33 @@ mod tests {
         assert!(matches!(
             parsed.policies[0].kind,
             PolicyKind::ReceivedTimeLagFraction { pct_bps: 2500, .. }
+        ));
+    }
+
+    #[test]
+    fn parses_decimal_lookahead_range_args() {
+        let parsed = parse_sensitivity_args(&args(&[
+            "examples/late-arrival.pipe",
+            "--lookahead-range",
+            "12.5..99.99",
+            "--steps",
+            "4",
+            "--out",
+            "runs/sensitivity",
+        ]))
+        .unwrap();
+
+        assert_eq!(parsed.policies.len(), 5);
+        assert_eq!(parsed.scenario, SensitivityScenario::Lookahead);
+        assert_eq!(parsed.policies[0].name, "lookahead_12_5pct");
+        assert_eq!(parsed.policies[4].name, "lookahead_99_99pct");
+        assert!(matches!(
+            parsed.policies[0].kind,
+            PolicyKind::ReceivedTimeLagFraction { pct_bps: 1250, .. }
+        ));
+        assert!(matches!(
+            parsed.policies[4].kind,
+            PolicyKind::ReceivedTimeLagFraction { pct_bps: 9999, .. }
         ));
     }
 
