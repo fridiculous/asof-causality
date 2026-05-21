@@ -6,6 +6,21 @@ Most backtests ask, "Did this signal make money?" This asks the prior question: 
 
 It is not a backtester. It is a point-in-time signal verifier that sits upstream of strategy simulation, portfolio construction, fills, and PnL.
 
+## Setup
+
+Requires Rust 1.95+; `rustup` uses the pinned [`rust-toolchain.toml`](rust-toolchain.toml).
+
+```sh
+git clone https://github.com/fridiculous/asof-causality.git
+cd asof-causality
+```
+
+Optional, to put the `asof` binary on your `PATH`:
+
+```sh
+cargo install --path crates/asof-cli
+```
+
 ## 30-Second Demo
 
 ```sh
