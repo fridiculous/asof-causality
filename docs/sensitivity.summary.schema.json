@@ -1,0 +1,408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/fridiculous/asof-causality/docs/sensitivity.summary.schema.json",
+  "title": "asof-causality sensitivity summary record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy",
+    "policy_name",
+    "category",
+    "vs_baseline",
+    "events_transformed",
+    "predictions",
+    "predictions_with_signal_change",
+    "predictions_with_recipe_change",
+    "predictions_with_new_inputs",
+    "new_input_uses",
+    "unique_new_inputs",
+    "flip_rate",
+    "transcript_hash",
+    "transformed_fixture_hash",
+    "signal_name"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "policy": {
+      "$ref": "#/$defs/policy_descriptor"
+    },
+    "policy_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "category": {
+      "$ref": "#/$defs/category"
+    },
+    "vs_baseline": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "events_transformed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of event rows whose received_time actually changed after applying this policy."
+    },
+    "predictions": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "predictions_with_signal_change": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "predictions_with_recipe_change": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "predictions_with_new_inputs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "new_input_uses": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unique_new_inputs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "flip_rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "transcript_hash": {
+      "$ref": "#/$defs/blake3"
+    },
+    "transformed_fixture_hash": {
+      "$ref": "#/$defs/blake3"
+    },
+    "signal_name": {
+      "$ref": "#/$defs/signal"
+    }
+  },
+  "$defs": {
+    "blake3": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "category": {
+      "enum": ["baseline", "synthetic_stress", "realistic_failure"]
+    },
+    "signal": {
+      "enum": [
+        "last-feature-sentiment",
+        "windowed-feature-sentiment",
+        "windowed-zscore",
+        "vol-adjusted-momentum"
+      ]
+    },
+    "policy_descriptor": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "category", "kind"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "category": {
+              "const": "baseline"
+            },
+            "kind": {
+              "const": "identity"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "category",
+            "kind",
+            "time_axis",
+            "shift_units",
+            "calendar_aware",
+            "roles_affected",
+            "shift",
+            "preserve"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "category": {
+              "const": "synthetic_stress"
+            },
+            "kind": {
+              "const": "received_time_shift"
+            },
+            "time_axis": {
+              "const": "fixture_native_integer"
+            },
+            "shift_units": {
+              "const": "fixture_native_integer"
+            },
+            "calendar_aware": {
+              "const": false
+            },
+            "roles_affected": {
+              "type": "array",
+              "items": {
+                "enum": ["feature", "feature_correction", "prediction", "outcome"]
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "shift": {
+              "type": "integer"
+            },
+            "preserve": {
+              "const": ["event_id", "observed_time", "sequence", "symbol", "payload"]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "category",
+            "kind",
+            "time_axis",
+            "shift_units",
+            "calendar_aware",
+            "bounded_by_observed_time",
+            "roles_affected",
+            "lag_fraction_bps",
+            "lag_fraction_percent",
+            "preserve"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "category": {
+              "const": "synthetic_stress"
+            },
+            "kind": {
+              "const": "received_time_lag_fraction"
+            },
+            "time_axis": {
+              "const": "event_lag_fraction_integer"
+            },
+            "shift_units": {
+              "const": "percent_of_each_event_lag"
+            },
+            "calendar_aware": {
+              "const": false
+            },
+            "bounded_by_observed_time": {
+              "const": true
+            },
+            "roles_affected": {
+              "type": "array",
+              "items": {
+                "enum": ["feature", "feature_correction", "prediction", "outcome"]
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "lag_fraction_bps": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "lag_fraction_percent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "preserve": {
+              "const": ["event_id", "observed_time", "sequence", "symbol", "payload"]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "category",
+            "kind",
+            "time_axis",
+            "shift_units",
+            "calendar_aware",
+            "bounded_by_observed_time",
+            "roles_affected",
+            "min_lag",
+            "max_lag_exclusive",
+            "lag_fraction_bps",
+            "lag_fraction_percent",
+            "preserve"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "category": {
+              "const": "synthetic_stress"
+            },
+            "kind": {
+              "const": "received_time_lag_bucket_lookahead"
+            },
+            "time_axis": {
+              "const": "event_lag_fixture_native_integer"
+            },
+            "shift_units": {
+              "const": "percent_of_each_event_lag"
+            },
+            "calendar_aware": {
+              "const": false
+            },
+            "bounded_by_observed_time": {
+              "const": true
+            },
+            "roles_affected": {
+              "type": "array",
+              "items": {
+                "enum": ["feature", "feature_correction", "prediction", "outcome"]
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "min_lag": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_lag_exclusive": {
+              "type": ["integer", "null"],
+              "minimum": 0
+            },
+            "lag_fraction_bps": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "lag_fraction_percent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "preserve": {
+              "const": ["event_id", "observed_time", "sequence", "symbol", "payload"]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "category",
+            "kind",
+            "time_axis",
+            "shift_units",
+            "calendar_aware",
+            "bounded_by_observed_time",
+            "roles_affected",
+            "max_lag_inclusive",
+            "threshold_percent_bps",
+            "threshold_percent",
+            "lag_fraction_bps",
+            "lag_fraction_percent",
+            "preserve"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "category": {
+              "const": "synthetic_stress"
+            },
+            "kind": {
+              "const": "received_time_lag_cumulative_lookahead"
+            },
+            "time_axis": {
+              "const": "event_lag_fixture_native_integer"
+            },
+            "shift_units": {
+              "const": "percent_of_each_event_lag"
+            },
+            "calendar_aware": {
+              "const": false
+            },
+            "bounded_by_observed_time": {
+              "const": true
+            },
+            "roles_affected": {
+              "type": "array",
+              "items": {
+                "enum": ["feature", "feature_correction", "prediction", "outcome"]
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "max_lag_inclusive": {
+              "type": ["integer", "null"],
+              "minimum": 0
+            },
+            "threshold_percent_bps": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "threshold_percent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "lag_fraction_bps": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "lag_fraction_percent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "preserve": {
+              "const": ["event_id", "observed_time", "sequence", "symbol", "payload"]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "category", "kind", "order"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "category": {
+              "const": "realistic_failure"
+            },
+            "kind": {
+              "const": "replay_order_override"
+            },
+            "order": {
+              "enum": ["received_time", "observed_time"]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

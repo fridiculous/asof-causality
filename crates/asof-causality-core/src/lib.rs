@@ -22,6 +22,9 @@ pub mod ids;
 pub mod log;
 /// Received-time replay engine.
 pub mod replay;
+/// Sensitivity analysis orchestration around replay.
+#[allow(missing_docs)]
+pub mod sensitivity;
 /// Signal trait and built-in signals.
 pub mod signal;
 /// Opaque as-of state view exposed to signals.
@@ -45,6 +48,11 @@ pub use log::{
 };
 pub use replay::{
     parse_pipe_events, ReplayEngine, ReplayError, ReplayOptions, ReplayOrder, ReplayOutput,
+};
+pub use sensitivity::{
+    canonical_event_stream_hash, run_sensitivity_sweep, transform_events_for_policy,
+    PolicyCategory, PolicyKind, PolicyPoint, PolicyRun, SensitivityDetail, SensitivityError,
+    SensitivityPolicyResult, SensitivitySummary, SensitivitySweep,
 };
 pub use signal::{
     LastFeatureSentimentSignal, Signal, VolAdjustedMomentumSignal, WindowedFeatureSentimentSignal,

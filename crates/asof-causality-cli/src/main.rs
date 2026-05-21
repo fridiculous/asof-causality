@@ -1,12 +1,13 @@
 use asof_causality_core::{
     generate_events, parse_pipe_events, run_adversarial_checks_with_options_for_signal,
-    run_representation_benchmark, CheckOptions, CheckReport, Event, EventKey, EventRole,
-    GenerateConfig, GeneratedStream, LastFeatureSentimentSignal, ReplayEngine, ReplayOptions,
-    ReplayOrder, ReplayOutput, Scenario, SymbolId, VolAdjustedMomentumSignal,
+    run_representation_benchmark, run_sensitivity_sweep, CheckOptions, CheckReport, Event,
+    EventKey, EventRole, GenerateConfig, GeneratedStream, LastFeatureSentimentSignal, PolicyKind,
+    PolicyPoint, PolicyRun, ReplayEngine, ReplayOptions, ReplayOrder, ReplayOutput, Scenario,
+    SensitivityPolicyResult, SensitivitySweep, Signal, SymbolId, VolAdjustedMomentumSignal,
     WindowedFeatureSentimentSignal, WindowedZScoreSignal,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::Number;
+use serde_json::{json, Number, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::error::Error;
@@ -34,6 +35,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some(command) if is_negative_control_command(command) => negative_control(&args[2..]),
         Some("generate") => generate(&args[2..]),
         Some("run-suite") => run_suite(&args[2..]),
+        Some("sensitivity") => sensitivity(&args[2..]),
         Some("bench") => bench(&args[2..]),
         _ => {
             print_help();
@@ -71,6 +73,17 @@ impl SignalChoice {
             Self::WindowedFeatureSentiment => "windowed-feature-sentiment",
             Self::WindowedZScore => "windowed-zscore",
             Self::VolAdjustedMomentum => "vol-adjusted-momentum",
+        }
+    }
+
+    fn config_descriptor(self) -> String {
+        match self {
+            Self::LastFeatureSentiment => String::new(),
+            Self::WindowedFeatureSentiment => {
+                WindowedFeatureSentimentSignal::default().config_descriptor()
+            }
+            Self::WindowedZScore => WindowedZScoreSignal::default().config_descriptor(),
+            Self::VolAdjustedMomentum => VolAdjustedMomentumSignal::default().config_descriptor(),
         }
     }
 }
@@ -219,6 +232,500 @@ fn negative_control(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SensitivityArgs {
+    events_path: String,
+    signal: SignalChoice,
+    out_dir: PathBuf,
+    details: bool,
+    scenario: SensitivityScenario,
+    late_arrival_buckets: Option<LateArrivalBucketSpec>,
+    late_arrival_steps: usize,
+    policies: Vec<PolicyPoint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SensitivityScenario {
+    Custom,
+    Lookahead,
+    LateArrivals,
+}
+
+impl SensitivityScenario {
+    fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
+        match value {
+            "custom" => Ok(Self::Custom),
+            "lookahead" => Ok(Self::Lookahead),
+            "late-arrivals" | "late_arrivals" => Ok(Self::LateArrivals),
+            other => Err(format!(
+                "unknown sensitivity scenario {other}; expected custom, lookahead, or late-arrivals"
+            )
+            .into()),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Custom => "custom",
+            Self::Lookahead => "lookahead",
+            Self::LateArrivals => "late-arrivals",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LateArrivalBucketSpec {
+    Auto,
+}
+
+fn sensitivity(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let mut sensitivity_args = parse_sensitivity_args(args)?;
+    let input = fs::read_to_string(&sensitivity_args.events_path)?;
+    let events = parse_pipe_events(&input)?;
+    append_late_arrival_policies(&mut sensitivity_args, &events)?;
+    let sweep =
+        run_sensitivity_with_signal(sensitivity_args.signal, &events, &sensitivity_args.policies)?;
+
+    fs::create_dir_all(&sensitivity_args.out_dir)?;
+    let summary_path = sensitivity_args.out_dir.join("summary.jsonl");
+    let details_path = sensitivity_args.out_dir.join("details.jsonl");
+    let manifest_path = sensitivity_args.out_dir.join("manifest.json");
+    let sensitivity_curve_svg_path = sensitivity_args.out_dir.join("sensitivity-curve.svg");
+    let flip_rate_svg_path = sensitivity_args.out_dir.join("flip-rate.svg");
+    let input_change_svg_path = sensitivity_args.out_dir.join("input-change.svg");
+    let late_arrival_impact_svg_path = sensitivity_args.out_dir.join("late-arrival-impact.svg");
+
+    let summary_jsonl = format_sensitivity_summary_jsonl(sensitivity_args.signal, &sweep);
+    write_file(&summary_path, &summary_jsonl)?;
+    let sensitivity_curve_svg = if sweep_has_sensitivity_curve_points(&sweep) {
+        let svg = format_sensitivity_curve_svg(&sweep);
+        write_file(&sensitivity_curve_svg_path, &svg)?;
+        Some(svg)
+    } else {
+        None
+    };
+    let flip_rate_svg = format_sensitivity_flip_rate_svg(&sweep);
+    write_file(&flip_rate_svg_path, &flip_rate_svg)?;
+    let input_change_svg = format_sensitivity_input_change_svg(&sweep);
+    write_file(&input_change_svg_path, &input_change_svg)?;
+    let late_arrival_impact_svg = if sweep_has_late_arrival_bucket_policies(&sweep) {
+        let svg = format_late_arrival_impact_svg(&sweep, &events);
+        write_file(&late_arrival_impact_svg_path, &svg)?;
+        Some(svg)
+    } else {
+        None
+    };
+
+    let details_jsonl = if sensitivity_args.details {
+        let details_jsonl = format_sensitivity_details_jsonl(&sweep);
+        write_file(&details_path, &details_jsonl)?;
+        Some(details_jsonl)
+    } else {
+        None
+    };
+
+    let manifest_json = format_sensitivity_manifest_json(SensitivityManifestInputs {
+        events_path: &sensitivity_args.events_path,
+        fixture_input: &input,
+        signal: sensitivity_args.signal,
+        sweep: &sweep,
+        summary_path: &summary_path,
+        summary_jsonl: &summary_jsonl,
+        sensitivity_curve_svg_path: sensitivity_curve_svg
+            .as_ref()
+            .map(|_| sensitivity_curve_svg_path.as_path()),
+        sensitivity_curve_svg: sensitivity_curve_svg.as_deref(),
+        flip_rate_svg_path: &flip_rate_svg_path,
+        flip_rate_svg: &flip_rate_svg,
+        input_change_svg_path: &input_change_svg_path,
+        input_change_svg: &input_change_svg,
+        late_arrival_impact_svg_path: late_arrival_impact_svg
+            .as_ref()
+            .map(|_| late_arrival_impact_svg_path.as_path()),
+        late_arrival_impact_svg: late_arrival_impact_svg.as_deref(),
+        details_path: sensitivity_args.details.then_some(details_path.as_path()),
+        details_jsonl: details_jsonl.as_deref(),
+    });
+    write_file(&manifest_path, &manifest_json)?;
+
+    print_sensitivity_stdout(
+        &sensitivity_args,
+        &sweep,
+        SensitivityArtifactPaths {
+            summary: &summary_path,
+            sensitivity_curve_svg: sensitivity_curve_svg
+                .as_ref()
+                .map(|_| sensitivity_curve_svg_path.as_path()),
+            flip_rate_svg: &flip_rate_svg_path,
+            input_change_svg: &input_change_svg_path,
+            late_arrival_impact_svg: late_arrival_impact_svg
+                .as_ref()
+                .map(|_| late_arrival_impact_svg_path.as_path()),
+            details: sensitivity_args.details.then_some(details_path.as_path()),
+            manifest: &manifest_path,
+        },
+    );
+
+    Ok(())
+}
+
+fn run_sensitivity_with_signal(
+    signal: SignalChoice,
+    events: &[Event],
+    policies: &[PolicyPoint],
+) -> Result<SensitivitySweep, asof_causality_core::SensitivityError> {
+    match signal {
+        SignalChoice::LastFeatureSentiment => {
+            run_sensitivity_sweep(events, policies, LastFeatureSentimentSignal)
+        }
+        SignalChoice::WindowedFeatureSentiment => {
+            run_sensitivity_sweep(events, policies, WindowedFeatureSentimentSignal::default())
+        }
+        SignalChoice::WindowedZScore => {
+            run_sensitivity_sweep(events, policies, WindowedZScoreSignal::default())
+        }
+        SignalChoice::VolAdjustedMomentum => {
+            run_sensitivity_sweep(events, policies, VolAdjustedMomentumSignal::default())
+        }
+    }
+}
+
+fn parse_sensitivity_args(args: &[String]) -> Result<SensitivityArgs, Box<dyn Error>> {
+    let mut events_path = "examples/late-arrival.pipe".to_string();
+    let mut signal = SignalChoice::default();
+    let mut out_dir = None;
+    let mut details = false;
+    let mut scenario = None;
+    let mut late_arrival_buckets = None;
+    let mut policies = Vec::new();
+    let mut lookahead_range = None;
+    let mut lookahead_steps = 20_usize;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--scenario" => {
+                scenario = Some(SensitivityScenario::parse(required_arg(
+                    args,
+                    index,
+                    "--scenario",
+                )?)?);
+                index += 2;
+            }
+            "--signal" => {
+                signal = SignalChoice::parse(required_arg(args, index, "--signal")?)?;
+                index += 2;
+            }
+            "--out" => {
+                out_dir = Some(PathBuf::from(required_arg(args, index, "--out")?));
+                index += 2;
+            }
+            "--details" => {
+                details = true;
+                index += 1;
+            }
+            "--observed-time-leaky" => {
+                policies.push(PolicyPoint::observed_time_leaky());
+                index += 1;
+            }
+            "--lookahead-range" => {
+                if lookahead_range.is_some() {
+                    return Err("sensitivity accepts only one lookahead range".into());
+                }
+                lookahead_range = Some(parse_lookahead_range(required_arg(
+                    args,
+                    index,
+                    "--lookahead-range",
+                )?)?);
+                index += 2;
+            }
+            "--late-arrival-buckets" | "--buckets" => {
+                let value = required_arg(args, index, args[index].as_str())?;
+                if value != "auto" {
+                    return Err(
+                        "sensitivity late-arrival buckets currently supports only auto".into(),
+                    );
+                }
+                late_arrival_buckets = Some(LateArrivalBucketSpec::Auto);
+                index += 2;
+            }
+            "--steps" => {
+                lookahead_steps = parse_arg(args, index, "--steps")?;
+                if lookahead_steps == 0 {
+                    return Err("sensitivity --steps must be greater than zero".into());
+                }
+                index += 2;
+            }
+            "--shift-features" => {
+                let value = required_arg(args, index, "--shift-features")?;
+                let shift = parse_integer_shift(value)?;
+                policies.push(PolicyPoint::shift_features(
+                    shift_features_policy_name(shift),
+                    shift,
+                ));
+                index += 2;
+            }
+            value if value.starts_with("--") => {
+                return Err(format!("unknown sensitivity argument: {value}").into());
+            }
+            value => {
+                events_path = value.to_string();
+                index += 1;
+            }
+        }
+    }
+
+    let scenario = scenario.unwrap_or_else(|| {
+        if late_arrival_buckets.is_some() {
+            SensitivityScenario::LateArrivals
+        } else if lookahead_range.is_some() {
+            SensitivityScenario::Lookahead
+        } else {
+            SensitivityScenario::Custom
+        }
+    });
+    if scenario == SensitivityScenario::Lookahead && late_arrival_buckets.is_some() {
+        return Err(
+            "sensitivity --scenario lookahead cannot be combined with late-arrival buckets".into(),
+        );
+    }
+    if scenario == SensitivityScenario::LateArrivals && lookahead_range.is_some() {
+        return Err(
+            "sensitivity --scenario late-arrivals cannot be combined with --lookahead-range".into(),
+        );
+    }
+    if scenario == SensitivityScenario::LateArrivals && late_arrival_buckets.is_none() {
+        late_arrival_buckets = Some(LateArrivalBucketSpec::Auto);
+    }
+    if scenario == SensitivityScenario::Lookahead && lookahead_range.is_none() {
+        lookahead_range = Some(PercentRangeSpec {
+            start_bps: 0,
+            end_bps: 10_000,
+        });
+    }
+
+    if let Some(range) = lookahead_range {
+        let generated_policies = lookahead_range_policies(range, lookahead_steps)?;
+        let insert_at = policies
+            .iter()
+            .position(|policy| policy.name == "observed_time_leaky")
+            .unwrap_or(policies.len());
+        policies.splice(insert_at..insert_at, generated_policies);
+    } else if args.iter().any(|arg| arg == "--steps")
+        && scenario != SensitivityScenario::LateArrivals
+    {
+        return Err(
+            "sensitivity --steps requires --lookahead-range or --scenario lookahead".into(),
+        );
+    }
+
+    let Some(out_dir) = out_dir else {
+        return Err("sensitivity requires --out DIR".into());
+    };
+    if policies.is_empty() && late_arrival_buckets.is_none() {
+        return Err("sensitivity requires at least one comparison policy".into());
+    }
+
+    Ok(SensitivityArgs {
+        events_path,
+        signal,
+        out_dir,
+        details,
+        scenario,
+        late_arrival_buckets,
+        late_arrival_steps: lookahead_steps,
+        policies,
+    })
+}
+
+fn parse_integer_shift(value: &str) -> Result<i64, Box<dyn Error>> {
+    if value
+        .chars()
+        .any(|character| character.is_ascii_alphabetic())
+    {
+        return Err(
+            "typed duration shifts like -1d are deferred in sensitivity v1; use an integer offset"
+                .into(),
+        );
+    }
+    Ok(value.parse()?)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PercentRangeSpec {
+    start_bps: u16,
+    end_bps: u16,
+}
+
+fn parse_lookahead_range(value: &str) -> Result<PercentRangeSpec, Box<dyn Error>> {
+    let (start, end) = value
+        .split_once("..=")
+        .or_else(|| value.split_once(".."))
+        .or_else(|| value.split_once(':'))
+        .ok_or("expected lookahead range like 0..100")?;
+    let start_bps = parse_percent_bps(start)?;
+    let end_bps = parse_percent_bps(end)?;
+    if start_bps > end_bps {
+        return Err("sensitivity --lookahead-range start must be <= end".into());
+    }
+    Ok(PercentRangeSpec { start_bps, end_bps })
+}
+
+fn parse_percent_bps(value: &str) -> Result<u16, Box<dyn Error>> {
+    let value = value.trim().trim_end_matches('%');
+    if value.is_empty() {
+        return Err("empty lookahead percentage".into());
+    }
+    let (whole, fractional) = value.split_once('.').unwrap_or((value, ""));
+    if whole.is_empty() || !whole.chars().all(|character| character.is_ascii_digit()) {
+        return Err(format!("invalid lookahead percentage: {value}").into());
+    }
+    if !fractional
+        .chars()
+        .all(|character| character.is_ascii_digit())
+    {
+        return Err(format!("invalid lookahead percentage: {value}").into());
+    }
+    if fractional.len() > 2 {
+        return Err("lookahead percentage supports at most two fractional digits".into());
+    }
+
+    let whole: u16 = whole.parse()?;
+    if whole > 100 {
+        return Err("lookahead percentage must be between 0 and 100".into());
+    }
+
+    let mut fractional_digits = fractional.chars().take(2).collect::<String>();
+    while fractional_digits.len() < 2 {
+        fractional_digits.push('0');
+    }
+    let fractional_bps = fractional_digits.parse::<u16>()?;
+    let bps = whole
+        .checked_mul(100)
+        .and_then(|value| value.checked_add(fractional_bps))
+        .ok_or("lookahead percentage is out of range")?;
+    if bps > 10_000 {
+        return Err("lookahead percentage must be between 0 and 100".into());
+    }
+    Ok(bps)
+}
+
+fn lookahead_range_policies(
+    spec: PercentRangeSpec,
+    steps: usize,
+) -> Result<Vec<PolicyPoint>, Box<dyn Error>> {
+    let mut percentages = Vec::new();
+    let delta = u128::from(spec.end_bps - spec.start_bps);
+    for step in 0..=steps {
+        let pct_bps = u128::from(spec.start_bps)
+            + ((delta * step as u128) + (steps as u128 / 2)) / steps as u128;
+        let pct_bps = pct_bps as u16;
+        if pct_bps == 0 {
+            continue;
+        }
+        if percentages.last().copied() != Some(pct_bps) {
+            percentages.push(pct_bps);
+        }
+    }
+    if percentages.is_empty() {
+        return Err("sensitivity --lookahead-range produced no comparison policies".into());
+    }
+
+    Ok(percentages
+        .into_iter()
+        .map(|pct_bps| {
+            PolicyPoint::leak_feature_lag_fraction(lookahead_policy_name(pct_bps), pct_bps)
+        })
+        .collect())
+}
+
+fn lookahead_policy_name(pct_bps: u16) -> String {
+    format!("lookahead_{}pct", format_percent_bps_for_name(pct_bps))
+}
+
+fn append_late_arrival_policies(
+    args: &mut SensitivityArgs,
+    events: &[Event],
+) -> Result<(), Box<dyn Error>> {
+    if args.late_arrival_buckets.is_none() {
+        return Ok(());
+    }
+
+    let generated = cumulative_late_arrival_policies(events, args.late_arrival_steps)?;
+    let insert_at = args
+        .policies
+        .iter()
+        .position(|policy| policy.name == "observed_time_leaky")
+        .unwrap_or(args.policies.len());
+    args.policies.splice(insert_at..insert_at, generated);
+    Ok(())
+}
+
+fn cumulative_late_arrival_policies(
+    events: &[Event],
+    steps: usize,
+) -> Result<Vec<PolicyPoint>, Box<dyn Error>> {
+    let late_arrival_count = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.role,
+                EventRole::Feature | EventRole::FeatureCorrection
+            ) && event.received_time > event.observed_time
+        })
+        .count();
+    if late_arrival_count == 0 {
+        return Err("sensitivity late-arrivals scenario found no late feature arrivals".into());
+    }
+
+    let steps = steps.max(1);
+    let mut policies = Vec::with_capacity(steps);
+
+    for sample_index in 1..=steps {
+        let pct_bps = (((sample_index * 10_000) + (steps / 2)) / steps) as u16;
+        if pct_bps == 0
+            || policies.iter().any(|policy: &PolicyPoint| {
+                matches!(
+                    policy.kind,
+                    PolicyKind::ReceivedTimeLagFraction {
+                        pct_bps: existing_pct,
+                        ..
+                    } if existing_pct == pct_bps
+                )
+            })
+        {
+            continue;
+        }
+        let name = format!(
+            "late_arrivals_cumulative_{}pct",
+            format_percent_bps_for_name(pct_bps)
+        );
+        policies.push(PolicyPoint::leak_feature_lag_fraction(name, pct_bps));
+    }
+
+    Ok(policies)
+}
+
+fn format_percent_bps_for_name(pct_bps: u16) -> String {
+    let whole = pct_bps / 100;
+    let fractional = pct_bps % 100;
+    if fractional == 0 {
+        whole.to_string()
+    } else if fractional.is_multiple_of(10) {
+        format!("{}_{}", whole, fractional / 10)
+    } else {
+        format!("{}_{fractional:02}", whole)
+    }
+}
+
+fn shift_features_policy_name(shift: i64) -> String {
+    match shift.cmp(&0) {
+        std::cmp::Ordering::Less => format!("shift_features_minus_{}", shift.unsigned_abs()),
+        std::cmp::Ordering::Equal => "shift_features_0".to_string(),
+        std::cmp::Ordering::Greater => format!("shift_features_plus_{shift}"),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -945,6 +1452,1726 @@ fn summarize_audit(
         extra_stored_predictions,
         outcomes_attached,
     }
+}
+
+struct SensitivityManifestInputs<'a> {
+    events_path: &'a str,
+    fixture_input: &'a str,
+    signal: SignalChoice,
+    sweep: &'a SensitivitySweep,
+    summary_path: &'a Path,
+    summary_jsonl: &'a str,
+    sensitivity_curve_svg_path: Option<&'a Path>,
+    sensitivity_curve_svg: Option<&'a str>,
+    flip_rate_svg_path: &'a Path,
+    flip_rate_svg: &'a str,
+    input_change_svg_path: &'a Path,
+    input_change_svg: &'a str,
+    late_arrival_impact_svg_path: Option<&'a Path>,
+    late_arrival_impact_svg: Option<&'a str>,
+    details_path: Option<&'a Path>,
+    details_jsonl: Option<&'a str>,
+}
+
+struct SensitivityArtifactPaths<'a> {
+    summary: &'a Path,
+    sensitivity_curve_svg: Option<&'a Path>,
+    flip_rate_svg: &'a Path,
+    input_change_svg: &'a Path,
+    late_arrival_impact_svg: Option<&'a Path>,
+    details: Option<&'a Path>,
+    manifest: &'a Path,
+}
+
+fn format_sensitivity_summary_jsonl(signal: SignalChoice, sweep: &SensitivitySweep) -> String {
+    let mut text = String::new();
+    let baseline_row = sensitivity_summary_json(signal, None, &sweep.baseline, None);
+    let _ = writeln!(text, "{baseline_row}");
+
+    for result in &sweep.results {
+        let row = sensitivity_summary_json(
+            signal,
+            Some(&sweep.baseline.policy.name),
+            &result.run,
+            Some(result),
+        );
+        let _ = writeln!(text, "{row}");
+    }
+
+    text
+}
+
+fn sensitivity_summary_json(
+    signal: SignalChoice,
+    vs_baseline: Option<&str>,
+    run: &PolicyRun,
+    result: Option<&SensitivityPolicyResult>,
+) -> String {
+    let (
+        predictions,
+        predictions_with_signal_change,
+        predictions_with_recipe_change,
+        predictions_with_new_inputs,
+        new_input_uses,
+        unique_new_inputs,
+        flip_rate,
+    ) = result
+        .map(|result| {
+            (
+                result.summary.predictions,
+                result.summary.predictions_with_signal_change,
+                result.summary.predictions_with_recipe_change,
+                result.summary.predictions_with_new_inputs,
+                result.summary.new_input_uses,
+                result.summary.unique_new_inputs,
+                result.summary.flip_rate,
+            )
+        })
+        .unwrap_or_else(|| (run.output.predictions.records().len(), 0, 0, 0, 0, 0, 0.0));
+    let row = json!({
+        "schema_version": 1,
+        "policy": policy_json(&run.policy),
+        "policy_name": run.policy.name.as_str(),
+        "category": run.policy.category.as_str(),
+        "vs_baseline": vs_baseline,
+        "events_transformed": run.events_transformed,
+        "predictions": predictions,
+        "predictions_with_signal_change": predictions_with_signal_change,
+        "predictions_with_recipe_change": predictions_with_recipe_change,
+        "predictions_with_new_inputs": predictions_with_new_inputs,
+        "new_input_uses": new_input_uses,
+        "unique_new_inputs": unique_new_inputs,
+        "flip_rate": flip_rate,
+        "transcript_hash": run.output.predictions.transcript_digest(),
+        "transformed_fixture_hash": run.transformed_fixture_hash.as_str(),
+        "signal_name": signal.as_str(),
+    });
+
+    serde_json::to_string(&row).expect("sensitivity summary should serialize")
+}
+
+fn format_sensitivity_details_jsonl(sweep: &SensitivitySweep) -> String {
+    let mut text = String::new();
+    for result in &sweep.results {
+        for detail in &result.details {
+            let row = sensitivity_detail_json(sweep, result, detail);
+            let _ = writeln!(text, "{row}");
+        }
+    }
+    text
+}
+
+fn format_sensitivity_flip_rate_svg(sweep: &SensitivitySweep) -> String {
+    let rows = sensitivity_chart_rows(sweep);
+    let subtitle = if sweep_has_cumulative_late_arrival_policies(sweep) {
+        "cumulative flip rate as more of each late-arrival lag is removed"
+    } else if sweep_has_marginal_late_arrival_bucket_policies(sweep) {
+        "marginal flip rate: one lag band moved at a time; not cumulative"
+    } else {
+        "share of predictions whose signal value changed"
+    };
+    format_bar_chart_svg(
+        "Sensitivity Flip Rate",
+        subtitle,
+        &rows
+            .iter()
+            .map(|row| ChartRow {
+                label: row.label.clone(),
+                detail: row.detail.clone(),
+                tooltip: row.tooltip.clone(),
+                category: row.category.clone(),
+                value: row.flip_rate,
+                value_label: format!("{:.1}%", row.flip_rate * 100.0),
+            })
+            .collect::<Vec<_>>(),
+        1.0,
+    )
+}
+
+fn format_sensitivity_input_change_svg(sweep: &SensitivitySweep) -> String {
+    let rows = sensitivity_chart_rows(sweep);
+    let subtitle = if sweep_has_cumulative_late_arrival_policies(sweep) {
+        "cumulative new input-event uses as more of each late-arrival lag is removed"
+    } else if sweep_has_marginal_late_arrival_bucket_policies(sweep) {
+        "marginal new input-event uses: one lag band moved at a time"
+    } else {
+        "new input-event uses admitted by each comparison policy"
+    };
+    let max_value = rows
+        .iter()
+        .map(|row| row.new_input_uses as f64)
+        .fold(0.0, f64::max)
+        .max(1.0);
+    format_bar_chart_svg(
+        "New Inputs Admitted",
+        subtitle,
+        &rows
+            .iter()
+            .map(|row| ChartRow {
+                label: row.label.clone(),
+                detail: row.detail.clone(),
+                tooltip: row.tooltip.clone(),
+                category: row.category.clone(),
+                value: row.new_input_uses as f64,
+                value_label: row.new_input_uses.to_string(),
+            })
+            .collect::<Vec<_>>(),
+        max_value,
+    )
+}
+
+fn sweep_has_late_arrival_bucket_policies(sweep: &SensitivitySweep) -> bool {
+    sweep_has_cumulative_late_arrival_policies(sweep)
+        || sweep_has_marginal_late_arrival_bucket_policies(sweep)
+}
+
+fn sweep_has_marginal_late_arrival_bucket_policies(sweep: &SensitivitySweep) -> bool {
+    sweep
+        .results
+        .iter()
+        .any(|result| is_marginal_late_arrival_bucket_policy(&result.run.policy.kind))
+}
+
+fn sweep_has_cumulative_late_arrival_policies(sweep: &SensitivitySweep) -> bool {
+    sweep
+        .results
+        .iter()
+        .any(|result| is_cumulative_late_arrival_policy(&result.run.policy))
+}
+
+fn is_marginal_late_arrival_bucket_policy(kind: &PolicyKind) -> bool {
+    matches!(kind, PolicyKind::ReceivedTimeLagBucketLookahead { .. })
+}
+
+fn is_cumulative_late_arrival_policy(policy: &PolicyPoint) -> bool {
+    policy.name.starts_with("late_arrivals_cumulative_")
+        && matches!(
+            policy.kind,
+            PolicyKind::ReceivedTimeLagFraction { .. }
+                | PolicyKind::ReceivedTimeLagCumulativeLookahead { .. }
+        )
+}
+
+fn cumulative_late_arrival_policy_pct_bps(policy: &PolicyPoint) -> Option<u16> {
+    if !is_cumulative_late_arrival_policy(policy) {
+        return None;
+    }
+    match policy.kind {
+        PolicyKind::ReceivedTimeLagFraction { pct_bps, .. } => Some(pct_bps),
+        PolicyKind::ReceivedTimeLagCumulativeLookahead {
+            threshold_pct_bps, ..
+        } => Some(threshold_pct_bps),
+        _ => None,
+    }
+}
+
+fn format_late_arrival_impact_svg(sweep: &SensitivitySweep, events: &[Event]) -> String {
+    if sweep_has_cumulative_late_arrival_policies(sweep) {
+        return format_cumulative_late_arrival_curve_svg(sweep, events);
+    }
+
+    let late_bucket_total = sweep
+        .results
+        .iter()
+        .filter(|result| is_marginal_late_arrival_bucket_policy(&result.run.policy.kind))
+        .count();
+    let mut late_bucket_index = 0;
+    let rows = sweep
+        .results
+        .iter()
+        .filter(|result| is_marginal_late_arrival_bucket_policy(&result.run.policy.kind))
+        .map(|result| {
+            late_bucket_index += 1;
+            let chart_text = policy_chart_text(
+                &result.run.policy,
+                Some((late_bucket_index, late_bucket_total)),
+            );
+            ChartRow {
+                label: chart_text.label,
+                detail: chart_text.detail,
+                tooltip: chart_text.tooltip,
+                category: result.run.policy.category.as_str().to_string(),
+                value: result.summary.flip_rate,
+                value_label: format!(
+                    "{} ({} changed)",
+                    format_percent(result.summary.flip_rate),
+                    result.summary.predictions_with_signal_change
+                ),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    format_bar_chart_svg(
+        "Marginal Late Arrival Impact",
+        "one lag band moved at a time; not cumulative",
+        &rows,
+        1.0,
+    )
+}
+
+fn format_cumulative_late_arrival_curve_svg(sweep: &SensitivitySweep, events: &[Event]) -> String {
+    #[derive(Debug)]
+    struct PendingPoint {
+        x_bps: u16,
+        label: String,
+        tooltip: String,
+        admission_keys: Vec<(EventKey, EventKey)>,
+    }
+
+    #[derive(Debug)]
+    struct Point {
+        x_bps: u16,
+        y: f64,
+        label: String,
+        tooltip: String,
+        cumulative_admissions: usize,
+    }
+
+    let mut pending_points = vec![PendingPoint {
+        x_bps: 0,
+        label: "baseline".to_string(),
+        tooltip: "baseline: no late arrivals moved".to_string(),
+        admission_keys: Vec::new(),
+    }];
+
+    for result in &sweep.results {
+        if !is_cumulative_late_arrival_policy(&result.run.policy) {
+            continue;
+        }
+        let admission_keys = result
+            .details
+            .iter()
+            .flat_map(|detail| {
+                detail
+                    .new_inputs_admitted
+                    .iter()
+                    .map(|input| (detail.prediction_event_key, *input))
+            })
+            .collect::<Vec<_>>();
+        match result.run.policy.kind {
+            PolicyKind::ReceivedTimeLagFraction { pct_bps, .. } => {
+                let shift_stats = late_arrival_shift_stats(events, &result.run.policy)
+                    .map(|stats| format!("; {}", stats.tooltip_label()))
+                    .unwrap_or_default();
+                pending_points.push(PendingPoint {
+                    x_bps: pct_bps,
+                    label: format_percent_bps_for_display(pct_bps),
+                    tooltip: format!(
+                        "{}: moves each late event {} of its own lag toward observed_time{}; {} new input uses in this replay; {} changed predictions; {} flip",
+                        format_percent_bps_for_display(pct_bps),
+                        format_percent_bps_for_display(pct_bps),
+                        shift_stats,
+                        result.summary.new_input_uses,
+                        result.summary.predictions_with_signal_change,
+                        format_percent(result.summary.flip_rate)
+                    ),
+                    admission_keys,
+                });
+            }
+            PolicyKind::ReceivedTimeLagCumulativeLookahead {
+                max_lag_inclusive,
+                threshold_pct_bps,
+                ..
+            } => {
+                let threshold_label = max_lag_inclusive
+                    .map(|lag| format!("raw lag <= {}", format_u64_grouped(lag)))
+                    .unwrap_or_else(|| "all late arrivals".to_string());
+                pending_points.push(PendingPoint {
+                    x_bps: threshold_pct_bps,
+                    label: format_percent_bps_for_display(threshold_pct_bps),
+                    tooltip: format!(
+                        "{}: {}; {} new input uses in this replay; {} changed; {} flip",
+                        format_percent_bps_for_display(threshold_pct_bps),
+                        threshold_label,
+                        result.summary.new_input_uses,
+                        result.summary.predictions_with_signal_change,
+                        format_percent(result.summary.flip_rate)
+                    ),
+                    admission_keys,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    pending_points.sort_by_key(|point| point.x_bps);
+    let mut cumulative_admission_keys = BTreeSet::new();
+    let mut cumulative_counts = Vec::with_capacity(pending_points.len());
+    for point in &pending_points {
+        for admission_key in &point.admission_keys {
+            cumulative_admission_keys.insert(*admission_key);
+        }
+        cumulative_counts.push(cumulative_admission_keys.len());
+    }
+    let max_cumulative_admissions = cumulative_counts.last().copied().unwrap_or(0).max(1);
+    let mut points = pending_points
+        .into_iter()
+        .zip(cumulative_counts)
+        .map(|(point, cumulative_admissions)| Point {
+            x_bps: point.x_bps,
+            y: cumulative_admissions as f64 / max_cumulative_admissions as f64,
+            label: point.label,
+            tooltip: format!(
+                "{}; {} cumulative unique new input admissions",
+                point.tooltip, cumulative_admissions
+            ),
+            cumulative_admissions,
+        })
+        .collect::<Vec<_>>();
+    points.sort_by_key(|point| point.x_bps);
+    let endpoint_note = sweep
+        .results
+        .iter()
+        .filter(|result| is_cumulative_late_arrival_policy(&result.run.policy))
+        .filter_map(|result| {
+            cumulative_late_arrival_policy_pct_bps(&result.run.policy).map(|pct_bps| {
+                (
+                    pct_bps,
+                    result.summary.predictions_with_signal_change,
+                    result.summary.predictions,
+                )
+            })
+        })
+        .max_by_key(|(pct_bps, _, _)| *pct_bps)
+        .map(|(_, changed, predictions)| {
+            format!(
+                "100% exposure = {max_cumulative_admissions} unique prediction/input admissions; 100% replay changed {changed}/{predictions} predictions."
+            )
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "100% exposure = {max_cumulative_admissions} unique prediction/input admissions."
+            )
+        });
+    let mut label_indexes = BTreeSet::new();
+    if !points.is_empty() {
+        label_indexes.insert(0_usize);
+        label_indexes.insert(points.len() - 1);
+        if let Some(index) = points
+            .iter()
+            .position(|point| point.cumulative_admissions > 0)
+        {
+            label_indexes.insert(index);
+        }
+        for target in [0.25_f64, 0.5, 0.75] {
+            if let Some(index) = points.iter().position(|point| point.y >= target) {
+                label_indexes.insert(index);
+            }
+        }
+    }
+    let y_max = 1.0_f64;
+
+    let width = 900_f64;
+    let height = 520_f64;
+    let left = 118_f64;
+    let right = 44_f64;
+    let top = 126_f64;
+    let bottom = 94_f64;
+    let plot_width = width - left - right;
+    let plot_height = height - top - bottom;
+    let x_to_px = |x_bps: u16| left + (f64::from(x_bps) / 10_000.0) * plot_width;
+    let y_to_px = |y: f64| top + ((y_max - y) / y_max) * plot_height;
+
+    let mut svg = String::new();
+    let _ = writeln!(
+        svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" viewBox="0 0 {width:.0} {height:.0}">"#
+    );
+    let _ = writeln!(
+        svg,
+        "<title id=\"title\">Cumulative Late Arrival Exposure</title><desc id=\"desc\">x is percent of each late-arrival lag removed; y is cumulative unique new input admissions</desc>"
+    );
+    svg.push_str(
+        r##"<rect width="100%" height="100%" fill="#ffffff"/>
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+  .title { font-size: 22px; font-weight: 700; }
+  .subtitle { font-size: 13px; fill: #64748b; }
+  .note { font-size: 11px; fill: #475569; }
+  .axis-label { font-size: 12px; font-weight: 650; fill: #334155; }
+  .tick { font-size: 11px; fill: #64748b; }
+  .grid { stroke: #e2e8f0; stroke-width: 1; }
+  .axis { stroke: #94a3b8; stroke-width: 1.25; }
+  .curve { fill: none; stroke: #2563eb; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  .point { fill: #2563eb; stroke: #ffffff; stroke-width: 1.5; }
+  .point-label { font-size: 10px; fill: #334155; }
+</style>
+"##,
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="34" class="title">Cumulative Late Arrival Exposure</text>"#
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="56" class="subtitle">x = percent of each late-arrival lag removed; y = cumulative unique new input admissions</text>"#
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="78" class="note">Each point replays all late feature/correction events shifted by that fraction of their own lag.</text>"#
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="98" class="note">{}</text>"#,
+        xml_escape(&endpoint_note)
+    );
+
+    for tick in 0..=4 {
+        let y_value = y_max * f64::from(tick) / 4.0;
+        let y = y_to_px(y_value);
+        let y_count = (y_value * max_cumulative_admissions as f64).round() as usize;
+        let _ = writeln!(
+            svg,
+            r#"<line x1="{left:.2}" y1="{y:.2}" x2="{:.2}" y2="{y:.2}" class="grid"/>"#,
+            width - right
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{:.2}" y="{:.2}" class="tick" text-anchor="end">{}</text>"#,
+            left - 10.0,
+            y + 4.0,
+            xml_escape(&format!("{} ({})", y_count, format_percent(y_value)))
+        );
+    }
+
+    for tick in [0_u16, 2500, 5000, 7500, 10000] {
+        let x = x_to_px(tick);
+        let _ = writeln!(
+            svg,
+            r#"<line x1="{x:.2}" y1="{top:.2}" x2="{x:.2}" y2="{:.2}" class="grid"/>"#,
+            height - bottom
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{x:.2}" y="{:.2}" class="tick" text-anchor="middle">{}</text>"#,
+            height - bottom + 24.0,
+            format_percent_bps_for_display(tick)
+        );
+    }
+
+    let _ = writeln!(
+        svg,
+        r#"<line x1="{left:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" class="axis"/>"#,
+        height - bottom,
+        width - right,
+        height - bottom
+    );
+    let _ = writeln!(
+        svg,
+        r#"<line x1="{left:.2}" y1="{top:.2}" x2="{left:.2}" y2="{:.2}" class="axis"/>"#,
+        height - bottom
+    );
+
+    let polyline = points
+        .iter()
+        .map(|point| format!("{:.2},{:.2}", x_to_px(point.x_bps), y_to_px(point.y)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let _ = writeln!(svg, r#"<polyline points="{polyline}" class="curve"/>"#);
+
+    for (index, point) in points.iter().enumerate() {
+        let x = x_to_px(point.x_bps);
+        let y = y_to_px(point.y);
+        let _ = writeln!(svg, "<g>");
+        let _ = writeln!(svg, "<title>{}</title>", xml_escape(&point.tooltip));
+        let _ = writeln!(
+            svg,
+            r#"<circle cx="{x:.2}" cy="{y:.2}" r="4" class="point"/>"#
+        );
+        if label_indexes.contains(&index) {
+            let label = if point.x_bps == 0 {
+                "baseline: 0".to_string()
+            } else {
+                format!("{}: {}", point.label, point.cumulative_admissions)
+            };
+            let _ = writeln!(
+                svg,
+                r#"<text x="{:.2}" y="{:.2}" class="point-label" text-anchor="middle">{}</text>"#,
+                x,
+                y - 10.0,
+                xml_escape(&label)
+            );
+        }
+        let _ = writeln!(svg, "</g>");
+    }
+
+    let _ = writeln!(
+        svg,
+        r#"<text x="{:.2}" y="{:.2}" class="axis-label" text-anchor="middle">late-arrival lag removed</text>"#,
+        left + plot_width / 2.0,
+        height - 20.0
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="18" y="{:.2}" class="axis-label" transform="rotate(-90 18 {:.2})" text-anchor="middle">cumulative exposure</text>"#,
+        top + plot_height / 2.0,
+        top + plot_height / 2.0
+    );
+    svg.push_str("</svg>\n");
+    svg
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LateArrivalShiftUnit {
+    CalendarMinutes,
+    FixtureNativeInteger,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LateArrivalShiftStats {
+    unit: LateArrivalShiftUnit,
+    event_count: usize,
+    min: u64,
+    median: u64,
+    p90: u64,
+    max: u64,
+}
+
+impl LateArrivalShiftStats {
+    fn tooltip_label(&self) -> String {
+        format!(
+            "effective lag removed across {} late events: min {}, median {}, p90 {}, max {}",
+            self.event_count,
+            format_late_arrival_shift_amount(self.min, self.unit),
+            format_late_arrival_shift_amount(self.median, self.unit),
+            format_late_arrival_shift_amount(self.p90, self.unit),
+            format_late_arrival_shift_amount(self.max, self.unit)
+        )
+    }
+}
+
+fn late_arrival_shift_stats(
+    events: &[Event],
+    policy: &PolicyPoint,
+) -> Option<LateArrivalShiftStats> {
+    let pct_bps = cumulative_late_arrival_policy_pct_bps(policy)?;
+    let roles_affected = match &policy.kind {
+        PolicyKind::ReceivedTimeLagFraction { roles_affected, .. }
+        | PolicyKind::ReceivedTimeLagCumulativeLookahead { roles_affected, .. } => roles_affected,
+        _ => return None,
+    };
+    let late_events = events
+        .iter()
+        .filter(|event| {
+            roles_affected.contains(&event.role) && event.received_time > event.observed_time
+        })
+        .collect::<Vec<_>>();
+    if late_events.is_empty() {
+        return None;
+    }
+
+    let calendar_pairs = late_events
+        .iter()
+        .map(|event| {
+            Some((
+                parse_yyyymmddhhmm_to_minutes(event.observed_time)?,
+                parse_yyyymmddhhmm_to_minutes(event.received_time)?,
+            ))
+        })
+        .collect::<Option<Vec<_>>>();
+
+    let (unit, mut shifts) = if let Some(calendar_pairs) = calendar_pairs {
+        let shifts = calendar_pairs
+            .into_iter()
+            .filter_map(|(observed, received)| {
+                let lag = received.checked_sub(observed)? as u64;
+                Some(lag_fraction_amount(lag, pct_bps))
+            })
+            .collect::<Vec<_>>();
+        (LateArrivalShiftUnit::CalendarMinutes, shifts)
+    } else {
+        let shifts = late_events
+            .iter()
+            .map(|event| lag_fraction_amount(event.received_time - event.observed_time, pct_bps))
+            .collect::<Vec<_>>();
+        (LateArrivalShiftUnit::FixtureNativeInteger, shifts)
+    };
+
+    if shifts.is_empty() {
+        return None;
+    }
+    shifts.sort_unstable();
+    let min = shifts[0];
+    let median = percentile_nearest_rank(&shifts, 50);
+    let p90 = percentile_nearest_rank(&shifts, 90);
+    let max = *shifts.last().unwrap_or(&0);
+    Some(LateArrivalShiftStats {
+        unit,
+        event_count: shifts.len(),
+        min,
+        median,
+        p90,
+        max,
+    })
+}
+
+fn lag_fraction_amount(lag: u64, pct_bps: u16) -> u64 {
+    (((u128::from(lag) * u128::from(pct_bps.min(10_000))) + 5_000) / 10_000) as u64
+}
+
+fn percentile_nearest_rank(sorted_values: &[u64], percentile: usize) -> u64 {
+    if sorted_values.is_empty() {
+        return 0;
+    }
+    let index = (((sorted_values.len() - 1) * percentile) + 50) / 100;
+    sorted_values[index]
+}
+
+fn format_late_arrival_shift_amount(amount: u64, unit: LateArrivalShiftUnit) -> String {
+    match unit {
+        LateArrivalShiftUnit::CalendarMinutes => format_duration_minutes(amount),
+        LateArrivalShiftUnit::FixtureNativeInteger => {
+            format!("{} raw units", format_u64_grouped(amount))
+        }
+    }
+}
+
+fn format_duration_minutes(minutes: u64) -> String {
+    let days = minutes / 1_440;
+    let hours = (minutes % 1_440) / 60;
+    let mins = minutes % 60;
+    if days > 0 && hours > 0 {
+        format!("{days}d {hours}h")
+    } else if days > 0 {
+        format!("{days}d")
+    } else if hours > 0 && mins > 0 {
+        format!("{hours}h {mins}m")
+    } else if hours > 0 {
+        format!("{hours}h")
+    } else {
+        format!("{mins}m")
+    }
+}
+
+fn parse_yyyymmddhhmm_to_minutes(value: u64) -> Option<i64> {
+    let minute = (value % 100) as u32;
+    let hour = ((value / 100) % 100) as u32;
+    let day = ((value / 10_000) % 100) as u32;
+    let month = ((value / 1_000_000) % 100) as u32;
+    let year = (value / 100_000_000) as i64;
+    if !(1900..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || hour >= 24
+        || minute >= 60
+        || day == 0
+        || day > days_in_month(year, month)
+    {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 1_440 + i64::from(hour) * 60 + i64::from(minute))
+}
+
+fn days_in_month(year: i64, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month = i64::from(month);
+    let day = i64::from(day);
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+fn sweep_has_sensitivity_curve_points(sweep: &SensitivitySweep) -> bool {
+    sweep.results.iter().any(|result| {
+        !is_cumulative_late_arrival_policy(&result.run.policy)
+            && matches!(
+                result.run.policy.kind,
+                PolicyKind::ReceivedTimeLagFraction { .. } | PolicyKind::ReceivedTimeShift { .. }
+            )
+    })
+}
+
+fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
+    let uses_lag_fraction = sweep.results.iter().any(|result| {
+        !is_cumulative_late_arrival_policy(&result.run.policy)
+            && matches!(
+                result.run.policy.kind,
+                PolicyKind::ReceivedTimeLagFraction { .. }
+            )
+    });
+    let mut points = Vec::new();
+    points.push(SensitivityCurvePoint {
+        label: sweep.baseline.policy.name.clone(),
+        category: sweep.baseline.policy.category.as_str().to_string(),
+        x: 0.0,
+        y: 0.0,
+    });
+
+    for result in &sweep.results {
+        if is_cumulative_late_arrival_policy(&result.run.policy) {
+            continue;
+        }
+        match &result.run.policy.kind {
+            PolicyKind::ReceivedTimeLagFraction { pct_bps, .. } => {
+                points.push(SensitivityCurvePoint {
+                    label: result.run.policy.name.clone(),
+                    category: result.run.policy.category.as_str().to_string(),
+                    x: f64::from(*pct_bps) / 100.0,
+                    y: result.summary.flip_rate,
+                });
+            }
+            PolicyKind::ReceivedTimeShift { shift, .. } if !uses_lag_fraction => {
+                points.push(SensitivityCurvePoint {
+                    label: result.run.policy.name.clone(),
+                    category: result.run.policy.category.as_str().to_string(),
+                    x: -(*shift as f64),
+                    y: result.summary.flip_rate,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    points.sort_by(|left, right| {
+        left.x
+            .total_cmp(&right.x)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+
+    let leaky_endpoint = sweep.results.iter().find(|result| {
+        matches!(
+            result.run.policy.kind,
+            PolicyKind::ReplayOrderOverride {
+                order: ReplayOrder::ObservedTimeLeaky
+            }
+        )
+    });
+    let leaky_flip_rate = leaky_endpoint.map(|result| result.summary.flip_rate);
+    let first_effect = points
+        .iter()
+        .filter(|point| point.label != sweep.baseline.policy.name)
+        .find(|point| point.y > 0.0);
+
+    let sampled_offsets = summarize_sampled_offsets(&points, uses_lag_fraction);
+    let first_effect_label = first_effect
+        .map(|point| {
+            format!(
+                "first sampled effect: x={} via {} at {}",
+                format_curve_x_value(point.x, uses_lag_fraction),
+                point.label,
+                format_percent(point.y)
+            )
+        })
+        .unwrap_or_else(|| "first sampled effect: not observed in curve samples".into());
+    let endpoint_label = leaky_endpoint.map(|result| {
+        format!(
+            "{} reference: {} flip, {} new input uses",
+            result.run.policy.name,
+            format_percent(result.summary.flip_rate),
+            result.summary.new_input_uses
+        )
+    });
+    let subtitle = if uses_lag_fraction {
+        "x = percent of each feature lag removed; y = flip rate"
+    } else {
+        "x = lookahead stress (-received_time_shift) in fixture-native integer units; y = flip rate"
+    };
+    let x_axis_label = if uses_lag_fraction {
+        "feature publication lag removed (%)"
+    } else {
+        "lookahead stress (-shift, fixture-native units)"
+    };
+
+    let width = 860_f64;
+    let height = 520_f64;
+    let left = 92_f64;
+    let right = 42_f64;
+    let top = 126_f64;
+    let bottom = 104_f64;
+    let plot_width = width - left - right;
+    let plot_height = height - top - bottom;
+
+    let (mut x_min, mut x_max) = points.iter().fold((0.0_f64, 0.0_f64), |(min, max), point| {
+        (min.min(point.x), max.max(point.x))
+    });
+    if (x_max - x_min).abs() < f64::EPSILON {
+        x_min -= 1.0;
+        x_max += 1.0;
+    }
+
+    let observed_y_max = points
+        .iter()
+        .map(|point| point.y)
+        .chain(leaky_flip_rate)
+        .fold(0.0_f64, f64::max);
+    let y_max = nice_flip_axis_max(observed_y_max);
+
+    let x_to_px = |x: f64| left + ((x - x_min) / (x_max - x_min)) * plot_width;
+    let y_to_px = |y: f64| top + ((y_max - y) / y_max) * plot_height;
+
+    let mut svg = String::new();
+    let _ = writeln!(
+        svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" viewBox="0 0 {width:.0} {height:.0}">"#
+    );
+    let _ = writeln!(
+        svg,
+        "<title id=\"title\">Sensitivity Curve</title><desc id=\"desc\">{}</desc>",
+        xml_escape(subtitle)
+    );
+    svg.push_str(
+        r##"<rect width="100%" height="100%" fill="#ffffff"/>
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+  .title { font-size: 22px; font-weight: 700; }
+  .subtitle { font-size: 13px; fill: #64748b; }
+  .note { font-size: 12px; fill: #475569; }
+  .axis-label { font-size: 12px; font-weight: 650; fill: #334155; }
+  .tick { font-size: 11px; fill: #64748b; }
+  .grid { stroke: #e2e8f0; stroke-width: 1; }
+  .axis { stroke: #94a3b8; stroke-width: 1.25; }
+  .curve { fill: none; stroke: #2563eb; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  .endpoint { stroke: #dc2626; stroke-width: 1.5; stroke-dasharray: 5 5; }
+  .point-label { font-size: 11px; fill: #334155; }
+</style>
+"##,
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="34" class="title">Sensitivity Curve</text>"#
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="56" class="subtitle">{}</text>"#,
+        xml_escape(subtitle)
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="78" class="note">sampled x-values: {}; no interpolation between points</text>"#,
+        xml_escape(&sampled_offsets)
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="98" class="note">{}</text>"#,
+        xml_escape(&first_effect_label)
+    );
+    if let Some(endpoint_label) = endpoint_label {
+        let _ = writeln!(
+            svg,
+            r#"<text x="520" y="98" class="note">{}</text>"#,
+            xml_escape(&endpoint_label)
+        );
+    }
+
+    for step in 0..=4 {
+        let ratio = step as f64 / 4.0;
+        let y_value = y_max * ratio;
+        let y = y_to_px(y_value);
+        let _ = writeln!(
+            svg,
+            r#"<line x1="{left:.0}" y1="{y:.2}" x2="{:.0}" y2="{y:.2}" class="grid"/>"#,
+            left + plot_width
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{:.0}" y="{:.2}" class="tick" text-anchor="end">{}</text>"#,
+            left - 10.0,
+            y + 4.0,
+            xml_escape(&format_percent(y_value))
+        );
+    }
+
+    let x_tick_values = curve_x_ticks(&points, x_min, x_max);
+    for x_value in x_tick_values {
+        let x = x_to_px(x_value);
+        let _ = writeln!(
+            svg,
+            r#"<line x1="{x:.2}" y1="{top:.0}" x2="{x:.2}" y2="{:.0}" class="grid"/>"#,
+            top + plot_height
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{x:.2}" y="{:.0}" class="tick" text-anchor="middle">{}</text>"#,
+            top + plot_height + 22.0,
+            xml_escape(&format_curve_x_value(x_value, uses_lag_fraction))
+        );
+    }
+
+    let axis_bottom = top + plot_height;
+    let axis_right = left + plot_width;
+    let _ = writeln!(
+        svg,
+        r#"<line x1="{left:.0}" y1="{top:.0}" x2="{left:.0}" y2="{axis_bottom:.0}" class="axis"/>"#
+    );
+    let _ = writeln!(
+        svg,
+        r#"<line x1="{left:.0}" y1="{axis_bottom:.0}" x2="{axis_right:.0}" y2="{axis_bottom:.0}" class="axis"/>"#
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="{:.0}" y="{}" class="axis-label" text-anchor="middle">{}</text>"#,
+        left + plot_width / 2.0,
+        height - 26.0,
+        xml_escape(x_axis_label)
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="22" y="{:.0}" class="axis-label" transform="rotate(-90 22 {:.0})" text-anchor="middle">flip rate</text>"#,
+        top + plot_height / 2.0,
+        top + plot_height / 2.0
+    );
+
+    if let Some(endpoint_y) = leaky_flip_rate {
+        let y = y_to_px(endpoint_y);
+        let _ = writeln!(
+            svg,
+            r#"<line x1="{left:.0}" y1="{y:.2}" x2="{axis_right:.0}" y2="{y:.2}" class="endpoint"/>"#
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{:.0}" y="{:.2}" class="point-label" text-anchor="start">observed-time policy reference</text>"#,
+            left + 8.0,
+            y - 8.0
+        );
+    }
+
+    if points.len() > 1 {
+        let polyline = points
+            .iter()
+            .map(|point| format!("{:.2},{:.2}", x_to_px(point.x), y_to_px(point.y)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let _ = writeln!(svg, r#"<polyline points="{polyline}" class="curve"/>"#);
+    }
+
+    for point in &points {
+        let x = x_to_px(point.x);
+        let y = y_to_px(point.y);
+        let fill = category_color(&point.category);
+        let label = if point.label == sweep.baseline.policy.name {
+            "baseline".to_string()
+        } else {
+            format!(
+                "{} {}",
+                format_curve_x_value(point.x, uses_lag_fraction),
+                format_percent(point.y)
+            )
+        };
+        let _ = writeln!(
+            svg,
+            r##"<circle cx="{x:.2}" cy="{y:.2}" r="5" fill="{fill}" stroke="#ffffff" stroke-width="2"/>"##
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{x:.2}" y="{:.2}" class="point-label" text-anchor="middle">{}</text>"#,
+            y - 12.0,
+            xml_escape(&label)
+        );
+    }
+
+    svg.push_str("</svg>\n");
+    svg
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SensitivityCurvePoint {
+    label: String,
+    category: String,
+    x: f64,
+    y: f64,
+}
+
+fn nice_flip_axis_max(value: f64) -> f64 {
+    if value <= 0.01 {
+        0.01
+    } else if value <= 0.05 {
+        0.05
+    } else if value <= 0.10 {
+        0.10
+    } else if value <= 0.25 {
+        0.25
+    } else if value <= 0.50 {
+        0.50
+    } else {
+        1.0
+    }
+}
+
+fn summarize_sampled_offsets(points: &[SensitivityCurvePoint], as_percent: bool) -> String {
+    let mut labels = points
+        .iter()
+        .map(|point| format_curve_x_value(point.x, as_percent))
+        .collect::<Vec<_>>();
+    labels.dedup();
+    if labels.len() <= 8 {
+        labels.join(", ")
+    } else {
+        format!(
+            "{} explicit samples from {} to {}",
+            labels.len(),
+            labels.first().expect("offset labels should not be empty"),
+            labels.last().expect("offset labels should not be empty")
+        )
+    }
+}
+
+fn curve_x_ticks(points: &[SensitivityCurvePoint], x_min: f64, x_max: f64) -> Vec<f64> {
+    let mut sampled = points.iter().map(|point| point.x).collect::<Vec<_>>();
+    sampled.dedup_by(|left, right| (*left - *right).abs() < f64::EPSILON);
+    if sampled.len() <= 6 {
+        return sampled;
+    }
+
+    (0..=4)
+        .map(|step| x_min + (x_max - x_min) * step as f64 / 4.0)
+        .collect()
+}
+
+fn format_axis_number(value: f64) -> String {
+    if (value - value.round()).abs() < f64::EPSILON {
+        format!("{:.0}", value)
+    } else {
+        format!("{value:.2}")
+    }
+}
+
+fn format_curve_x_value(value: f64, as_percent: bool) -> String {
+    if as_percent {
+        format!("{}%", format_axis_number(value))
+    } else {
+        format_axis_number(value)
+    }
+}
+
+fn format_percent(value: f64) -> String {
+    format!("{:.1}%", value * 100.0)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SensitivityChartRow {
+    label: String,
+    detail: String,
+    tooltip: String,
+    category: String,
+    flip_rate: f64,
+    new_input_uses: usize,
+}
+
+fn sensitivity_chart_rows(sweep: &SensitivitySweep) -> Vec<SensitivityChartRow> {
+    let late_bucket_total = sweep
+        .results
+        .iter()
+        .filter(|result| is_marginal_late_arrival_bucket_policy(&result.run.policy.kind))
+        .count();
+    let late_cumulative_total = sweep
+        .results
+        .iter()
+        .filter(|result| is_cumulative_late_arrival_policy(&result.run.policy))
+        .count();
+    let mut late_bucket_index = 0;
+    let mut late_cumulative_index = 0;
+    let mut rows = Vec::with_capacity(sweep.results.len());
+
+    for result in &sweep.results {
+        let late_bucket_position =
+            if is_marginal_late_arrival_bucket_policy(&result.run.policy.kind) {
+                late_bucket_index += 1;
+                Some((late_bucket_index, late_bucket_total))
+            } else if is_cumulative_late_arrival_policy(&result.run.policy) {
+                late_cumulative_index += 1;
+                Some((late_cumulative_index, late_cumulative_total))
+            } else {
+                None
+            };
+        let chart_text = policy_chart_text(&result.run.policy, late_bucket_position);
+        rows.push(SensitivityChartRow {
+            label: chart_text.label,
+            detail: chart_text.detail,
+            tooltip: chart_text.tooltip,
+            category: result.run.policy.category.as_str().to_string(),
+            flip_rate: result.summary.flip_rate,
+            new_input_uses: result.summary.new_input_uses,
+        });
+    }
+
+    rows
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PolicyChartText {
+    label: String,
+    detail: String,
+    tooltip: String,
+}
+
+fn policy_chart_text(
+    policy: &PolicyPoint,
+    late_bucket_position: Option<(usize, usize)>,
+) -> PolicyChartText {
+    match &policy.kind {
+        PolicyKind::ReceivedTimeLagBucketLookahead {
+            min_lag,
+            max_lag_exclusive,
+            ..
+        } => {
+            let (index, total) = late_bucket_position.unwrap_or((1, 1));
+            let label = late_arrival_bucket_display_label(index, total);
+            PolicyChartText {
+                label: label.clone(),
+                detail: format!("marginal bucket {index} of {total}; not cumulative"),
+                tooltip: format!(
+                    "{label}: raw fixture lag {}",
+                    format_lag_range(*min_lag, *max_lag_exclusive)
+                ),
+            }
+        }
+        PolicyKind::ReceivedTimeLagCumulativeLookahead {
+            max_lag_inclusive,
+            threshold_pct_bps,
+            ..
+        } => {
+            let (index, total) = late_bucket_position.unwrap_or((1, 1));
+            let label = if *threshold_pct_bps == 10_000 {
+                "All late arrivals included".to_string()
+            } else {
+                format!(
+                    "Up to {} lateness threshold",
+                    format_percent_bps_for_display(*threshold_pct_bps)
+                )
+            };
+            let threshold = max_lag_inclusive
+                .map(|lag| format!("raw lag <= {}", format_u64_grouped(lag)))
+                .unwrap_or_else(|| "all late arrivals".to_string());
+            PolicyChartText {
+                label: label.clone(),
+                detail: format!("cumulative sample {index} of {total}"),
+                tooltip: format!("{label}: {threshold}"),
+            }
+        }
+        PolicyKind::ReceivedTimeLagFraction { pct_bps, .. } => {
+            if policy.name.starts_with("late_arrivals_cumulative_") {
+                let (index, total) = late_bucket_position.unwrap_or((1, 1));
+                let label = format!(
+                    "{} late-arrival lag removed",
+                    format_percent_bps_for_display(*pct_bps)
+                );
+                let detail = format!("cumulative sample {index} of {total}");
+                return PolicyChartText {
+                    label: label.clone(),
+                    detail: detail.clone(),
+                    tooltip: format!(
+                        "{label}: moves each late feature/correction by {} of its own lag; {detail}",
+                        format_percent_bps_for_display(*pct_bps)
+                    ),
+                };
+            }
+            let label = format!("{} lag removed", format_percent_bps_for_display(*pct_bps));
+            let detail = "synthetic stress; bounded by each event's observed_time".to_string();
+            PolicyChartText {
+                label: label.clone(),
+                detail: detail.clone(),
+                tooltip: format!("{label}: {detail}"),
+            }
+        }
+        PolicyKind::ReceivedTimeShift { shift, .. } => {
+            let label = format!("Feature timestamp shift {shift:+}");
+            let detail = "synthetic stress; fixture-native integer units".to_string();
+            PolicyChartText {
+                label: label.clone(),
+                detail: detail.clone(),
+                tooltip: format!("{label}: {detail}"),
+            }
+        }
+        PolicyKind::ReplayOrderOverride {
+            order: ReplayOrder::ObservedTimeLeaky,
+        } => {
+            let label = "Observed-time replay".to_string();
+            let detail = "realistic failure reference".to_string();
+            PolicyChartText {
+                label: label.clone(),
+                detail: detail.clone(),
+                tooltip: format!("{label}: {detail}"),
+            }
+        }
+        PolicyKind::ReplayOrderOverride { .. } => {
+            let label = policy.name.clone();
+            let detail = humanize_category(policy.category.as_str()).to_string();
+            PolicyChartText {
+                label: label.clone(),
+                detail: detail.clone(),
+                tooltip: format!("{label}: {detail}"),
+            }
+        }
+        PolicyKind::Identity => {
+            let label = "Strict received-time baseline".to_string();
+            let detail = humanize_category(policy.category.as_str()).to_string();
+            PolicyChartText {
+                label: label.clone(),
+                detail: detail.clone(),
+                tooltip: format!("{label}: {detail}"),
+            }
+        }
+    }
+}
+
+fn late_arrival_bucket_display_label(index: usize, total: usize) -> String {
+    match (index, total) {
+        (_, 0 | 1) => "Late arrivals".to_string(),
+        (1, _) => "Shortest late arrivals".to_string(),
+        (index, total) if index == total => "Longest late arrivals".to_string(),
+        (index, total) => format!("Late-arrival bucket {index} of {total}"),
+    }
+}
+
+fn format_lag_range(min_lag: u64, max_lag_exclusive: Option<u64>) -> String {
+    match max_lag_exclusive {
+        Some(max) => format!(
+            "[{}, {})",
+            format_u64_grouped(min_lag),
+            format_u64_grouped(max)
+        ),
+        None => format!(">= {}", format_u64_grouped(min_lag)),
+    }
+}
+
+fn format_u64_grouped(value: u64) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::new();
+    for (index, ch) in digits.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    grouped.chars().rev().collect()
+}
+
+fn format_percent_bps_for_display(pct_bps: u16) -> String {
+    let value = f64::from(pct_bps) / 100.0;
+    if pct_bps.is_multiple_of(100) {
+        format!("{value:.0}%")
+    } else {
+        format!("{value:.2}%")
+    }
+}
+
+fn humanize_category(category: &str) -> &'static str {
+    match category {
+        "baseline" => "baseline",
+        "synthetic_stress" => "synthetic stress",
+        "realistic_failure" => "realistic failure",
+        _ => "comparison policy",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ChartRow {
+    label: String,
+    detail: String,
+    tooltip: String,
+    category: String,
+    value: f64,
+    value_label: String,
+}
+
+fn format_bar_chart_svg(title: &str, subtitle: &str, rows: &[ChartRow], max_value: f64) -> String {
+    let compact = rows.len() > 24;
+    let row_height = if compact { 20_usize } else { 25_usize };
+    let top = if compact { 66_usize } else { 76_usize };
+    let bottom = if compact { 28_usize } else { 36_usize };
+    let left = if compact { 286_usize } else { 300_usize };
+    let width = 900_usize;
+    let chart_width = (width - left - 82) as f64;
+    let bar_height = if compact { 10_usize } else { 16_usize };
+    let bar_radius = if compact { 2_usize } else { 3_usize };
+    let height = top + bottom + rows.len().max(1) * row_height;
+    let mut svg = String::new();
+
+    let _ = writeln!(
+        svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" viewBox="0 0 {width} {height}">"#
+    );
+    let _ = writeln!(svg, "<title id=\"title\">{}</title>", xml_escape(title));
+    let _ = writeln!(svg, "<desc id=\"desc\">{}</desc>", xml_escape(subtitle));
+    svg.push_str(
+        r##"<rect width="100%" height="100%" fill="#ffffff"/>
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+  .title { font-size: 22px; font-weight: 700; }
+  .subtitle { font-size: 13px; fill: #64748b; }
+  .label { font-size: 12px; font-weight: 650; }
+  .detail { font-size: 9px; fill: #64748b; }
+  .value { font-size: 12px; font-weight: 700; }
+  .label-compact { font-size: 9px; font-weight: 650; }
+  .value-compact { font-size: 9px; font-weight: 700; }
+  .axis { stroke: #cbd5e1; stroke-width: 1; }
+</style>
+"##,
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="34" class="title">{}</text>"#,
+        xml_escape(title)
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="56" class="subtitle">{}</text>"#,
+        xml_escape(subtitle)
+    );
+    let axis_y = height - bottom + 2;
+    let _ = writeln!(
+        svg,
+        r#"<line x1="{left}" y1="{axis_y}" x2="{}" y2="{axis_y}" class="axis"/>"#,
+        left as f64 + chart_width
+    );
+
+    if rows.is_empty() {
+        let _ = writeln!(
+            svg,
+            r#"<text x="28" y="{top}" class="subtitle">No comparison policies were emitted.</text>"#
+        );
+    }
+
+    for (index, row) in rows.iter().enumerate() {
+        let y = top + index * row_height;
+        let (bar_y, label_y, detail_y, value_y) = if compact {
+            let bar_y = y + 5;
+            (bar_y, y + 14, y + 14, bar_y + 9)
+        } else {
+            let bar_y = y + 5;
+            (bar_y, y + 10, y + 22, bar_y + 12)
+        };
+        let normalized = if max_value <= 0.0 {
+            0.0
+        } else {
+            (row.value / max_value).clamp(0.0, 1.0)
+        };
+        let bar_width = (normalized * chart_width).max(if row.value > 0.0 { 2.0 } else { 0.0 });
+        let fill = category_color(&row.category);
+        let value_x = left as f64 + bar_width + 10.0;
+
+        let _ = writeln!(svg, "<g>");
+        let _ = writeln!(svg, "<title>{}</title>", xml_escape(&row.tooltip));
+        let _ = writeln!(
+            svg,
+            r#"<text x="28" y="{label_y}" class="{}">{}</text>"#,
+            if compact { "label-compact" } else { "label" },
+            xml_escape(&row.label)
+        );
+        if !compact {
+            let _ = writeln!(
+                svg,
+                r#"<text x="28" y="{detail_y}" class="detail">{}</text>"#,
+                xml_escape(&row.detail)
+            );
+        }
+        let _ = writeln!(
+            svg,
+            r#"<rect x="{left}" y="{bar_y}" width="{bar_width:.2}" height="{bar_height}" rx="{bar_radius}" fill="{fill}"/>"#
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{value_x:.2}" y="{value_y}" class="{}">{}</text>"#,
+            if compact { "value-compact" } else { "value" },
+            xml_escape(&row.value_label)
+        );
+        let _ = writeln!(svg, "</g>");
+    }
+
+    svg.push_str("</svg>\n");
+    svg
+}
+
+fn category_color(category: &str) -> &'static str {
+    match category {
+        "realistic_failure" => "#dc2626",
+        "synthetic_stress" => "#2563eb",
+        _ => "#475569",
+    }
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn sensitivity_detail_json(
+    sweep: &SensitivitySweep,
+    result: &SensitivityPolicyResult,
+    detail: &asof_causality_core::SensitivityDetail,
+) -> String {
+    let baseline_output = &sweep.baseline.output;
+    let comparison_output = &result.run.output;
+    let row = json!({
+        "schema_version": 1,
+        "policy_name": result.run.policy.name.as_str(),
+        "category": result.run.policy.category.as_str(),
+        "prediction_event_id": baseline_output.predictions.event_label(detail.prediction_event_key),
+        "baseline_prediction_replay_key": baseline_output.predictions.format_replay_key(
+            detail.baseline.prediction_time,
+            detail.baseline.prediction_received_sequence_number,
+            detail.baseline.prediction_event_key,
+        ),
+        "comparison_prediction_replay_key": comparison_output.predictions.format_replay_key(
+            detail.comparison.prediction_time,
+            detail.comparison.prediction_received_sequence_number,
+            detail.comparison.prediction_event_key,
+        ),
+        "prediction_time_baseline": detail.baseline.prediction_time,
+        "prediction_time_comparison": detail.comparison.prediction_time,
+        "baseline": prediction_record_sensitivity_json(baseline_output, &detail.baseline),
+        "comparison": prediction_record_sensitivity_json(comparison_output, &detail.comparison),
+        "new_inputs_admitted": detail
+            .new_inputs_admitted
+            .iter()
+            .map(|event_key| comparison_output.predictions.event_label(*event_key))
+            .collect::<Vec<_>>(),
+        "signal_value_changed": detail.signal_value_changed,
+        "feature_recipe_hash_changed": detail.feature_recipe_hash_changed,
+    });
+
+    serde_json::to_string(&row).expect("sensitivity detail should serialize")
+}
+
+fn prediction_record_sensitivity_json(
+    output: &ReplayOutput,
+    record: &asof_causality_core::PredictionRecord,
+) -> Value {
+    json!({
+        "signal_value": record.signal_value,
+        "input_event_ids_used": output.predictions.input_event_labels(record.input_event_ids_used),
+        "feature_recipe_hash": record.feature_recipe_hash_hex(),
+    })
+}
+
+fn format_sensitivity_manifest_json(inputs: SensitivityManifestInputs<'_>) -> String {
+    let invocation_args = env::args().collect::<Vec<_>>();
+    let details_path = inputs.details_path.map(|path| path.display().to_string());
+    let details_hash = inputs
+        .details_jsonl
+        .map(|details| asof_causality_core::blake3_hex(details.as_bytes()));
+    let sensitivity_curve_svg_path = inputs
+        .sensitivity_curve_svg_path
+        .map(|path| path.display().to_string());
+    let sensitivity_curve_svg_hash = inputs
+        .sensitivity_curve_svg
+        .map(|svg| asof_causality_core::blake3_hex(svg.as_bytes()));
+    let late_arrival_impact_svg_path = inputs
+        .late_arrival_impact_svg_path
+        .map(|path| path.display().to_string());
+    let late_arrival_impact_svg_hash = inputs
+        .late_arrival_impact_svg
+        .map(|svg| asof_causality_core::blake3_hex(svg.as_bytes()));
+    let policies = std::iter::once(&inputs.sweep.baseline)
+        .chain(inputs.sweep.results.iter().map(|result| &result.run))
+        .map(policy_run_manifest_json)
+        .collect::<Vec<_>>();
+    let manifest = json!({
+        "schema_version": "sensitivity-v1",
+        "tool": "asof-causality",
+        "hash_algorithm": "blake3",
+        "run_started_utc": system_time_to_utc_iso8601(SystemTime::now()),
+        "invocation": shell_join(&invocation_args),
+        "invocation_args": invocation_args,
+        "source_commit": current_git_commit(),
+        "workspace_dirty": current_workspace_dirty(),
+        "rust_toolchain": current_rustc_version(),
+        "timestamp_shift_time_axis": "fixture_native_integer",
+        "timestamp_shift_semantics": "raw signed integer arithmetic on received_time; no calendar validation",
+        "fixture_path": inputs.events_path,
+        "fixture_hash": asof_causality_core::blake3_hex(inputs.fixture_input.as_bytes()),
+        "signal": inputs.signal.as_str(),
+        "signal_config_descriptor": inputs.signal.config_descriptor(),
+        "baseline_policy": inputs.sweep.baseline.policy.name.as_str(),
+        "baseline_transcript_hash": inputs.sweep.baseline.output.predictions.transcript_digest(),
+        "policies": policies,
+        "summary_path": inputs.summary_path.display().to_string(),
+        "summary_hash": asof_causality_core::blake3_hex(inputs.summary_jsonl.as_bytes()),
+        "sensitivity_curve_svg_path": sensitivity_curve_svg_path,
+        "sensitivity_curve_svg_hash": sensitivity_curve_svg_hash,
+        "flip_rate_svg_path": inputs.flip_rate_svg_path.display().to_string(),
+        "flip_rate_svg_hash": asof_causality_core::blake3_hex(inputs.flip_rate_svg.as_bytes()),
+        "input_change_svg_path": inputs.input_change_svg_path.display().to_string(),
+        "input_change_svg_hash": asof_causality_core::blake3_hex(inputs.input_change_svg.as_bytes()),
+        "late_arrival_impact_svg_path": late_arrival_impact_svg_path,
+        "late_arrival_impact_svg_hash": late_arrival_impact_svg_hash,
+        "details_path": details_path,
+        "details_hash": details_hash,
+    });
+
+    format!(
+        "{}\n",
+        serde_json::to_string_pretty(&manifest).expect("sensitivity manifest should serialize")
+    )
+}
+
+fn policy_run_manifest_json(run: &PolicyRun) -> Value {
+    json!({
+        "name": run.policy.name.as_str(),
+        "category": run.policy.category.as_str(),
+        "descriptor": policy_json(&run.policy),
+        "events_transformed": run.events_transformed,
+        "transformed_fixture_hash": run.transformed_fixture_hash.as_str(),
+        "transcript_hash": run.output.predictions.transcript_digest(),
+    })
+}
+
+fn policy_json(policy: &PolicyPoint) -> Value {
+    match &policy.kind {
+        PolicyKind::Identity => json!({
+            "name": policy.name.as_str(),
+            "category": policy.category.as_str(),
+            "kind": "identity",
+        }),
+        PolicyKind::ReceivedTimeShift {
+            roles_affected,
+            shift,
+        } => json!({
+            "name": policy.name.as_str(),
+            "category": policy.category.as_str(),
+            "kind": "received_time_shift",
+            "time_axis": "fixture_native_integer",
+            "shift_units": "fixture_native_integer",
+            "calendar_aware": false,
+            "roles_affected": roles_affected
+                .iter()
+                .map(|role| role.as_str())
+                .collect::<Vec<_>>(),
+            "shift": shift,
+            "preserve": ["event_id", "observed_time", "sequence", "symbol", "payload"],
+        }),
+        PolicyKind::ReceivedTimeLagFraction {
+            roles_affected,
+            pct_bps,
+        } => json!({
+            "name": policy.name.as_str(),
+            "category": policy.category.as_str(),
+            "kind": "received_time_lag_fraction",
+            "time_axis": "event_lag_fraction_integer",
+            "shift_units": "percent_of_each_event_lag",
+            "calendar_aware": false,
+            "bounded_by_observed_time": true,
+            "roles_affected": roles_affected
+                .iter()
+                .map(|role| role.as_str())
+                .collect::<Vec<_>>(),
+            "lag_fraction_bps": pct_bps,
+            "lag_fraction_percent": f64::from(*pct_bps) / 100.0,
+            "preserve": ["event_id", "observed_time", "sequence", "symbol", "payload"],
+        }),
+        PolicyKind::ReceivedTimeLagBucketLookahead {
+            roles_affected,
+            min_lag,
+            max_lag_exclusive,
+            pct_bps,
+        } => json!({
+            "name": policy.name.as_str(),
+            "category": policy.category.as_str(),
+            "kind": "received_time_lag_bucket_lookahead",
+            "time_axis": "event_lag_fixture_native_integer",
+            "shift_units": "percent_of_each_event_lag",
+            "calendar_aware": false,
+            "bounded_by_observed_time": true,
+            "roles_affected": roles_affected
+                .iter()
+                .map(|role| role.as_str())
+                .collect::<Vec<_>>(),
+            "min_lag": min_lag,
+            "max_lag_exclusive": max_lag_exclusive,
+            "lag_fraction_bps": pct_bps,
+            "lag_fraction_percent": f64::from(*pct_bps) / 100.0,
+            "preserve": ["event_id", "observed_time", "sequence", "symbol", "payload"],
+        }),
+        PolicyKind::ReceivedTimeLagCumulativeLookahead {
+            roles_affected,
+            max_lag_inclusive,
+            threshold_pct_bps,
+            pct_bps,
+        } => json!({
+            "name": policy.name.as_str(),
+            "category": policy.category.as_str(),
+            "kind": "received_time_lag_cumulative_lookahead",
+            "time_axis": "event_lag_fixture_native_integer",
+            "shift_units": "percent_of_each_event_lag",
+            "calendar_aware": false,
+            "bounded_by_observed_time": true,
+            "roles_affected": roles_affected
+                .iter()
+                .map(|role| role.as_str())
+                .collect::<Vec<_>>(),
+            "max_lag_inclusive": max_lag_inclusive,
+            "threshold_percent_bps": threshold_pct_bps,
+            "threshold_percent": f64::from(*threshold_pct_bps) / 100.0,
+            "lag_fraction_bps": pct_bps,
+            "lag_fraction_percent": f64::from(*pct_bps) / 100.0,
+            "preserve": ["event_id", "observed_time", "sequence", "symbol", "payload"],
+        }),
+        PolicyKind::ReplayOrderOverride { order } => json!({
+            "name": policy.name.as_str(),
+            "category": policy.category.as_str(),
+            "kind": "replay_order_override",
+            "order": replay_order_name(*order),
+        }),
+    }
+}
+
+fn replay_order_name(order: ReplayOrder) -> &'static str {
+    match order {
+        ReplayOrder::ReceivedTime => "received_time",
+        ReplayOrder::ObservedTimeLeaky => "observed_time",
+    }
+}
+
+fn print_sensitivity_stdout(
+    args: &SensitivityArgs,
+    sweep: &SensitivitySweep,
+    artifacts: SensitivityArtifactPaths<'_>,
+) {
+    println!("asof-causality sensitivity");
+    println!("  fixture   {}", args.events_path);
+    println!("  signal    {}", args.signal.as_str());
+    println!("  scenario  {}", args.scenario.as_str());
+    println!("  baseline  {}", sweep.baseline.policy.name);
+    println!(
+        "  transcript_hash  {}",
+        sweep.baseline.output.predictions.transcript_digest()
+    );
+    println!();
+    println!("POLICIES");
+    for result in &sweep.results {
+        println!(
+            "  [{}] {}  changed={}/{} flip_rate={:.4} new_inputs={}",
+            result.run.policy.category.as_str(),
+            result.run.policy.name,
+            result.summary.predictions_with_signal_change,
+            result.summary.predictions,
+            result.summary.flip_rate,
+            result.summary.new_input_uses
+        );
+    }
+    println!();
+    println!("ARTIFACTS  {}", args.out_dir.display());
+    println!("  summary    {}", artifacts.summary.display());
+    if let Some(sensitivity_curve_svg) = artifacts.sensitivity_curve_svg {
+        println!("  curve svg  {}", sensitivity_curve_svg.display());
+    }
+    println!("  flip svg   {}", artifacts.flip_rate_svg.display());
+    println!("  input svg  {}", artifacts.input_change_svg.display());
+    if let Some(late_arrival_impact_svg) = artifacts.late_arrival_impact_svg {
+        println!("  late svg   {}", late_arrival_impact_svg.display());
+    }
+    if let Some(details_path) = artifacts.details {
+        println!("  details    {}", details_path.display());
+    }
+    println!("  manifest   {}", artifacts.manifest.display());
 }
 
 fn load_stored_predictions(
@@ -2011,6 +4238,7 @@ fn print_help() {
     println!("  asof-causality negative-control [path] [--signal name]");
     println!("  asof-causality generate [--scenario late-heavy] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out path]");
     println!("  asof-causality run-suite [--scenario late-heavy] [--signal name] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out dir]");
+    println!("  asof-causality sensitivity [path] [--signal name] [--scenario lookahead|late-arrivals] [--lookahead-range 0..100] [--steps N] [--details] --out dir");
     println!("  asof-causality bench [--events N] [--symbols N]");
     println!();
     println!("signals:");
@@ -2189,6 +4417,170 @@ mod tests {
             parsed.outcomes_path,
             Some(PathBuf::from("examples/alfred-dgs10-sp500.pipe"))
         );
+    }
+
+    #[test]
+    fn parses_sensitivity_args() {
+        let parsed = parse_sensitivity_args(&args(&[
+            "examples/alfred-dgs10-sp500.pipe",
+            "--signal",
+            "windowed-zscore",
+            "--shift-features",
+            "-10000",
+            "--observed-time-leaky",
+            "--details",
+            "--out",
+            "runs/sensitivity",
+        ]))
+        .unwrap();
+
+        assert_eq!(parsed.events_path, "examples/alfred-dgs10-sp500.pipe");
+        assert_eq!(parsed.signal, SignalChoice::WindowedZScore);
+        assert_eq!(parsed.out_dir, PathBuf::from("runs/sensitivity"));
+        assert!(parsed.details);
+        assert_eq!(parsed.policies.len(), 2);
+        assert_eq!(parsed.policies[0].name, "shift_features_minus_10000");
+        assert_eq!(parsed.policies[1].name, "observed_time_leaky");
+    }
+
+    #[test]
+    fn parses_normalized_lookahead_range_args() {
+        let parsed = parse_sensitivity_args(&args(&[
+            "examples/late-arrival.pipe",
+            "--lookahead-range",
+            "0..100",
+            "--steps",
+            "4",
+            "--out",
+            "runs/sensitivity",
+        ]))
+        .unwrap();
+
+        assert_eq!(parsed.policies.len(), 4);
+        assert_eq!(parsed.scenario, SensitivityScenario::Lookahead);
+        assert_eq!(parsed.policies[0].name, "lookahead_25pct");
+        assert_eq!(parsed.policies[3].name, "lookahead_100pct");
+        assert!(matches!(
+            parsed.policies[0].kind,
+            PolicyKind::ReceivedTimeLagFraction { pct_bps: 2500, .. }
+        ));
+    }
+
+    #[test]
+    fn parses_decimal_lookahead_range_args() {
+        let parsed = parse_sensitivity_args(&args(&[
+            "examples/late-arrival.pipe",
+            "--lookahead-range",
+            "12.5..99.99",
+            "--steps",
+            "4",
+            "--out",
+            "runs/sensitivity",
+        ]))
+        .unwrap();
+
+        assert_eq!(parsed.policies.len(), 5);
+        assert_eq!(parsed.scenario, SensitivityScenario::Lookahead);
+        assert_eq!(parsed.policies[0].name, "lookahead_12_5pct");
+        assert_eq!(parsed.policies[4].name, "lookahead_99_99pct");
+        assert!(matches!(
+            parsed.policies[0].kind,
+            PolicyKind::ReceivedTimeLagFraction { pct_bps: 1250, .. }
+        ));
+        assert!(matches!(
+            parsed.policies[4].kind,
+            PolicyKind::ReceivedTimeLagFraction { pct_bps: 9999, .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_lookahead_range_with_excess_fractional_precision() {
+        let error = parse_sensitivity_args(&args(&[
+            "examples/late-arrival.pipe",
+            "--lookahead-range",
+            "100.001..100.001",
+            "--steps",
+            "4",
+            "--out",
+            "runs/sensitivity",
+        ]))
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("at most two fractional digits"));
+    }
+
+    #[test]
+    fn parses_late_arrival_scenario_args() {
+        let parsed = parse_sensitivity_args(&args(&[
+            "examples/late-arrival.pipe",
+            "--scenario",
+            "late-arrivals",
+            "--out",
+            "runs/sensitivity",
+        ]))
+        .unwrap();
+
+        assert_eq!(parsed.scenario, SensitivityScenario::LateArrivals);
+        assert_eq!(
+            parsed.late_arrival_buckets,
+            Some(LateArrivalBucketSpec::Auto)
+        );
+        assert!(parsed.policies.is_empty());
+    }
+
+    #[test]
+    fn auto_late_arrival_policies_cover_requested_percent_steps() {
+        let policies = cumulative_late_arrival_policies(&negative_control_events(), 4).unwrap();
+
+        assert_eq!(policies.len(), 4);
+        assert!(policies
+            .iter()
+            .any(|policy| policy.name.starts_with("late_arrivals_cumulative_")));
+        assert!(matches!(
+            policies[0].kind,
+            PolicyKind::ReceivedTimeLagFraction { pct_bps: 2500, .. }
+        ));
+        assert!(matches!(
+            policies[3].kind,
+            PolicyKind::ReceivedTimeLagFraction {
+                pct_bps: 10_000,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn sensitivity_rejects_typed_duration_shifts() {
+        let error = parse_sensitivity_args(&args(&[
+            "--shift-features",
+            "-1d",
+            "--out",
+            "runs/sensitivity",
+        ]))
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("typed duration shifts"));
+    }
+
+    #[test]
+    fn sensitivity_requires_out_and_policy() {
+        let missing_out = parse_sensitivity_args(&args(&["--shift-features", "-10"]))
+            .unwrap_err()
+            .to_string();
+        assert!(missing_out.contains("--out"));
+
+        let missing_policy = parse_sensitivity_args(&args(&["--out", "runs/sensitivity"]))
+            .unwrap_err()
+            .to_string();
+        assert!(missing_policy.contains("comparison policy"));
+
+        let steps_without_sweep =
+            parse_sensitivity_args(&args(&["--steps", "4", "--out", "runs/sensitivity"]))
+                .unwrap_err()
+                .to_string();
+        assert!(steps_without_sweep.contains("--lookahead-range"));
     }
 
     #[test]

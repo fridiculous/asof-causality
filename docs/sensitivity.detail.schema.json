@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/fridiculous/asof-causality/docs/sensitivity.detail.schema.json",
+  "title": "asof-causality sensitivity detail record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy_name",
+    "category",
+    "prediction_event_id",
+    "baseline_prediction_replay_key",
+    "comparison_prediction_replay_key",
+    "prediction_time_baseline",
+    "prediction_time_comparison",
+    "baseline",
+    "comparison",
+    "new_inputs_admitted",
+    "signal_value_changed",
+    "feature_recipe_hash_changed"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "policy_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "category": {
+      "enum": ["synthetic_stress", "realistic_failure"]
+    },
+    "prediction_event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "baseline_prediction_replay_key": {
+      "$ref": "#/$defs/replay_key"
+    },
+    "comparison_prediction_replay_key": {
+      "$ref": "#/$defs/replay_key"
+    },
+    "prediction_time_baseline": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "prediction_time_comparison": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "baseline": {
+      "$ref": "#/$defs/prediction_snapshot"
+    },
+    "comparison": {
+      "$ref": "#/$defs/prediction_snapshot"
+    },
+    "new_inputs_admitted": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "signal_value_changed": {
+      "type": "boolean"
+    },
+    "feature_recipe_hash_changed": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "blake3": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "replay_key": {
+      "type": "string",
+      "pattern": "^[0-9]+:[0-9]+:.+$"
+    },
+    "prediction_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signal_value", "input_event_ids_used", "feature_recipe_hash"],
+      "properties": {
+        "signal_value": {
+          "type": "integer",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "input_event_ids_used": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "feature_recipe_hash": {
+          "$ref": "#/$defs/blake3"
+        }
+      }
+    }
+  }
+}

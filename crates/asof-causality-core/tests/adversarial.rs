@@ -1,5 +1,5 @@
 use asof_causality_core::{
-    parse_pipe_events, run_adversarial_checks, ReplayEngine, ReplayOptions, ReplayOrder,
+    parse_pipe_events, run_adversarial_checks, EventRole, ReplayEngine, ReplayOptions, ReplayOrder,
     VolAdjustedMomentumSignal, WindowedFeatureSentimentSignal, WindowedZScoreSignal,
 };
 
@@ -20,6 +20,20 @@ fn zscore_events() -> Vec<asof_causality_core::Event> {
 
 fn alfred_events() -> Vec<asof_causality_core::Event> {
     parse_pipe_events(include_str!("../../../examples/alfred-dgs10-sp500.pipe")).unwrap()
+}
+
+fn alfred_payems_revision_events() -> Vec<asof_causality_core::Event> {
+    parse_pipe_events(include_str!(
+        "../../../examples/alfred-payems-revision.pipe"
+    ))
+    .unwrap()
+}
+
+fn alfred_payems_large_revision_events() -> Vec<asof_causality_core::Event> {
+    parse_pipe_events(include_str!(
+        "../../../examples/alfred-payems-revisions-2020.pipe"
+    ))
+    .unwrap()
 }
 
 fn assert_check_passes(name: &str) {
@@ -310,4 +324,94 @@ fn observed_time_baseline_leaks_alfred_same_day_vintage() {
     assert_eq!(leaked.max_input_received_sequence_number, 9);
     assert!(leaked.input_event_ids_used.contains_key(same_day_vintage));
     assert!(leaked.max_input_received_time > leaked.prediction_time);
+}
+
+#[test]
+fn alfred_payems_revision_is_not_used_before_received() {
+    let events = alfred_payems_revision_events();
+    let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+        .replay_with_order(&events, ReplayOptions::default(), ReplayOrder::ReceivedTime)
+        .unwrap();
+    let correction = events
+        .iter()
+        .find(|event| event.event_id == "payems_20190101_v20200301_revision")
+        .expect("PAYEMS fixture should contain the revised ALFRED vintage")
+        .event_key;
+    let prediction_key = events
+        .iter()
+        .find(|event| event.event_id == "p_after_initial_before_revision")
+        .expect("PAYEMS fixture should contain the pre-revision prediction")
+        .event_key;
+
+    let prediction = output
+        .predictions
+        .records()
+        .iter()
+        .find(|record| record.prediction_event_key == prediction_key)
+        .expect("received-time replay should emit the pre-revision prediction");
+
+    assert_eq!(prediction.prediction_time, 202002141600);
+    assert_eq!(prediction.max_input_received_time, 202002010900);
+    assert!(!prediction.input_event_ids_used.contains_key(correction));
+}
+
+#[test]
+fn observed_time_baseline_leaks_alfred_payems_revision() {
+    let events = alfred_payems_revision_events();
+    let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+        .replay_with_order(
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ObservedTimeLeaky,
+        )
+        .unwrap();
+    let correction = events
+        .iter()
+        .find(|event| event.event_id == "payems_20190101_v20200301_revision")
+        .expect("PAYEMS fixture should contain the revised ALFRED vintage")
+        .event_key;
+
+    let leaked = output
+        .predictions
+        .records()
+        .iter()
+        .find(|record| record.prediction_time == 202002141600)
+        .expect("PAYEMS fixture should emit the pre-revision prediction");
+
+    assert_eq!(leaked.max_input_received_time, 202003010900);
+    assert!(leaked.input_event_ids_used.contains_key(correction));
+    assert!(leaked.max_input_received_time > leaked.prediction_time);
+}
+
+#[test]
+fn alfred_payems_large_revision_fixture_exercises_many_real_corrections() {
+    let events = alfred_payems_large_revision_events();
+    let feature_corrections = events
+        .iter()
+        .filter(|event| event.role == EventRole::FeatureCorrection)
+        .count();
+    let predictions = events
+        .iter()
+        .filter(|event| event.role == EventRole::Prediction)
+        .count();
+
+    assert_eq!(events.len(), 133);
+    assert_eq!(feature_corrections, 76);
+    assert_eq!(predictions, 23);
+
+    let strict = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+        .replay_with_order(&events, ReplayOptions::default(), ReplayOrder::ReceivedTime)
+        .unwrap();
+
+    assert!(strict.predictions.impossible_predictions().is_empty());
+
+    let observed_time = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+        .replay_with_order(
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ObservedTimeLeaky,
+        )
+        .unwrap();
+
+    assert_eq!(observed_time.predictions.impossible_predictions().len(), 22);
 }

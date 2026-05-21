@@ -1,0 +1,12 @@
+# Real-data fixture derived from public ALFRED PAYEMS vintages.
+# Feature: PAYEMS payroll level from ALFRED.
+# Correction target: PAYEMS observation 2019-01-01 changes from the
+# 2020-02-01 vintage to the 2020-03-01 vintage.
+# Times use YYYYMMDDHHMM integers. PAYEMS observations are dated at 15:00 on
+# the observation date and received at 09:00 on the ALFRED vintage date.
+# This fixture demonstrates a real correction, not just next-vintage lateness.
+# event_id|observed_time|received_time|sequence|role|symbol|payload
+payems_20190101_v20200201|201901011500|202002010900|1|feature|PAYEMS|score=150587,series=PAYEMS,value=150587,vintage=2020-02-01,source=ALFRED
+p_after_initial_before_revision|202002141600|202002141600|2|prediction|PAYEMS|
+payems_20190101_v20200301_revision|201901011500|202003010900|3|feature_correction|PAYEMS|score=150134,series=PAYEMS,value=150134,previous_vintage_value=150587,vintage=2020-03-01,source=ALFRED
+p_after_revision|202003161600|202003161600|4|prediction|PAYEMS|
