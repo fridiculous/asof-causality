@@ -32,6 +32,18 @@ available. A replay ordered by `observed_time` leaks same-day DGS10 rows into
 the SP500 close prediction. The received-time engine blocks those rows until
 the next vintage.
 
+## Regression Target
+
+The fixture includes a specific lookahead-bias trap:
+`p_20200318_close_before_vintage` is emitted at `202003181600`, but
+`dgs10_20200318_v20200319` is not received until `202003190900`.
+
+The received-time replay must not include that DGS10 vintage in the prediction's
+input provenance. The observed-time negative control should include it and mark
+the prediction as impossible. This anchors the demo in the common ALFRED vintage
+failure mode: treating today's final macro data as if it existed in yesterday's
+research environment.
+
 ## Commands
 
 ```sh

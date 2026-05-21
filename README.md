@@ -252,10 +252,11 @@ marks the spike as a future input.
 cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 ```
 
-The real-data fixture uses ALFRED DGS10 Treasury-rate vintages as daily
-features and FRED SP500 closes as next-day outcomes. It demonstrates that a
-daily SP500 prediction cannot use a same-day DGS10 observation until that row
-appears in the next ALFRED vintage. See
+This is the lookahead-bias falsification harness for the repo's real-data
+path. The fixture uses ALFRED DGS10 Treasury-rate vintages as daily features
+and FRED SP500 closes as next-day outcomes. It demonstrates that a daily SP500
+prediction cannot use a same-day DGS10 observation until that row appears in the
+next ALFRED vintage. See
 [docs/real-data-demo.md](docs/real-data-demo.md) for source URLs and mapping.
 
 ```sh
