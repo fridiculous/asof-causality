@@ -52,7 +52,7 @@ jobs:
           cp target/${{ matrix.target }}/release/asof-causality dist/pkg/asof-causality-${{ matrix.target }}
           cp README.md LICENSE dist/pkg/
           tar -C dist/pkg -czf dist/asof-causality-${{ matrix.target }}.tar.gz asof-causality-${{ matrix.target }} README.md LICENSE
-          shasum -a 256 dist/asof-causality-${{ matrix.target }}.tar.gz > dist/asof-causality-${{ matrix.target }}.tar.gz.sha256
+          (cd dist && shasum -a 256 asof-causality-${{ matrix.target }}.tar.gz > asof-causality-${{ matrix.target }}.tar.gz.sha256)
       - uses: actions/upload-artifact@v4
         with:
           name: asof-causality-${{ matrix.target }}
