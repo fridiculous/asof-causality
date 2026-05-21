@@ -297,7 +297,7 @@ pub enum ParseEventError {
         /// Id observed on a later event for the same label.
         actual: SymbolId,
     },
-    /// A catalog lookup requested a symbol that had not been interned.
+    /// Defensive error for querying a catalog with a symbol it did not intern.
     UnknownSymbol {
         /// Human-readable symbol label.
         symbol: String,

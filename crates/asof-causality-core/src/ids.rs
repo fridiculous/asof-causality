@@ -33,7 +33,8 @@ impl SymbolId {
 /// Dense, replay-local symbol index.
 ///
 /// A `SymbolSlot` is stable only within the symbol catalog built for one replay.
-/// Audit records keep using `SymbolId`; slots are for indexing replay state.
+/// Use it only with state that was sized from the same catalog. Audit records
+/// keep using `SymbolId`; slots are for indexing replay state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SymbolSlot(usize);
 
@@ -44,10 +45,6 @@ impl SymbolSlot {
 
     /// Returns the replay-local dense index.
     pub fn as_usize(self) -> usize {
-        self.0
-    }
-
-    pub(crate) fn index(self) -> usize {
         self.0
     }
 }
@@ -65,6 +62,7 @@ impl SymbolCatalog {
         Self::default()
     }
 
+    #[cfg(test)]
     pub(crate) fn from_events(events: &[Event]) -> Result<Self, ParseEventError> {
         let mut catalog = Self::new();
         for event in events {
@@ -77,10 +75,19 @@ impl SymbolCatalog {
         self.labels_by_slot.len()
     }
 
+    pub(crate) fn symbol_labels(&self) -> BTreeMap<SymbolId, String> {
+        self.ids_by_slot
+            .iter()
+            .copied()
+            .zip(self.labels_by_slot.iter().cloned())
+            .collect()
+    }
+
     pub(crate) fn intern_event(&mut self, event: &Event) -> Result<SymbolSlot, ParseEventError> {
         self.intern(&event.symbol, event.symbol_key)
     }
 
+    #[cfg(test)]
     pub(crate) fn slot_for_event(&self, event: &Event) -> Result<SymbolSlot, ParseEventError> {
         let Some(slot) = self.slots_by_label.get(&event.symbol).copied() else {
             return Err(ParseEventError::UnknownSymbol {
@@ -89,7 +96,7 @@ impl SymbolCatalog {
             });
         };
 
-        let expected = self.ids_by_slot[slot.index()];
+        let expected = self.ids_by_slot[slot.as_usize()];
         if expected != event.symbol_key {
             return Err(ParseEventError::SymbolIdentityMismatch {
                 symbol: event.symbol.clone(),
@@ -103,7 +110,7 @@ impl SymbolCatalog {
 
     fn intern(&mut self, label: &str, symbol_id: SymbolId) -> Result<SymbolSlot, ParseEventError> {
         if let Some(slot) = self.slots_by_label.get(label).copied() {
-            let expected = self.ids_by_slot[slot.index()];
+            let expected = self.ids_by_slot[slot.as_usize()];
             if expected != symbol_id {
                 return Err(ParseEventError::SymbolIdentityMismatch {
                     symbol: label.to_string(),
@@ -117,7 +124,7 @@ impl SymbolCatalog {
         if let Some(slot) = self.slots_by_id.get(&symbol_id).copied() {
             return Err(ParseEventError::SymbolIdCollision {
                 symbol_id,
-                existing_symbol: self.labels_by_slot[slot.index()].clone(),
+                existing_symbol: self.labels_by_slot[slot.as_usize()].clone(),
                 conflicting_symbol: label.to_string(),
             });
         }
@@ -371,9 +378,9 @@ mod tests {
         let catalog = SymbolCatalog::from_events(&events).unwrap();
 
         assert_eq!(catalog.len(), 2);
-        assert_eq!(catalog.slot_for_event(&events[0]).unwrap().index(), 0);
-        assert_eq!(catalog.slot_for_event(&events[1]).unwrap().index(), 1);
-        assert_eq!(catalog.slot_for_event(&events[2]).unwrap().index(), 0);
+        assert_eq!(catalog.slot_for_event(&events[0]).unwrap().as_usize(), 0);
+        assert_eq!(catalog.slot_for_event(&events[1]).unwrap().as_usize(), 1);
+        assert_eq!(catalog.slot_for_event(&events[2]).unwrap().as_usize(), 0);
     }
 
     #[test]

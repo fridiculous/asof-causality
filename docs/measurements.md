@@ -191,6 +191,8 @@ Single-run result:
 The dense symbol-slot vector representation was about 126x faster on this
 microbenchmark. This does not mean full replay is 126x faster; it isolates one
 hot representation decision: map lookup by string versus direct indexed state.
+Production replay still pays for catalog validation and event slotting before
+the hot loop, so its end-to-end speedup should be smaller than this microbench.
 
 ## Surprise
 

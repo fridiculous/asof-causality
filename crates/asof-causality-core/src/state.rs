@@ -101,7 +101,7 @@ impl StateWriter<'_> {
             return Ok(());
         };
 
-        self.store.by_symbol_slot[symbol.index()].push(FeatureObservation {
+        self.store.by_symbol_slot[symbol.as_usize()].push(FeatureObservation {
             sentiment: values.sentiment,
             score: values.score,
             input_key: event.event_key,
@@ -122,7 +122,7 @@ pub struct AsOfView<'a> {
 impl AsOfView<'_> {
     /// Returns the latest received sentiment snapshot for `symbol`.
     pub fn snapshot(&self, symbol: SymbolSlot) -> SymbolSnapshot {
-        let state = &self.store.by_symbol_slot[symbol.index()];
+        let state = &self.store.by_symbol_slot[symbol.as_usize()];
         match state
             .recent_window(MAX_INPUTS_PER_PREDICTION)
             .iter()
@@ -144,7 +144,7 @@ impl AsOfView<'_> {
 
     /// Returns a bounded recent sentiment-window snapshot for `symbol`.
     pub fn windowed_snapshot(&self, symbol: SymbolSlot, window: usize) -> SymbolSnapshot {
-        let state = &self.store.by_symbol_slot[symbol.index()];
+        let state = &self.store.by_symbol_slot[symbol.as_usize()];
 
         let observations = recent_observations_with_sentiment(state, window);
         if observations.is_empty() {
@@ -188,7 +188,7 @@ impl AsOfView<'_> {
         window: usize,
         threshold: f64,
     ) -> SymbolSnapshot {
-        let state = &self.store.by_symbol_slot[symbol.index()];
+        let state = &self.store.by_symbol_slot[symbol.as_usize()];
 
         let observations = recent_observations_with_score(state, window);
         if observations.is_empty() {

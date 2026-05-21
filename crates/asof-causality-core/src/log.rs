@@ -1,3 +1,4 @@
+use crate::ids::SymbolCatalog;
 use crate::{Event, EventKey, InputSet, SymbolId};
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -102,10 +103,7 @@ pub struct PredictionLog {
 impl PredictionLog {
     /// Creates an empty prediction log with labels collected from events.
     pub fn with_event_catalog(events: &[Event]) -> Self {
-        let event_labels = events
-            .iter()
-            .map(|event| (event.event_key, event.event_id.clone()))
-            .collect();
+        let event_labels = event_labels(events);
         let symbol_labels = events
             .iter()
             .map(|event| (event.symbol_key, event.symbol.clone()))
@@ -115,6 +113,14 @@ impl PredictionLog {
             records: Vec::new(),
             event_labels,
             symbol_labels,
+        }
+    }
+
+    pub(crate) fn with_symbol_catalog(events: &[Event], symbol_catalog: &SymbolCatalog) -> Self {
+        Self {
+            records: Vec::new(),
+            event_labels: event_labels(events),
+            symbol_labels: symbol_catalog.symbol_labels(),
         }
     }
 
@@ -203,6 +209,13 @@ impl PredictionLog {
     pub fn record_is_causal(&self, record: &PredictionRecord) -> bool {
         !record.violates_replay_key_order(&self.event_labels)
     }
+}
+
+fn event_labels(events: &[Event]) -> BTreeMap<EventKey, String> {
+    events
+        .iter()
+        .map(|event| (event.event_key, event.event_id.clone()))
+        .collect()
 }
 
 fn format_replay_key(

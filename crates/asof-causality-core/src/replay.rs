@@ -89,19 +89,19 @@ impl<S: Signal> ReplayEngine<S> {
             }
         }
 
-        let symbol_catalog = SymbolCatalog::from_events(&ordered)?;
+        let mut symbol_catalog = SymbolCatalog::new();
         let slotted_order = ordered
             .iter()
             .map(|event| {
                 Ok(SlottedEvent {
                     event,
-                    symbol: symbol_catalog.slot_for_event(event)?,
+                    symbol: symbol_catalog.intern_event(event)?,
                 })
             })
             .collect::<Result<Vec<_>, ParseEventError>>()?;
 
         let mut state = StateStore::with_symbol_count(symbol_catalog.len());
-        let mut predictions = PredictionLog::with_event_catalog(&ordered);
+        let mut predictions = PredictionLog::with_symbol_catalog(&ordered, &symbol_catalog);
         let mut outcomes_seen = 0;
         let signal_name = self.signal.name();
         let signal_config_descriptor = self.signal.config_descriptor();
@@ -162,7 +162,6 @@ struct SlottedEvent<'a> {
 /// Parses newline-delimited pipe records into events.
 pub fn parse_pipe_events(input: &str) -> Result<Vec<Event>, ReplayError> {
     let mut events = Vec::new();
-    let mut symbol_catalog = SymbolCatalog::new();
 
     for (index, line) in input.lines().enumerate() {
         let trimmed = line.trim();
@@ -174,12 +173,6 @@ pub fn parse_pipe_events(input: &str) -> Result<Vec<Event>, ReplayError> {
             line: Some(index + 1),
             source,
         })?;
-        symbol_catalog
-            .intern_event(&event)
-            .map_err(|source| ReplayError {
-                line: Some(index + 1),
-                source,
-            })?;
         events.push(event);
     }
 
