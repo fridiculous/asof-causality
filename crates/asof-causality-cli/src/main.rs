@@ -1550,9 +1550,14 @@ fn format_sensitivity_details_jsonl(sweep: &SensitivitySweep) -> String {
 
 fn format_sensitivity_flip_rate_svg(sweep: &SensitivitySweep) -> String {
     let rows = sensitivity_chart_rows(sweep);
+    let subtitle = if sweep_has_late_arrival_bucket_policies(sweep) {
+        "marginal flip rate: one lag band moved at a time; not cumulative"
+    } else {
+        "share of predictions whose signal value changed"
+    };
     format_bar_chart_svg(
         "Sensitivity Flip Rate",
-        "share of predictions whose signal value changed",
+        subtitle,
         &rows
             .iter()
             .map(|row| ChartRow {
@@ -1570,6 +1575,11 @@ fn format_sensitivity_flip_rate_svg(sweep: &SensitivitySweep) -> String {
 
 fn format_sensitivity_input_change_svg(sweep: &SensitivitySweep) -> String {
     let rows = sensitivity_chart_rows(sweep);
+    let subtitle = if sweep_has_late_arrival_bucket_policies(sweep) {
+        "marginal new input-event uses: one lag band moved at a time"
+    } else {
+        "new input-event uses admitted by each comparison policy"
+    };
     let max_value = rows
         .iter()
         .map(|row| row.new_input_uses as f64)
@@ -1577,7 +1587,7 @@ fn format_sensitivity_input_change_svg(sweep: &SensitivitySweep) -> String {
         .max(1.0);
     format_bar_chart_svg(
         "New Inputs Admitted",
-        "new input-event uses admitted by each comparison policy",
+        subtitle,
         &rows
             .iter()
             .map(|row| ChartRow {
@@ -1637,8 +1647,8 @@ fn format_late_arrival_impact_svg(sweep: &SensitivitySweep) -> String {
         .collect::<Vec<_>>();
 
     format_bar_chart_svg(
-        "Late Arrival Impact",
-        "one lag bucket at a time; each bucket is fully moved to observed_time",
+        "Marginal Late Arrival Impact",
+        "one lag band moved at a time; not cumulative",
         &rows,
         1.0,
     )
@@ -2066,7 +2076,7 @@ fn policy_chart_text(
             let label = late_arrival_bucket_display_label(index, total);
             PolicyChartText {
                 label: label.clone(),
-                detail: format!("bucket {index} of {total}; fixture lag band"),
+                detail: format!("marginal bucket {index} of {total}; not cumulative"),
                 tooltip: format!(
                     "{label}: raw fixture lag {}",
                     format_lag_range(*min_lag, *max_lag_exclusive)

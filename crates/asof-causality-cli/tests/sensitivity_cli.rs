@@ -308,9 +308,9 @@ fn sensitivity_cli_accepts_late_arrival_scenario() {
     );
 
     let late_svg = fs::read_to_string(&late_svg_path).expect("late svg should be readable");
-    assert!(late_svg.contains("Late Arrival Impact"));
+    assert!(late_svg.contains("Marginal Late Arrival Impact"));
     assert!(late_svg.contains("Shortest late arrivals"));
-    assert!(late_svg.contains("fixture lag band"));
+    assert!(late_svg.contains("not cumulative"));
     assert!(!late_svg.contains(">late_arrivals_lag_"));
 
     let _ = fs::remove_dir_all(out_dir);
