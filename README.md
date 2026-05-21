@@ -109,6 +109,7 @@ cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
+cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --shift-features -10000 --observed-time-leaky --details --out runs/alfred-sensitivity
 make verify-real-data-demo
 cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
@@ -260,6 +261,18 @@ and FRED SP500 closes as next-day outcomes. It demonstrates that a daily SP500
 prediction cannot use a same-day DGS10 observation until that row appears in the
 next ALFRED vintage. See
 [docs/real-data-demo.md](docs/real-data-demo.md) for source URLs and mapping.
+
+```sh
+cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --shift-features -10000 --observed-time-leaky --details --out runs/alfred-sensitivity
+```
+
+Runs a stability sweep outside the strict kernel: the baseline uses received
+time, the synthetic stress policy shifts feature receipt times by a raw integer
+offset in fixture-native units, and the observed-time endpoint measures the
+naive lookahead failure mode. The command writes `summary.jsonl`,
+`details.jsonl`, and `manifest.json` with policy descriptors and transcript
+hashes. V1 accepts integer shifts only; typed durations such as `-1d` are
+deferred until timestamp semantics are first-class.
 
 ```sh
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024

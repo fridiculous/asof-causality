@@ -1,12 +1,13 @@
 use asof_causality_core::{
     generate_events, parse_pipe_events, run_adversarial_checks_with_options_for_signal,
-    run_representation_benchmark, CheckOptions, CheckReport, Event, EventKey, EventRole,
-    GenerateConfig, GeneratedStream, LastFeatureSentimentSignal, ReplayEngine, ReplayOptions,
-    ReplayOrder, ReplayOutput, Scenario, SymbolId, WindowedFeatureSentimentSignal,
+    run_representation_benchmark, run_sensitivity_sweep, CheckOptions, CheckReport, Event,
+    EventKey, EventRole, GenerateConfig, GeneratedStream, LastFeatureSentimentSignal, PolicyKind,
+    PolicyPoint, PolicyRun, ReplayEngine, ReplayOptions, ReplayOrder, ReplayOutput, Scenario,
+    SensitivityPolicyResult, SensitivitySweep, SymbolId, WindowedFeatureSentimentSignal,
     WindowedZScoreSignal,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::Number;
+use serde_json::{json, Number, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::error::Error;
@@ -34,6 +35,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some(command) if is_negative_control_command(command) => negative_control(&args[2..]),
         Some("generate") => generate(&args[2..]),
         Some("run-suite") => run_suite(&args[2..]),
+        Some("sensitivity") => sensitivity(&args[2..]),
         Some("bench") => bench(&args[2..]),
         _ => {
             print_help();
@@ -68,6 +70,20 @@ impl SignalChoice {
             Self::LastFeatureSentiment => "last-feature-sentiment",
             Self::WindowedFeatureSentiment => "windowed-feature-sentiment",
             Self::WindowedZScore => "windowed-zscore",
+        }
+    }
+
+    fn config_descriptor(self) -> String {
+        match self {
+            Self::LastFeatureSentiment => String::new(),
+            Self::WindowedFeatureSentiment => {
+                format!("window={}", WindowedFeatureSentimentSignal::DEFAULT_WINDOW)
+            }
+            Self::WindowedZScore => format!(
+                "window={};threshold={}",
+                WindowedZScoreSignal::DEFAULT_WINDOW,
+                WindowedZScoreSignal::DEFAULT_THRESHOLD
+            ),
         }
     }
 }
@@ -216,6 +232,161 @@ fn negative_control(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SensitivityArgs {
+    events_path: String,
+    signal: SignalChoice,
+    out_dir: PathBuf,
+    details: bool,
+    policies: Vec<PolicyPoint>,
+}
+
+fn sensitivity(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let sensitivity_args = parse_sensitivity_args(args)?;
+    let input = fs::read_to_string(&sensitivity_args.events_path)?;
+    let events = parse_pipe_events(&input)?;
+    let sweep =
+        run_sensitivity_with_signal(sensitivity_args.signal, &events, &sensitivity_args.policies)?;
+
+    fs::create_dir_all(&sensitivity_args.out_dir)?;
+    let summary_path = sensitivity_args.out_dir.join("summary.jsonl");
+    let details_path = sensitivity_args.out_dir.join("details.jsonl");
+    let manifest_path = sensitivity_args.out_dir.join("manifest.json");
+
+    let summary_jsonl = format_sensitivity_summary_jsonl(sensitivity_args.signal, &sweep);
+    write_file(&summary_path, &summary_jsonl)?;
+
+    let details_jsonl = if sensitivity_args.details {
+        let details_jsonl = format_sensitivity_details_jsonl(&sweep);
+        write_file(&details_path, &details_jsonl)?;
+        Some(details_jsonl)
+    } else {
+        None
+    };
+
+    let manifest_json = format_sensitivity_manifest_json(SensitivityManifestInputs {
+        events_path: &sensitivity_args.events_path,
+        fixture_input: &input,
+        signal: sensitivity_args.signal,
+        sweep: &sweep,
+        summary_path: &summary_path,
+        summary_jsonl: &summary_jsonl,
+        details_path: sensitivity_args.details.then_some(details_path.as_path()),
+        details_jsonl: details_jsonl.as_deref(),
+    });
+    write_file(&manifest_path, &manifest_json)?;
+
+    print_sensitivity_stdout(
+        &sensitivity_args,
+        &sweep,
+        &summary_path,
+        sensitivity_args.details.then_some(details_path.as_path()),
+        &manifest_path,
+    );
+
+    Ok(())
+}
+
+fn run_sensitivity_with_signal(
+    signal: SignalChoice,
+    events: &[Event],
+    policies: &[PolicyPoint],
+) -> Result<SensitivitySweep, asof_causality_core::SensitivityError> {
+    match signal {
+        SignalChoice::LastFeatureSentiment => {
+            run_sensitivity_sweep(events, policies, LastFeatureSentimentSignal)
+        }
+        SignalChoice::WindowedFeatureSentiment => {
+            run_sensitivity_sweep(events, policies, WindowedFeatureSentimentSignal::default())
+        }
+        SignalChoice::WindowedZScore => {
+            run_sensitivity_sweep(events, policies, WindowedZScoreSignal::default())
+        }
+    }
+}
+
+fn parse_sensitivity_args(args: &[String]) -> Result<SensitivityArgs, Box<dyn Error>> {
+    let mut events_path = "examples/late-arrival.pipe".to_string();
+    let mut signal = SignalChoice::default();
+    let mut out_dir = None;
+    let mut details = false;
+    let mut policies = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--signal" => {
+                signal = SignalChoice::parse(required_arg(args, index, "--signal")?)?;
+                index += 2;
+            }
+            "--out" => {
+                out_dir = Some(PathBuf::from(required_arg(args, index, "--out")?));
+                index += 2;
+            }
+            "--details" => {
+                details = true;
+                index += 1;
+            }
+            "--observed-time-leaky" => {
+                policies.push(PolicyPoint::observed_time_leaky());
+                index += 1;
+            }
+            "--shift-features" => {
+                let value = required_arg(args, index, "--shift-features")?;
+                let shift = parse_integer_shift(value)?;
+                policies.push(PolicyPoint::shift_features(
+                    shift_features_policy_name(shift),
+                    shift,
+                ));
+                index += 2;
+            }
+            value if value.starts_with("--") => {
+                return Err(format!("unknown sensitivity argument: {value}").into());
+            }
+            value => {
+                events_path = value.to_string();
+                index += 1;
+            }
+        }
+    }
+
+    let Some(out_dir) = out_dir else {
+        return Err("sensitivity requires --out DIR".into());
+    };
+    if policies.is_empty() {
+        return Err("sensitivity requires at least one comparison policy".into());
+    }
+
+    Ok(SensitivityArgs {
+        events_path,
+        signal,
+        out_dir,
+        details,
+        policies,
+    })
+}
+
+fn parse_integer_shift(value: &str) -> Result<i64, Box<dyn Error>> {
+    if value
+        .chars()
+        .any(|character| character.is_ascii_alphabetic())
+    {
+        return Err(
+            "typed duration shifts like -1d are deferred in sensitivity v1; use an integer offset"
+                .into(),
+        );
+    }
+    Ok(value.parse()?)
+}
+
+fn shift_features_policy_name(shift: i64) -> String {
+    match shift.cmp(&0) {
+        std::cmp::Ordering::Less => format!("shift_features_minus_{}", shift.unsigned_abs()),
+        std::cmp::Ordering::Equal => "shift_features_0".to_string(),
+        std::cmp::Ordering::Greater => format!("shift_features_plus_{shift}"),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -933,6 +1104,270 @@ fn summarize_audit(
         extra_stored_predictions,
         outcomes_attached,
     }
+}
+
+struct SensitivityManifestInputs<'a> {
+    events_path: &'a str,
+    fixture_input: &'a str,
+    signal: SignalChoice,
+    sweep: &'a SensitivitySweep,
+    summary_path: &'a Path,
+    summary_jsonl: &'a str,
+    details_path: Option<&'a Path>,
+    details_jsonl: Option<&'a str>,
+}
+
+fn format_sensitivity_summary_jsonl(signal: SignalChoice, sweep: &SensitivitySweep) -> String {
+    let mut text = String::new();
+    let baseline_row = sensitivity_summary_json(signal, None, &sweep.baseline, None);
+    let _ = writeln!(text, "{baseline_row}");
+
+    for result in &sweep.results {
+        let row = sensitivity_summary_json(
+            signal,
+            Some(&sweep.baseline.policy.name),
+            &result.run,
+            Some(result),
+        );
+        let _ = writeln!(text, "{row}");
+    }
+
+    text
+}
+
+fn sensitivity_summary_json(
+    signal: SignalChoice,
+    vs_baseline: Option<&str>,
+    run: &PolicyRun,
+    result: Option<&SensitivityPolicyResult>,
+) -> String {
+    let (
+        predictions,
+        predictions_with_signal_change,
+        predictions_with_recipe_change,
+        predictions_with_new_inputs,
+        new_input_uses,
+        unique_new_inputs,
+        flip_rate,
+    ) = result
+        .map(|result| {
+            (
+                result.summary.predictions,
+                result.summary.predictions_with_signal_change,
+                result.summary.predictions_with_recipe_change,
+                result.summary.predictions_with_new_inputs,
+                result.summary.new_input_uses,
+                result.summary.unique_new_inputs,
+                result.summary.flip_rate,
+            )
+        })
+        .unwrap_or_else(|| (run.output.predictions.records().len(), 0, 0, 0, 0, 0, 0.0));
+    let row = json!({
+        "schema_version": 1,
+        "policy": policy_json(&run.policy),
+        "policy_name": run.policy.name.as_str(),
+        "category": run.policy.category.as_str(),
+        "vs_baseline": vs_baseline,
+        "events_transformed": run.events_transformed,
+        "predictions": predictions,
+        "predictions_with_signal_change": predictions_with_signal_change,
+        "predictions_with_recipe_change": predictions_with_recipe_change,
+        "feature_recipe_hashes_changed": predictions_with_recipe_change,
+        "predictions_with_new_inputs": predictions_with_new_inputs,
+        "new_inputs_admitted": new_input_uses,
+        "new_input_uses": new_input_uses,
+        "unique_new_inputs": unique_new_inputs,
+        "flip_rate": flip_rate,
+        "transcript_hash": run.output.predictions.transcript_digest(),
+        "transformed_fixture_hash": run.transformed_fixture_hash.as_str(),
+        "signal_name": signal.as_str(),
+    });
+
+    serde_json::to_string(&row).expect("sensitivity summary should serialize")
+}
+
+fn format_sensitivity_details_jsonl(sweep: &SensitivitySweep) -> String {
+    let mut text = String::new();
+    for result in &sweep.results {
+        for detail in &result.details {
+            let row = sensitivity_detail_json(sweep, result, detail);
+            let _ = writeln!(text, "{row}");
+        }
+    }
+    text
+}
+
+fn sensitivity_detail_json(
+    sweep: &SensitivitySweep,
+    result: &SensitivityPolicyResult,
+    detail: &asof_causality_core::SensitivityDetail,
+) -> String {
+    let baseline_output = &sweep.baseline.output;
+    let comparison_output = &result.run.output;
+    let row = json!({
+        "schema_version": 1,
+        "policy_name": result.run.policy.name.as_str(),
+        "category": result.run.policy.category.as_str(),
+        "prediction_event_id": baseline_output.predictions.event_label(detail.prediction_event_key),
+        "baseline_prediction_replay_key": baseline_output.predictions.format_replay_key(
+            detail.baseline.prediction_time,
+            detail.baseline.prediction_sequence,
+            detail.baseline.prediction_event_key,
+        ),
+        "comparison_prediction_replay_key": comparison_output.predictions.format_replay_key(
+            detail.comparison.prediction_time,
+            detail.comparison.prediction_sequence,
+            detail.comparison.prediction_event_key,
+        ),
+        "prediction_time_baseline": detail.baseline.prediction_time,
+        "prediction_time_comparison": detail.comparison.prediction_time,
+        "baseline": prediction_record_sensitivity_json(baseline_output, &detail.baseline),
+        "comparison": prediction_record_sensitivity_json(comparison_output, &detail.comparison),
+        "new_inputs_admitted": detail
+            .new_inputs_admitted
+            .iter()
+            .map(|event_key| comparison_output.predictions.event_label(*event_key))
+            .collect::<Vec<_>>(),
+        "signal_value_changed": detail.signal_value_changed,
+        "feature_recipe_hash_changed": detail.feature_recipe_hash_changed,
+    });
+
+    serde_json::to_string(&row).expect("sensitivity detail should serialize")
+}
+
+fn prediction_record_sensitivity_json(
+    output: &ReplayOutput,
+    record: &asof_causality_core::PredictionRecord,
+) -> Value {
+    json!({
+        "signal_value": record.signal_value,
+        "input_event_ids_used": output.predictions.input_event_labels(record.input_event_ids_used),
+        "feature_recipe_hash": record.feature_recipe_hash_hex(),
+    })
+}
+
+fn format_sensitivity_manifest_json(inputs: SensitivityManifestInputs<'_>) -> String {
+    let invocation_args = env::args().collect::<Vec<_>>();
+    let details_path = inputs.details_path.map(|path| path.display().to_string());
+    let details_hash = inputs
+        .details_jsonl
+        .map(|details| asof_causality_core::blake3_hex(details.as_bytes()));
+    let policies = std::iter::once(&inputs.sweep.baseline)
+        .chain(inputs.sweep.results.iter().map(|result| &result.run))
+        .map(policy_run_manifest_json)
+        .collect::<Vec<_>>();
+    let manifest = json!({
+        "schema_version": "sensitivity-v1",
+        "tool": "asof-causality",
+        "hash_algorithm": "blake3",
+        "run_started_utc": system_time_to_utc_iso8601(SystemTime::now()),
+        "invocation": shell_join(&invocation_args),
+        "invocation_args": invocation_args,
+        "source_commit": current_git_commit(),
+        "workspace_dirty": current_workspace_dirty(),
+        "rust_toolchain": current_rustc_version(),
+        "fixture_path": inputs.events_path,
+        "fixture_hash": asof_causality_core::blake3_hex(inputs.fixture_input.as_bytes()),
+        "signal": inputs.signal.as_str(),
+        "signal_config_descriptor": inputs.signal.config_descriptor(),
+        "baseline_policy": inputs.sweep.baseline.policy.name.as_str(),
+        "baseline_transcript_hash": inputs.sweep.baseline.output.predictions.transcript_digest(),
+        "policies": policies,
+        "summary_path": inputs.summary_path.display().to_string(),
+        "summary_hash": asof_causality_core::blake3_hex(inputs.summary_jsonl.as_bytes()),
+        "details_path": details_path,
+        "details_hash": details_hash,
+    });
+
+    format!(
+        "{}\n",
+        serde_json::to_string_pretty(&manifest).expect("sensitivity manifest should serialize")
+    )
+}
+
+fn policy_run_manifest_json(run: &PolicyRun) -> Value {
+    json!({
+        "name": run.policy.name.as_str(),
+        "category": run.policy.category.as_str(),
+        "descriptor": policy_json(&run.policy),
+        "events_transformed": run.events_transformed,
+        "transformed_fixture_hash": run.transformed_fixture_hash.as_str(),
+        "transcript_hash": run.output.predictions.transcript_digest(),
+    })
+}
+
+fn policy_json(policy: &PolicyPoint) -> Value {
+    match &policy.kind {
+        PolicyKind::Identity => json!({
+            "name": policy.name.as_str(),
+            "category": policy.category.as_str(),
+            "kind": "identity",
+        }),
+        PolicyKind::ReceivedTimeShift {
+            roles_affected,
+            shift,
+        } => json!({
+            "name": policy.name.as_str(),
+            "category": policy.category.as_str(),
+            "kind": "received_time_shift",
+            "roles_affected": roles_affected
+                .iter()
+                .map(|role| role.as_str())
+                .collect::<Vec<_>>(),
+            "shift": shift,
+            "preserve": ["event_id", "observed_time", "sequence", "symbol", "payload"],
+        }),
+        PolicyKind::ReplayOrderOverride { order } => json!({
+            "name": policy.name.as_str(),
+            "category": policy.category.as_str(),
+            "kind": "replay_order_override",
+            "order": replay_order_name(*order),
+        }),
+    }
+}
+
+fn replay_order_name(order: ReplayOrder) -> &'static str {
+    match order {
+        ReplayOrder::ReceivedTime => "received_time",
+        ReplayOrder::ObservedTimeLeaky => "observed_time",
+    }
+}
+
+fn print_sensitivity_stdout(
+    args: &SensitivityArgs,
+    sweep: &SensitivitySweep,
+    summary_path: &Path,
+    details_path: Option<&Path>,
+    manifest_path: &Path,
+) {
+    println!("asof-causality sensitivity");
+    println!("  fixture   {}", args.events_path);
+    println!("  signal    {}", args.signal.as_str());
+    println!("  baseline  {}", sweep.baseline.policy.name);
+    println!(
+        "  transcript_hash  {}",
+        sweep.baseline.output.predictions.transcript_digest()
+    );
+    println!();
+    println!("POLICIES");
+    for result in &sweep.results {
+        println!(
+            "  [{}] {}  changed={}/{} flip_rate={:.4} new_inputs={}",
+            result.run.policy.category.as_str(),
+            result.run.policy.name,
+            result.summary.predictions_with_signal_change,
+            result.summary.predictions,
+            result.summary.flip_rate,
+            result.summary.new_input_uses
+        );
+    }
+    println!();
+    println!("ARTIFACTS  {}", args.out_dir.display());
+    println!("  summary   {}", summary_path.display());
+    if let Some(details_path) = details_path {
+        println!("  details   {}", details_path.display());
+    }
+    println!("  manifest  {}", manifest_path.display());
 }
 
 fn load_stored_predictions(
@@ -1995,6 +2430,7 @@ fn print_help() {
     println!("  asof-causality negative-control [path] [--signal name]");
     println!("  asof-causality generate [--scenario late-heavy] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out path]");
     println!("  asof-causality run-suite [--scenario late-heavy] [--signal name] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out dir]");
+    println!("  asof-causality sensitivity [path] [--signal name] --shift-features OFFSET [--observed-time-leaky] [--details] --out dir");
     println!("  asof-causality bench [--events N] [--symbols N]");
     println!();
     println!("signals:");
@@ -2160,6 +2596,57 @@ mod tests {
             parsed.outcomes_path,
             Some(PathBuf::from("examples/alfred-dgs10-sp500.pipe"))
         );
+    }
+
+    #[test]
+    fn parses_sensitivity_args() {
+        let parsed = parse_sensitivity_args(&args(&[
+            "examples/alfred-dgs10-sp500.pipe",
+            "--signal",
+            "windowed-zscore",
+            "--shift-features",
+            "-10000",
+            "--observed-time-leaky",
+            "--details",
+            "--out",
+            "runs/sensitivity",
+        ]))
+        .unwrap();
+
+        assert_eq!(parsed.events_path, "examples/alfred-dgs10-sp500.pipe");
+        assert_eq!(parsed.signal, SignalChoice::WindowedZScore);
+        assert_eq!(parsed.out_dir, PathBuf::from("runs/sensitivity"));
+        assert!(parsed.details);
+        assert_eq!(parsed.policies.len(), 2);
+        assert_eq!(parsed.policies[0].name, "shift_features_minus_10000");
+        assert_eq!(parsed.policies[1].name, "observed_time_leaky");
+    }
+
+    #[test]
+    fn sensitivity_rejects_typed_duration_shifts() {
+        let error = parse_sensitivity_args(&args(&[
+            "--shift-features",
+            "-1d",
+            "--out",
+            "runs/sensitivity",
+        ]))
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("typed duration shifts"));
+    }
+
+    #[test]
+    fn sensitivity_requires_out_and_policy() {
+        let missing_out = parse_sensitivity_args(&args(&["--shift-features", "-10"]))
+            .unwrap_err()
+            .to_string();
+        assert!(missing_out.contains("--out"));
+
+        let missing_policy = parse_sensitivity_args(&args(&["--out", "runs/sensitivity"]))
+            .unwrap_err()
+            .to_string();
+        assert!(missing_policy.contains("comparison policy"));
     }
 
     #[test]

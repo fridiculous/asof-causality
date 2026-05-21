@@ -5,6 +5,7 @@ pub mod generator;
 pub mod ids;
 pub mod log;
 pub mod replay;
+pub mod sensitivity;
 pub mod signal;
 pub mod state;
 
@@ -22,6 +23,11 @@ pub use log::{
 };
 pub use replay::{
     parse_pipe_events, ReplayEngine, ReplayError, ReplayOptions, ReplayOrder, ReplayOutput,
+};
+pub use sensitivity::{
+    canonical_event_stream_hash, run_sensitivity_sweep, transform_events_for_policy,
+    PolicyCategory, PolicyKind, PolicyPoint, PolicyRun, SensitivityDetail, SensitivityError,
+    SensitivityPolicyResult, SensitivitySummary, SensitivitySweep,
 };
 pub use signal::{
     LastFeatureSentimentSignal, Signal, WindowedFeatureSentimentSignal, WindowedZScoreSignal,
