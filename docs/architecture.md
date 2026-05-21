@@ -11,6 +11,18 @@ generator or pipe fixture
   -> hash deterministic transcript
 ```
 
+```mermaid
+flowchart LR
+  CLI["asof-cli<br/>commands + artifacts"] --> Core["asof-causality<br/>replay + checks"]
+  Signals["asof-signals<br/>Signal registry + built-ins"] --> Core
+
+  Core --> View["AsOfView<br/>opaque signal API"]
+  View --> Signals
+
+  Core --> Records["PredictionRecord<br/>value + provenance"]
+  Records --> Schemas["schemas/<br/>audit + manifest contracts"]
+```
+
 ## Core Concepts
 
 | Concept | Responsibility |
