@@ -109,6 +109,7 @@ cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
+make verify-real-data-demo
 cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
@@ -117,8 +118,9 @@ cargo test
 
 This repository has no runtime network dependency. Most fixtures are synthetic;
 `examples/alfred-dgs10-sp500.pipe` is a small checked-in real-data fixture
-derived from public ALFRED/FRED CSV downloads. It does not require an API key,
-an LLM key, CUDA, or a database.
+derived from public ALFRED/FRED CSV downloads. `make verify-real-data-demo`
+rebuilds that fixture from the source CSVs and checks it byte-for-byte. It does
+not require an API key, an LLM key, CUDA, or a database.
 
 ## Event Format
 

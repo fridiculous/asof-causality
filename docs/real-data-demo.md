@@ -16,6 +16,11 @@ the ALFRED vintage stream at prediction time.
 
 The checked-in fixture is
 [`examples/alfred-dgs10-sp500.pipe`](../examples/alfred-dgs10-sp500.pipe).
+It can be regenerated from the public source CSVs with:
+
+```sh
+make verify-real-data-demo
+```
 
 ## Mapping
 
@@ -47,6 +52,7 @@ research environment.
 ## Commands
 
 ```sh
+python3 scripts/rebuild-alfred-demo.py --check
 cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- replay examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
