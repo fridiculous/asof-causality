@@ -42,7 +42,9 @@ match the stored prediction at `(symbol, prediction_replay_key)` and, by
 default, must match `feature_recipe_hash`. Explicit outcomes may be attached to
 audit records as values, but scoring remains downstream. The JSONL surface is
 the lean machine-readable audit contract; richer adapters such as Parquet are
-downstream exports.
+downstream exports. A Parquet adapter succeeds only if it is a typed, columnar
+audit contract with explicit schema metadata and deliberately chosen
+compression, not just JSONL reshaped into a columnar container.
 
 `negative-control` succeeds as a demonstration when the received-time engine emits
 zero impossible predictions and the observed-time baseline emits at least one on
