@@ -298,8 +298,13 @@ fn sensitivity(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     let summary_jsonl = format_sensitivity_summary_jsonl(sensitivity_args.signal, &sweep);
     write_file(&summary_path, &summary_jsonl)?;
-    let sensitivity_curve_svg = format_sensitivity_curve_svg(&sweep);
-    write_file(&sensitivity_curve_svg_path, &sensitivity_curve_svg)?;
+    let sensitivity_curve_svg = if sweep_has_sensitivity_curve_points(&sweep) {
+        let svg = format_sensitivity_curve_svg(&sweep);
+        write_file(&sensitivity_curve_svg_path, &svg)?;
+        Some(svg)
+    } else {
+        None
+    };
     let flip_rate_svg = format_sensitivity_flip_rate_svg(&sweep);
     write_file(&flip_rate_svg_path, &flip_rate_svg)?;
     let input_change_svg = format_sensitivity_input_change_svg(&sweep);
@@ -327,8 +332,10 @@ fn sensitivity(args: &[String]) -> Result<(), Box<dyn Error>> {
         sweep: &sweep,
         summary_path: &summary_path,
         summary_jsonl: &summary_jsonl,
-        sensitivity_curve_svg_path: &sensitivity_curve_svg_path,
-        sensitivity_curve_svg: &sensitivity_curve_svg,
+        sensitivity_curve_svg_path: sensitivity_curve_svg
+            .as_ref()
+            .map(|_| sensitivity_curve_svg_path.as_path()),
+        sensitivity_curve_svg: sensitivity_curve_svg.as_deref(),
         flip_rate_svg_path: &flip_rate_svg_path,
         flip_rate_svg: &flip_rate_svg,
         input_change_svg_path: &input_change_svg_path,
@@ -347,7 +354,9 @@ fn sensitivity(args: &[String]) -> Result<(), Box<dyn Error>> {
         &sweep,
         SensitivityArtifactPaths {
             summary: &summary_path,
-            sensitivity_curve_svg: &sensitivity_curve_svg_path,
+            sensitivity_curve_svg: sensitivity_curve_svg
+                .as_ref()
+                .map(|_| sensitivity_curve_svg_path.as_path()),
             flip_rate_svg: &flip_rate_svg_path,
             input_change_svg: &input_change_svg_path,
             late_arrival_impact_svg: late_arrival_impact_svg
@@ -1439,8 +1448,8 @@ struct SensitivityManifestInputs<'a> {
     sweep: &'a SensitivitySweep,
     summary_path: &'a Path,
     summary_jsonl: &'a str,
-    sensitivity_curve_svg_path: &'a Path,
-    sensitivity_curve_svg: &'a str,
+    sensitivity_curve_svg_path: Option<&'a Path>,
+    sensitivity_curve_svg: Option<&'a str>,
     flip_rate_svg_path: &'a Path,
     flip_rate_svg: &'a str,
     input_change_svg_path: &'a Path,
@@ -1453,7 +1462,7 @@ struct SensitivityManifestInputs<'a> {
 
 struct SensitivityArtifactPaths<'a> {
     summary: &'a Path,
-    sensitivity_curve_svg: &'a Path,
+    sensitivity_curve_svg: Option<&'a Path>,
     flip_rate_svg: &'a Path,
     input_change_svg: &'a Path,
     late_arrival_impact_svg: Option<&'a Path>,
@@ -1614,6 +1623,15 @@ fn format_late_arrival_impact_svg(sweep: &SensitivitySweep) -> String {
         &rows,
         1.0,
     )
+}
+
+fn sweep_has_sensitivity_curve_points(sweep: &SensitivitySweep) -> bool {
+    sweep.results.iter().any(|result| {
+        matches!(
+            result.run.policy.kind,
+            PolicyKind::ReceivedTimeLagFraction { .. } | PolicyKind::ReceivedTimeShift { .. }
+        )
+    })
 }
 
 fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
@@ -1890,21 +1908,6 @@ fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
         );
     }
 
-    if points.len() == 1 {
-        let empty_message = if uses_lag_fraction {
-            "No lookahead percentage policies were provided; only the strict baseline can be plotted on this axis."
-        } else {
-            "No numeric shift policies were provided; only the strict baseline can be plotted on this axis."
-        };
-        let _ = writeln!(
-            svg,
-            r#"<text x="{}" y="{}" class="note" text-anchor="middle">{}</text>"#,
-            left + plot_width / 2.0,
-            top + plot_height / 2.0,
-            xml_escape(empty_message)
-        );
-    }
-
     svg.push_str("</svg>\n");
     svg
 }
@@ -2176,6 +2179,12 @@ fn format_sensitivity_manifest_json(inputs: SensitivityManifestInputs<'_>) -> St
     let details_hash = inputs
         .details_jsonl
         .map(|details| asof_causality_core::blake3_hex(details.as_bytes()));
+    let sensitivity_curve_svg_path = inputs
+        .sensitivity_curve_svg_path
+        .map(|path| path.display().to_string());
+    let sensitivity_curve_svg_hash = inputs
+        .sensitivity_curve_svg
+        .map(|svg| asof_causality_core::blake3_hex(svg.as_bytes()));
     let late_arrival_impact_svg_path = inputs
         .late_arrival_impact_svg_path
         .map(|path| path.display().to_string());
@@ -2207,8 +2216,8 @@ fn format_sensitivity_manifest_json(inputs: SensitivityManifestInputs<'_>) -> St
         "policies": policies,
         "summary_path": inputs.summary_path.display().to_string(),
         "summary_hash": asof_causality_core::blake3_hex(inputs.summary_jsonl.as_bytes()),
-        "sensitivity_curve_svg_path": inputs.sensitivity_curve_svg_path.display().to_string(),
-        "sensitivity_curve_svg_hash": asof_causality_core::blake3_hex(inputs.sensitivity_curve_svg.as_bytes()),
+        "sensitivity_curve_svg_path": sensitivity_curve_svg_path,
+        "sensitivity_curve_svg_hash": sensitivity_curve_svg_hash,
         "flip_rate_svg_path": inputs.flip_rate_svg_path.display().to_string(),
         "flip_rate_svg_hash": asof_causality_core::blake3_hex(inputs.flip_rate_svg.as_bytes()),
         "input_change_svg_path": inputs.input_change_svg_path.display().to_string(),
@@ -2348,7 +2357,9 @@ fn print_sensitivity_stdout(
     println!();
     println!("ARTIFACTS  {}", args.out_dir.display());
     println!("  summary    {}", artifacts.summary.display());
-    println!("  curve svg  {}", artifacts.sensitivity_curve_svg.display());
+    if let Some(sensitivity_curve_svg) = artifacts.sensitivity_curve_svg {
+        println!("  curve svg  {}", sensitivity_curve_svg.display());
+    }
     println!("  flip svg   {}", artifacts.flip_rate_svg.display());
     println!("  input svg  {}", artifacts.input_change_svg.display());
     if let Some(late_arrival_impact_svg) = artifacts.late_arrival_impact_svg {

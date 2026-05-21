@@ -266,12 +266,14 @@ fn sensitivity_cli_accepts_late_arrival_scenario() {
     let summary_path = out_dir.join("summary.jsonl");
     let manifest_path = out_dir.join("manifest.json");
     let late_svg_path = out_dir.join("late-arrival-impact.svg");
+    let curve_path = out_dir.join("sensitivity-curve.svg");
     let rows: Vec<Value> = fs::read_to_string(&summary_path)
         .expect("summary should be readable")
         .lines()
         .map(|line| serde_json::from_str(line).expect("summary row should parse"))
         .collect();
     assert!(late_svg_path.is_file());
+    assert!(!curve_path.exists());
     assert_eq!(rows[0]["policy_name"], "strict_received_time");
     assert!(rows
         .iter()
@@ -287,6 +289,8 @@ fn sensitivity_cli_accepts_late_arrival_scenario() {
         &fs::read_to_string(&manifest_path).expect("manifest should be readable"),
     )
     .expect("manifest should parse");
+    assert_eq!(manifest["sensitivity_curve_svg_path"], Value::Null);
+    assert_eq!(manifest["sensitivity_curve_svg_hash"], Value::Null);
     assert_eq!(
         manifest["late_arrival_impact_svg_path"],
         late_svg_path.display().to_string()

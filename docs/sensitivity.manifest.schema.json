@@ -112,11 +112,18 @@
       "$ref": "#/$defs/blake3"
     },
     "sensitivity_curve_svg_path": {
-      "type": "string",
+      "type": ["string", "null"],
       "minLength": 1
     },
     "sensitivity_curve_svg_hash": {
-      "$ref": "#/$defs/blake3"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/blake3"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "flip_rate_svg_path": {
       "type": "string",
