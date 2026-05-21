@@ -417,12 +417,15 @@ fn parse_sensitivity_args(args: &[String]) -> Result<SensitivityArgs, Box<dyn Er
                 policies.push(PolicyPoint::observed_time_leaky());
                 index += 1;
             }
-            "--lookahead-range" | "--leakage-sweep" => {
-                let flag = args[index].as_str();
+            "--lookahead-range" => {
                 if lookahead_range.is_some() {
                     return Err("sensitivity accepts only one lookahead range".into());
                 }
-                lookahead_range = Some(parse_lookahead_range(required_arg(args, index, flag)?)?);
+                lookahead_range = Some(parse_lookahead_range(required_arg(
+                    args,
+                    index,
+                    "--lookahead-range",
+                )?)?);
                 index += 2;
             }
             "--late-arrival-buckets" | "--buckets" => {
