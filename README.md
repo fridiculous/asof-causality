@@ -111,7 +111,7 @@ cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --shift-features -5000 --shift-features -10000 --observed-time-leaky --details --out runs/alfred-sensitivity
+cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --leakage-sweep 0..100 --steps 4 --observed-time-leaky --details --out runs/alfred-sensitivity
 make verify-real-data-demo
 cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
@@ -271,21 +271,22 @@ next ALFRED vintage. See
 [docs/real-data-demo.md](docs/real-data-demo.md) for source URLs and mapping.
 
 ```sh
-cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --shift-features -5000 --shift-features -10000 --observed-time-leaky --details --out runs/alfred-sensitivity
+cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --leakage-sweep 0..100 --steps 4 --observed-time-leaky --details --out runs/alfred-sensitivity
 ```
 
 Runs a stability sweep outside the strict kernel: the baseline uses received
-time, the synthetic stress policy shifts feature receipt times by a raw integer
-offset in fixture-native units, and the observed-time endpoint measures the
-naive lookahead failure mode. The command writes `summary.jsonl`, a primary
-`sensitivity-curve.svg` with baseline x=0 and each sampled shift on the x-axis,
-secondary static SVG charts (`flip-rate.svg` and `input-change.svg`), optional
-`details.jsonl`, and `manifest.json` with policy descriptors and transcript
-hashes. V1 accepts integer shifts only; typed durations such as `-1d` are
+time, the normalized leakage sweep removes 0% through 100% of each affected
+feature's own `(received_time - observed_time)` lag, and the observed-time
+policy is a reference failure mode. The command writes `summary.jsonl`, a
+primary `sensitivity-curve.svg` with baseline x=0 and sampled leakage
+percentages on the x-axis, secondary static SVG charts (`flip-rate.svg` and
+`input-change.svg`), optional `details.jsonl`, and `manifest.json` with policy
+descriptors and transcript hashes. V1 still accepts raw `--shift-features`
+integer offsets as an expert mode, but typed durations such as `-1d` are
 deferred until timestamp semantics are first-class. Sensitivity descriptors and
-the manifest record `time_axis: "fixture_native_integer"` /
-`calendar_aware: false`; on `YYYYMMDDHHMM` fixtures like ALFRED, these shifts
-are synthetic raw-integer stresses, not calendar durations.
+the manifest record `calendar_aware: false`; on `YYYYMMDDHHMM` fixtures like
+ALFRED, intermediate leakage percentages are synthetic ordered-integer stresses,
+not calendar durations.
 
 ```sh
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024

@@ -146,14 +146,87 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
         fs::read_to_string(&sensitivity_curve_svg_path).expect("curve svg should read");
     assert!(sensitivity_curve_svg.contains("<svg"));
     assert!(sensitivity_curve_svg.contains("Sensitivity Curve"));
-    assert!(sensitivity_curve_svg.contains("sampled offsets"));
+    assert!(sensitivity_curve_svg.contains("sampled x-values"));
     assert!(sensitivity_curve_svg.contains("baseline"));
-    assert!(sensitivity_curve_svg.contains("observed-time endpoint"));
+    assert!(sensitivity_curve_svg.contains("observed-time policy reference"));
 
     let flip_rate_svg = fs::read_to_string(&flip_rate_svg_path).expect("flip svg should read");
     assert!(flip_rate_svg.contains("<svg"));
     assert!(flip_rate_svg.contains("Sensitivity Flip Rate"));
     assert!(flip_rate_svg.contains("observed_time_leaky"));
+
+    let _ = fs::remove_dir_all(out_dir);
+}
+
+#[test]
+fn sensitivity_cli_accepts_normalized_leakage_sweep() {
+    let bin = env!("CARGO_BIN_EXE_asof-causality");
+    let repo_root = repo_root();
+    let events = repo_root.join("examples/late-arrival.pipe");
+    let out_dir =
+        std::env::temp_dir().join(format!("asof-sensitivity-leakage-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out_dir);
+
+    let output = Command::new(bin)
+        .args([
+            "sensitivity",
+            events.to_str().unwrap(),
+            "--signal",
+            "last-feature-sentiment",
+            "--leakage-sweep",
+            "0..100",
+            "--steps",
+            "4",
+            "--observed-time-leaky",
+            "--out",
+            out_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("sensitivity command should run");
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let summary_path = out_dir.join("summary.jsonl");
+    let manifest_path = out_dir.join("manifest.json");
+    let curve_path = out_dir.join("sensitivity-curve.svg");
+    let summary_schema = repo_root.join("docs/sensitivity.summary.schema.json");
+    let rows: Vec<Value> = fs::read_to_string(&summary_path)
+        .expect("summary should be readable")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("summary row should parse"))
+        .collect();
+
+    assert_eq!(rows.len(), 6);
+    assert_eq!(rows[0]["policy_name"], "strict_received_time");
+    assert_eq!(rows[1]["policy_name"], "leakage_25pct");
+    assert_eq!(rows[4]["policy_name"], "leakage_100pct");
+    assert_eq!(rows[1]["policy"]["kind"], "received_time_lag_fraction");
+    assert_eq!(rows[1]["policy"]["lag_fraction_bps"], 2500);
+    assert_eq!(
+        rows[1]["policy"]["shift_units"],
+        "percent_of_each_event_lag"
+    );
+    assert_eq!(rows[1]["policy"]["bounded_by_observed_time"], true);
+    for row in &rows {
+        validate_json(&summary_schema, row);
+    }
+
+    let manifest: Value = serde_json::from_str(
+        &fs::read_to_string(&manifest_path).expect("manifest should be readable"),
+    )
+    .expect("manifest should parse");
+    validate_json(
+        &repo_root.join("docs/sensitivity.manifest.schema.json"),
+        &manifest,
+    );
+
+    let curve = fs::read_to_string(&curve_path).expect("curve should be readable");
+    assert!(curve.contains("feature publication lag removed (%)"));
+    assert!(curve.contains("100%"));
 
     let _ = fs::remove_dir_all(out_dir);
 }

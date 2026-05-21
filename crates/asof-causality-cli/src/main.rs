@@ -333,6 +333,8 @@ fn parse_sensitivity_args(args: &[String]) -> Result<SensitivityArgs, Box<dyn Er
     let mut out_dir = None;
     let mut details = false;
     let mut policies = Vec::new();
+    let mut leakage_sweep = None;
+    let mut leakage_steps = 20_usize;
     let mut index = 0;
 
     while index < args.len() {
@@ -353,6 +355,24 @@ fn parse_sensitivity_args(args: &[String]) -> Result<SensitivityArgs, Box<dyn Er
                 policies.push(PolicyPoint::observed_time_leaky());
                 index += 1;
             }
+            "--leakage-sweep" => {
+                if leakage_sweep.is_some() {
+                    return Err("sensitivity accepts only one --leakage-sweep".into());
+                }
+                leakage_sweep = Some(parse_leakage_sweep(required_arg(
+                    args,
+                    index,
+                    "--leakage-sweep",
+                )?)?);
+                index += 2;
+            }
+            "--steps" => {
+                leakage_steps = parse_arg(args, index, "--steps")?;
+                if leakage_steps == 0 {
+                    return Err("sensitivity --steps must be greater than zero".into());
+                }
+                index += 2;
+            }
             "--shift-features" => {
                 let value = required_arg(args, index, "--shift-features")?;
                 let shift = parse_integer_shift(value)?;
@@ -370,6 +390,17 @@ fn parse_sensitivity_args(args: &[String]) -> Result<SensitivityArgs, Box<dyn Er
                 index += 1;
             }
         }
+    }
+
+    if let Some(sweep) = leakage_sweep {
+        let generated_policies = leakage_sweep_policies(sweep, leakage_steps)?;
+        let insert_at = policies
+            .iter()
+            .position(|policy| policy.name == "observed_time_leaky")
+            .unwrap_or(policies.len());
+        policies.splice(insert_at..insert_at, generated_policies);
+    } else if args.iter().any(|arg| arg == "--steps") {
+        return Err("sensitivity --steps requires --leakage-sweep".into());
     }
 
     let Some(out_dir) = out_dir else {
@@ -399,6 +430,111 @@ fn parse_integer_shift(value: &str) -> Result<i64, Box<dyn Error>> {
         );
     }
     Ok(value.parse()?)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LeakageSweepSpec {
+    start_bps: u16,
+    end_bps: u16,
+}
+
+fn parse_leakage_sweep(value: &str) -> Result<LeakageSweepSpec, Box<dyn Error>> {
+    let (start, end) = value
+        .split_once("..=")
+        .or_else(|| value.split_once(".."))
+        .or_else(|| value.split_once(':'))
+        .ok_or("expected leakage sweep range like 0..100")?;
+    let start_bps = parse_percent_bps(start)?;
+    let end_bps = parse_percent_bps(end)?;
+    if start_bps > end_bps {
+        return Err("sensitivity --leakage-sweep start must be <= end".into());
+    }
+    Ok(LeakageSweepSpec { start_bps, end_bps })
+}
+
+fn parse_percent_bps(value: &str) -> Result<u16, Box<dyn Error>> {
+    let value = value.trim().trim_end_matches('%');
+    if value.is_empty() {
+        return Err("empty leakage percentage".into());
+    }
+    let (whole, fractional) = value.split_once('.').unwrap_or((value, ""));
+    if whole.is_empty() || !whole.chars().all(|character| character.is_ascii_digit()) {
+        return Err(format!("invalid leakage percentage: {value}").into());
+    }
+    if !fractional
+        .chars()
+        .all(|character| character.is_ascii_digit())
+    {
+        return Err(format!("invalid leakage percentage: {value}").into());
+    }
+
+    let whole: u16 = whole.parse()?;
+    if whole > 100 {
+        return Err("leakage percentage must be between 0 and 100".into());
+    }
+
+    let mut fractional_digits = fractional.chars().take(2).collect::<String>();
+    while fractional_digits.len() < 2 {
+        fractional_digits.push('0');
+    }
+    let fractional_bps = if fractional_digits.is_empty() {
+        0
+    } else {
+        fractional_digits.parse::<u16>()?
+    };
+    let bps = whole
+        .checked_mul(100)
+        .and_then(|value| value.checked_add(fractional_bps))
+        .ok_or("leakage percentage is out of range")?;
+    if bps > 10_000 {
+        return Err("leakage percentage must be between 0 and 100".into());
+    }
+    Ok(bps)
+}
+
+fn leakage_sweep_policies(
+    spec: LeakageSweepSpec,
+    steps: usize,
+) -> Result<Vec<PolicyPoint>, Box<dyn Error>> {
+    let mut percentages = Vec::new();
+    let delta = u128::from(spec.end_bps - spec.start_bps);
+    for step in 0..=steps {
+        let pct_bps = u128::from(spec.start_bps)
+            + ((delta * step as u128) + (steps as u128 / 2)) / steps as u128;
+        let pct_bps = pct_bps as u16;
+        if pct_bps == 0 {
+            continue;
+        }
+        if percentages.last().copied() != Some(pct_bps) {
+            percentages.push(pct_bps);
+        }
+    }
+    if percentages.is_empty() {
+        return Err("sensitivity --leakage-sweep produced no comparison policies".into());
+    }
+
+    Ok(percentages
+        .into_iter()
+        .map(|pct_bps| {
+            PolicyPoint::leak_feature_lag_fraction(leakage_sweep_policy_name(pct_bps), pct_bps)
+        })
+        .collect())
+}
+
+fn leakage_sweep_policy_name(pct_bps: u16) -> String {
+    format!("leakage_{}pct", format_percent_bps_for_name(pct_bps))
+}
+
+fn format_percent_bps_for_name(pct_bps: u16) -> String {
+    let whole = pct_bps / 100;
+    let fractional = pct_bps % 100;
+    if fractional == 0 {
+        whole.to_string()
+    } else if fractional % 10 == 0 {
+        format!("{}_{}", whole, fractional / 10)
+    } else {
+        format!("{}_{fractional:02}", whole)
+    }
 }
 
 fn shift_features_policy_name(shift: i64) -> String {
@@ -1272,6 +1408,12 @@ fn format_sensitivity_input_change_svg(sweep: &SensitivitySweep) -> String {
 }
 
 fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
+    let uses_lag_fraction = sweep.results.iter().any(|result| {
+        matches!(
+            result.run.policy.kind,
+            PolicyKind::ReceivedTimeLagFraction { .. }
+        )
+    });
     let mut points = Vec::new();
     points.push(SensitivityCurvePoint {
         label: sweep.baseline.policy.name.clone(),
@@ -1281,13 +1423,24 @@ fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
     });
 
     for result in &sweep.results {
-        if let PolicyKind::ReceivedTimeShift { shift, .. } = &result.run.policy.kind {
-            points.push(SensitivityCurvePoint {
-                label: result.run.policy.name.clone(),
-                category: result.run.policy.category.as_str().to_string(),
-                x: -(*shift as f64),
-                y: result.summary.flip_rate,
-            });
+        match &result.run.policy.kind {
+            PolicyKind::ReceivedTimeLagFraction { pct_bps, .. } => {
+                points.push(SensitivityCurvePoint {
+                    label: result.run.policy.name.clone(),
+                    category: result.run.policy.category.as_str().to_string(),
+                    x: f64::from(*pct_bps) / 100.0,
+                    y: result.summary.flip_rate,
+                });
+            }
+            PolicyKind::ReceivedTimeShift { shift, .. } if !uses_lag_fraction => {
+                points.push(SensitivityCurvePoint {
+                    label: result.run.policy.name.clone(),
+                    category: result.run.policy.category.as_str().to_string(),
+                    x: -(*shift as f64),
+                    y: result.summary.flip_rate,
+                });
+            }
+            _ => {}
         }
     }
 
@@ -1311,29 +1464,37 @@ fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
         .filter(|point| point.label != sweep.baseline.policy.name)
         .find(|point| point.y > 0.0);
 
-    let sampled_offsets = summarize_sampled_offsets(&points);
+    let sampled_offsets = summarize_sampled_offsets(&points, uses_lag_fraction);
     let first_effect_label = first_effect
         .map(|point| {
             format!(
                 "first sampled effect: x={} via {} at {}",
-                format_axis_number(point.x),
+                format_curve_x_value(point.x, uses_lag_fraction),
                 point.label,
                 format_percent(point.y)
             )
         })
-        .unwrap_or_else(|| "first sampled effect: not observed in numeric shift samples".into());
+        .unwrap_or_else(|| "first sampled effect: not observed in curve samples".into());
     let endpoint_label = leaky_endpoint
         .map(|result| {
             format!(
-                "{} endpoint: {} flip, {} new input uses",
+                "{} reference: {} flip, {} new input uses",
                 result.run.policy.name,
                 format_percent(result.summary.flip_rate),
                 result.summary.new_input_uses
             )
         })
-        .unwrap_or_else(|| "observed-time endpoint: not sampled".into());
-    let subtitle =
-        "x = lookahead stress (-received_time_shift) in fixture-native integer units; y = flip rate";
+        .unwrap_or_else(|| "observed-time policy reference: not sampled".into());
+    let subtitle = if uses_lag_fraction {
+        "x = percent of each feature lag removed; y = flip rate"
+    } else {
+        "x = lookahead stress (-received_time_shift) in fixture-native integer units; y = flip rate"
+    };
+    let x_axis_label = if uses_lag_fraction {
+        "feature publication lag removed (%)"
+    } else {
+        "lookahead stress (-shift, fixture-native units)"
+    };
 
     let width = 860_f64;
     let height = 520_f64;
@@ -1400,7 +1561,7 @@ fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
     );
     let _ = writeln!(
         svg,
-        r#"<text x="28" y="78" class="note">sampled offsets: {}; no interpolation between points</text>"#,
+        r#"<text x="28" y="78" class="note">sampled x-values: {}; no interpolation between points</text>"#,
         xml_escape(&sampled_offsets)
     );
     let _ = writeln!(
@@ -1444,7 +1605,7 @@ fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
             svg,
             r#"<text x="{x:.2}" y="{:.0}" class="tick" text-anchor="middle">{}</text>"#,
             top + plot_height + 22.0,
-            xml_escape(&format_axis_number(x_value))
+            xml_escape(&format_curve_x_value(x_value, uses_lag_fraction))
         );
     }
 
@@ -1460,9 +1621,10 @@ fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
     );
     let _ = writeln!(
         svg,
-        r#"<text x="{:.0}" y="{}" class="axis-label" text-anchor="middle">lookahead stress (-shift, fixture-native units)</text>"#,
+        r#"<text x="{:.0}" y="{}" class="axis-label" text-anchor="middle">{}</text>"#,
         left + plot_width / 2.0,
-        height - 26.0
+        height - 26.0,
+        xml_escape(x_axis_label)
     );
     let _ = writeln!(
         svg,
@@ -1479,7 +1641,7 @@ fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
         );
         let _ = writeln!(
             svg,
-            r#"<text x="{:.0}" y="{:.2}" class="point-label" text-anchor="start">observed-time endpoint</text>"#,
+            r#"<text x="{:.0}" y="{:.2}" class="point-label" text-anchor="start">observed-time policy reference</text>"#,
             left + 8.0,
             y - 8.0
         );
@@ -1503,7 +1665,7 @@ fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
         } else {
             format!(
                 "{} {}",
-                format_axis_number(point.x),
+                format_curve_x_value(point.x, uses_lag_fraction),
                 format_percent(point.y)
             )
         };
@@ -1520,11 +1682,17 @@ fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
     }
 
     if points.len() == 1 {
+        let empty_message = if uses_lag_fraction {
+            "No leakage percentage policies were provided; only the strict baseline can be plotted on this axis."
+        } else {
+            "No numeric shift policies were provided; only the strict baseline can be plotted on this axis."
+        };
         let _ = writeln!(
             svg,
-            r#"<text x="{}" y="{}" class="note" text-anchor="middle">No numeric shift policies were provided; only the strict baseline can be plotted on this axis.</text>"#,
+            r#"<text x="{}" y="{}" class="note" text-anchor="middle">{}</text>"#,
             left + plot_width / 2.0,
-            top + plot_height / 2.0
+            top + plot_height / 2.0,
+            xml_escape(empty_message)
         );
     }
 
@@ -1556,17 +1724,17 @@ fn nice_flip_axis_max(value: f64) -> f64 {
     }
 }
 
-fn summarize_sampled_offsets(points: &[SensitivityCurvePoint]) -> String {
+fn summarize_sampled_offsets(points: &[SensitivityCurvePoint], as_percent: bool) -> String {
     let mut labels = points
         .iter()
-        .map(|point| format_axis_number(point.x))
+        .map(|point| format_curve_x_value(point.x, as_percent))
         .collect::<Vec<_>>();
     labels.dedup();
     if labels.len() <= 8 {
         labels.join(", ")
     } else {
         format!(
-            "{} explicit offsets from {} to {}",
+            "{} explicit samples from {} to {}",
             labels.len(),
             labels.first().expect("offset labels should not be empty"),
             labels.last().expect("offset labels should not be empty")
@@ -1591,6 +1759,14 @@ fn format_axis_number(value: f64) -> String {
         format!("{:.0}", value)
     } else {
         format!("{value:.2}")
+    }
+}
+
+fn format_curve_x_value(value: f64, as_percent: bool) -> String {
+    if as_percent {
+        format!("{}%", format_axis_number(value))
+    } else {
+        format_axis_number(value)
     }
 }
 
@@ -1865,6 +2041,25 @@ fn policy_json(policy: &PolicyPoint) -> Value {
                 .map(|role| role.as_str())
                 .collect::<Vec<_>>(),
             "shift": shift,
+            "preserve": ["event_id", "observed_time", "sequence", "symbol", "payload"],
+        }),
+        PolicyKind::ReceivedTimeLagFraction {
+            roles_affected,
+            pct_bps,
+        } => json!({
+            "name": policy.name.as_str(),
+            "category": policy.category.as_str(),
+            "kind": "received_time_lag_fraction",
+            "time_axis": "event_lag_fraction_integer",
+            "shift_units": "percent_of_each_event_lag",
+            "calendar_aware": false,
+            "bounded_by_observed_time": true,
+            "roles_affected": roles_affected
+                .iter()
+                .map(|role| role.as_str())
+                .collect::<Vec<_>>(),
+            "lag_fraction_bps": pct_bps,
+            "lag_fraction_percent": f64::from(*pct_bps) / 100.0,
             "preserve": ["event_id", "observed_time", "sequence", "symbol", "payload"],
         }),
         PolicyKind::ReplayOrderOverride { order } => json!({
@@ -2981,7 +3176,7 @@ fn print_help() {
     println!("  asof-causality negative-control [path] [--signal name]");
     println!("  asof-causality generate [--scenario late-heavy] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out path]");
     println!("  asof-causality run-suite [--scenario late-heavy] [--signal name] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out dir]");
-    println!("  asof-causality sensitivity [path] [--signal name] --shift-features OFFSET [--observed-time-leaky] [--details] --out dir");
+    println!("  asof-causality sensitivity [path] [--signal name] (--shift-features OFFSET | --leakage-sweep 0..100 [--steps N]) [--observed-time-leaky] [--details] --out dir");
     println!("  asof-causality bench [--events N] [--symbols N]");
     println!();
     println!("signals:");
@@ -3174,6 +3369,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_normalized_leakage_sweep_args() {
+        let parsed = parse_sensitivity_args(&args(&[
+            "examples/late-arrival.pipe",
+            "--leakage-sweep",
+            "0..100",
+            "--steps",
+            "4",
+            "--out",
+            "runs/sensitivity",
+        ]))
+        .unwrap();
+
+        assert_eq!(parsed.policies.len(), 4);
+        assert_eq!(parsed.policies[0].name, "leakage_25pct");
+        assert_eq!(parsed.policies[3].name, "leakage_100pct");
+        assert!(matches!(
+            parsed.policies[0].kind,
+            PolicyKind::ReceivedTimeLagFraction { pct_bps: 2500, .. }
+        ));
+    }
+
+    #[test]
     fn sensitivity_rejects_typed_duration_shifts() {
         let error = parse_sensitivity_args(&args(&[
             "--shift-features",
@@ -3198,6 +3415,12 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(missing_policy.contains("comparison policy"));
+
+        let steps_without_sweep =
+            parse_sensitivity_args(&args(&["--steps", "4", "--out", "runs/sensitivity"]))
+                .unwrap_err()
+                .to_string();
+        assert!(steps_without_sweep.contains("--leakage-sweep"));
     }
 
     #[test]

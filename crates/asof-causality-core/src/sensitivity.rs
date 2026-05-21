@@ -30,6 +30,10 @@ pub enum PolicyKind {
         roles_affected: Vec<EventRole>,
         shift: i64,
     },
+    ReceivedTimeLagFraction {
+        roles_affected: Vec<EventRole>,
+        pct_bps: u16,
+    },
     ReplayOrderOverride {
         order: ReplayOrder,
     },
@@ -58,6 +62,17 @@ impl PolicyPoint {
             kind: PolicyKind::ReceivedTimeShift {
                 roles_affected: vec![EventRole::Feature, EventRole::FeatureCorrection],
                 shift,
+            },
+        }
+    }
+
+    pub fn leak_feature_lag_fraction(name: impl Into<String>, pct_bps: u16) -> Self {
+        Self {
+            name: name.into(),
+            category: PolicyCategory::SyntheticStress,
+            kind: PolicyKind::ReceivedTimeLagFraction {
+                roles_affected: vec![EventRole::Feature, EventRole::FeatureCorrection],
+                pct_bps: pct_bps.min(10_000),
             },
         }
     }
@@ -170,6 +185,31 @@ pub fn transform_events_for_policy(
 
             Ok((transformed, events_transformed, ReplayOrder::ReceivedTime))
         }
+        PolicyKind::ReceivedTimeLagFraction {
+            roles_affected,
+            pct_bps,
+        } => {
+            let mut transformed = Vec::with_capacity(events.len());
+            let mut events_transformed = 0;
+
+            for event in events {
+                let mut event = event.clone();
+                if roles_affected.contains(&event.role) {
+                    let shifted = leak_received_time_toward_observed_time(
+                        event.observed_time,
+                        event.received_time,
+                        *pct_bps,
+                    );
+                    if shifted != event.received_time {
+                        event.received_time = shifted;
+                        events_transformed += 1;
+                    }
+                }
+                transformed.push(event);
+            }
+
+            Ok((transformed, events_transformed, ReplayOrder::ReceivedTime))
+        }
     }
 }
 
@@ -227,6 +267,21 @@ fn shift_time(received_time: u64, shift: i64, policy_name: &str) -> Result<u64, 
         });
     }
     Ok(shifted as u64)
+}
+
+fn leak_received_time_toward_observed_time(
+    observed_time: u64,
+    received_time: u64,
+    pct_bps: u16,
+) -> u64 {
+    if received_time <= observed_time || pct_bps == 0 {
+        return received_time;
+    }
+
+    let bounded_pct_bps = u128::from(pct_bps.min(10_000));
+    let lag = u128::from(received_time - observed_time);
+    let leaked_lag = ((lag * bounded_pct_bps) + 5_000) / 10_000;
+    received_time - leaked_lag as u64
 }
 
 fn diff_against_baseline(
@@ -440,6 +495,45 @@ o1|130|130|4|outcome|XYZ|return_bps=1
             error,
             SensitivityError::TimestampShiftOutOfRange { .. }
         ));
+    }
+
+    #[test]
+    fn lag_fraction_moves_each_event_toward_its_own_observed_time() {
+        let events = parse_pipe_events(
+            "\
+f1|100|200|1|feature|XYZ|sentiment=positive
+f2|100|140|2|feature|XYZ|sentiment=negative
+p1|150|150|3|prediction|XYZ|
+",
+        )
+        .unwrap();
+        let policy = PolicyPoint::leak_feature_lag_fraction("leakage_50pct", 5_000);
+        let (transformed, events_transformed, order) =
+            transform_events_for_policy(&events, &policy).unwrap();
+
+        assert_eq!(order, ReplayOrder::ReceivedTime);
+        assert_eq!(events_transformed, 2);
+        assert_eq!(transformed[0].received_time, 150);
+        assert_eq!(transformed[1].received_time, 120);
+        assert_eq!(transformed[2].received_time, 150);
+    }
+
+    #[test]
+    fn full_lag_fraction_never_moves_before_observed_time() {
+        let events = parse_pipe_events(
+            "\
+f1|100|200|1|feature|XYZ|sentiment=positive
+f2|140|140|2|feature|XYZ|sentiment=negative
+",
+        )
+        .unwrap();
+        let policy = PolicyPoint::leak_feature_lag_fraction("leakage_100pct", 10_000);
+        let (transformed, events_transformed, _) =
+            transform_events_for_policy(&events, &policy).unwrap();
+
+        assert_eq!(events_transformed, 1);
+        assert_eq!(transformed[0].received_time, 100);
+        assert_eq!(transformed[1].received_time, 140);
     }
 
     #[test]
