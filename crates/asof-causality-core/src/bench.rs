@@ -15,7 +15,7 @@ pub struct BenchResult {
 pub fn run_representation_benchmark(events: usize, symbols: usize) -> Vec<BenchResult> {
     vec![
         bench_string_map(events, symbols.max(1)),
-        bench_symbol_id_vec(events, symbols.max(1)),
+        bench_symbol_slot_vec(events, symbols.max(1)),
     ]
 }
 
@@ -47,20 +47,20 @@ fn bench_string_map(events: usize, symbols: usize) -> BenchResult {
     )
 }
 
-fn bench_symbol_id_vec(events: usize, symbols: usize) -> BenchResult {
+fn bench_symbol_slot_vec(events: usize, symbols: usize) -> BenchResult {
     let mut state = vec![0_i8; symbols];
     let mut checksum = 0_i64;
     let start = Instant::now();
 
     for index in 0..events {
-        let symbol_id = index % symbols;
-        state[symbol_id] = sentiment_value(index);
-        checksum += i64::from(state[symbol_id]);
+        let symbol_slot = index % symbols;
+        state[symbol_slot] = sentiment_value(index);
+        checksum += i64::from(state[symbol_slot]);
     }
 
     black_box(checksum);
     result(
-        "symbol id vec",
+        "symbol slot vec",
         events,
         symbols,
         start.elapsed().as_nanos(),

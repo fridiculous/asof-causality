@@ -1,10 +1,14 @@
-use crate::{AsOfView, SymbolId, SymbolSnapshot};
+use crate::{AsOfView, SymbolSlot, SymbolSnapshot};
 
 /// Signal implementation evaluated by the replay engine at prediction events.
 pub trait Signal {
     /// Computes a prediction from the opaque as-of view.
-    fn predict(&self, view: AsOfView<'_>, symbol: SymbolId, prediction_time: u64)
-        -> SymbolSnapshot;
+    fn predict(
+        &self,
+        view: AsOfView<'_>,
+        symbol: SymbolSlot,
+        prediction_time: u64,
+    ) -> SymbolSnapshot;
 
     /// Stable signal name used in audit records and recipe hashes.
     fn name(&self) -> &'static str;
@@ -27,7 +31,7 @@ impl Signal for LastFeatureSentimentSignal {
     fn predict(
         &self,
         view: AsOfView<'_>,
-        symbol: SymbolId,
+        symbol: SymbolSlot,
         _prediction_time: u64,
     ) -> SymbolSnapshot {
         view.snapshot(symbol)
@@ -75,7 +79,7 @@ impl Signal for WindowedFeatureSentimentSignal {
     fn predict(
         &self,
         view: AsOfView<'_>,
-        symbol: SymbolId,
+        symbol: SymbolSlot,
         _prediction_time: u64,
     ) -> SymbolSnapshot {
         view.windowed_snapshot(symbol, self.window)
@@ -122,7 +126,7 @@ impl Signal for WindowedZScoreSignal {
     fn predict(
         &self,
         view: AsOfView<'_>,
-        symbol: SymbolId,
+        symbol: SymbolSlot,
         _prediction_time: u64,
     ) -> SymbolSnapshot {
         view.score_window_snapshot(symbol, self.window, self.threshold)

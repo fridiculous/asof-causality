@@ -29,6 +29,25 @@ impl SymbolId {
     }
 }
 
+/// Dense, replay-local symbol index.
+///
+/// A `SymbolSlot` is stable only within the symbol catalog built for one replay.
+/// Use it only with state that was sized from the same catalog. Audit records
+/// keep using `SymbolId`; slots are for indexing replay state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SymbolSlot(usize);
+
+impl SymbolSlot {
+    pub(crate) fn new(index: usize) -> Self {
+        Self(index)
+    }
+
+    /// Returns the replay-local dense index.
+    pub(crate) fn as_usize(self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Fixed-capacity set of input event keys used by a prediction.
 pub enum InputSet {

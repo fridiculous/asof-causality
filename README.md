@@ -83,14 +83,14 @@ predictions that could not have used them in live replay.
 - built-in single-input, windowed multi-input, and numeric Z-score signals
 - immutable `PredictionRecord` output with input-event provenance
 - JSONL audit output with its schema documented in `docs/audit.schema.json`
-- interned symbol IDs in replay state and prediction records, rendered back to
-  human symbols in transcripts
+- dense symbol slots in replay state, with stable symbol IDs in prediction records
+  rendered back to human symbols in transcripts
 - adversarial leakage checks for late arrivals, feature corrections, outcomes, and
   shuffled physical input
 - a `manifest.json` run certificate that links inputs, outputs, checks, signal
   version, invocation, toolchain, and transcript hash
-- a synthetic throughput benchmark comparing string-keyed state with interned
-  symbol IDs
+- a synthetic throughput benchmark comparing string-keyed state with dense
+  symbol-slot state
 
 The kernel is signal-agnostic. The built-ins include deliberately simple
 sentiment signals and a numeric `windowed-zscore` signal over continuous
@@ -279,7 +279,7 @@ cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
 ```
 
 Generates synthetic events and reports replay throughput for two state
-representations: string-keyed map state and interned symbol-ID vector state.
+representations: string-keyed map state and dense symbol-slot vector state.
 
 ## Why It Is Non-Trivial
 

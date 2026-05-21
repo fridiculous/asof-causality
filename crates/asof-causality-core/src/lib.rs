@@ -9,6 +9,7 @@
 
 #[allow(missing_docs)]
 pub mod bench;
+pub(crate) mod catalog;
 #[allow(missing_docs)]
 pub mod checks;
 /// Event model and pipe-record parsing.
@@ -33,7 +34,7 @@ pub use checks::{
 };
 pub use event::{Event, EventRole, ParseEventError, Sentiment};
 pub use generator::{generate_events, GenerateConfig, GeneratedStream, GenerationStats, Scenario};
-pub use ids::{EventKey, InputSet, SymbolId, MAX_INPUTS_PER_PREDICTION};
+pub use ids::{EventKey, InputSet, SymbolId, SymbolSlot, MAX_INPUTS_PER_PREDICTION};
 pub use log::{
     blake3_digest, blake3_hex, feature_recipe_hash, fnv1a64, hex_digest, FeatureRecipeHash,
     PredictionLog, PredictionRecord,

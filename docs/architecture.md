@@ -3,10 +3,10 @@
 ```text
 generator or pipe fixture
   -> parse Event
-  -> derive stable SymbolId for replay state
+  -> intern symbols into stable SymbolId plus dense SymbolSlot
   -> sort by (received_time, sequence, event_id)
   -> apply data events to internal StateStore
-  -> call Signal::predict(AsOfView, symbol_id, prediction_time)
+  -> call Signal::predict(AsOfView, symbol_slot, prediction_time)
   -> append PredictionRecord
   -> hash deterministic transcript
 ```
@@ -24,10 +24,11 @@ generator or pipe fixture
 | `ReplayEngine` | Orders events, updates state, emits predictions, and computes outcomes later |
 | `Generator` | Creates deterministic late-arrival/feature-correction fixtures from a seed |
 
-`StateStore` and `StateWriter` are crate-private. Signal authors can query
-`AsOfView`, but cannot construct it, mutate it, or access the full event list
-through the signal API. The default `last-feature-sentiment` signal records
-one input event. The `windowed-feature-sentiment` signal records a bounded
+`StateStore` and `StateWriter` are crate-private. Signal authors receive a
+replay-local `SymbolSlot` and can query `AsOfView`, but cannot construct it,
+mutate it, or access the full event list through the signal API. The default
+`last-feature-sentiment` signal records one input event. The
+`windowed-feature-sentiment` signal records a bounded
 inline set of recent feature inputs, proving the provenance path is not limited
 to one-row examples. The `windowed-zscore` signal reads continuous `score=...`
 features through the same opaque view and buckets the latest rolling Z-score to
@@ -59,9 +60,10 @@ ordering metadata. Later schema versions can commit to fuller feature recipes or
 input-value snapshots without changing the causality invariant.
 
 Symbols follow the same hot-path shape. `Event` keeps the original symbol string
-for input and transcript rendering, but `StateStore` and `PredictionRecord` use
-a stable `SymbolId`. The replay path does not clone a symbol string per feature
-update or prediction.
+for input and transcript rendering. Replay builds a symbol catalog once,
+rejecting `SymbolId` collisions instead of merging labels. `StateStore` is a
+dense `Vec` indexed by replay-local `SymbolSlot`, while `PredictionRecord`
+continues to store the stable `SymbolId` used by audit output.
 
 This artifact stops at the signal layer. A full strategy layer would consume
 `PredictionRecord`s through its own point-in-time `StrategyView`, maintain

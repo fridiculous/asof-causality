@@ -1,3 +1,5 @@
+use crate::catalog::SymbolCatalog;
+use crate::ids::SymbolSlot;
 use crate::state::StateStore;
 use crate::{
     feature_recipe_hash, Event, EventRole, LastFeatureSentimentSignal, ParseEventError,
@@ -88,19 +90,33 @@ impl<S: Signal> ReplayEngine<S> {
             }
         }
 
-        let mut state = StateStore::new();
-        let mut predictions = PredictionLog::with_event_catalog(&ordered);
+        let mut symbol_catalog = SymbolCatalog::new();
+        let slotted_order = ordered
+            .iter()
+            .map(|event| {
+                Ok(SlottedEvent {
+                    event,
+                    symbol: symbol_catalog.intern_event(event)?,
+                })
+            })
+            .collect::<Result<Vec<_>, ParseEventError>>()?;
+
+        let mut state = StateStore::with_symbol_count(symbol_catalog.len());
+        let mut predictions = PredictionLog::with_symbol_catalog(&ordered, &symbol_catalog);
         let mut outcomes_seen = 0;
         let signal_name = self.signal.name();
         let signal_config_descriptor = self.signal.config_descriptor();
 
-        for event in &ordered {
+        for slotted in &slotted_order {
+            let event = slotted.event;
             match event.role {
-                EventRole::Feature | EventRole::FeatureCorrection => state.writer().apply(event)?,
+                EventRole::Feature | EventRole::FeatureCorrection => {
+                    state.writer().apply(event, slotted.symbol)?
+                }
                 EventRole::Prediction => {
                     let snapshot = self.signal.predict(
                         state.as_of_view(),
-                        event.symbol_key,
+                        slotted.symbol,
                         event.received_time,
                     );
                     predictions.append(PredictionRecord {
@@ -136,6 +152,12 @@ impl<S: Signal> ReplayEngine<S> {
             replayed_events: ordered.len(),
         })
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SlottedEvent<'a> {
+    event: &'a Event,
+    symbol: SymbolSlot,
 }
 
 /// Parses newline-delimited pipe records into events.
@@ -220,6 +242,64 @@ p2|590|590|4|prediction|AAPL|
             .find(|event| event.event_id == "n1")
             .expect("fixture should contain n1");
         assert!(records[1].input_event_ids_used.contains_key(n1.event_key));
+    }
+
+    #[test]
+    fn dense_symbol_slots_keep_symbol_state_isolated() {
+        let input = "\
+a1|100|100|1|feature|AAPL|sentiment=positive
+m1|105|105|2|feature|MSFT|sentiment=negative
+pa|110|110|3|prediction|AAPL|
+pm|115|115|4|prediction|MSFT|
+";
+        let events = parse_pipe_events(input).unwrap();
+        let output = ReplayEngine::new()
+            .replay(&events, ReplayOptions::default())
+            .unwrap();
+        let records = output.predictions.records();
+
+        assert_eq!(records[0].symbol, events[0].symbol_key);
+        assert_eq!(records[0].signal_value, 1);
+        assert_eq!(records[1].symbol, events[1].symbol_key);
+        assert_eq!(records[1].signal_value, -1);
+    }
+
+    #[test]
+    fn replay_rejects_symbol_id_collisions_before_state_updates() {
+        let mut events = vec![
+            Event::new(
+                "a1",
+                100,
+                100,
+                1,
+                EventRole::Feature,
+                "AAPL",
+                "sentiment=positive",
+            ),
+            Event::new(
+                "m1",
+                105,
+                105,
+                2,
+                EventRole::Feature,
+                "MSFT",
+                "sentiment=negative",
+            ),
+        ];
+        events[1].symbol_key = events[0].symbol_key;
+
+        let error = ReplayEngine::new()
+            .replay(&events, ReplayOptions::default())
+            .unwrap_err();
+
+        assert!(matches!(
+            error.source,
+            ParseEventError::SymbolIdCollision {
+                existing_symbol,
+                conflicting_symbol,
+                ..
+            } if existing_symbol == "AAPL" && conflicting_symbol == "MSFT"
+        ));
     }
 
     #[test]

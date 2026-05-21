@@ -186,11 +186,13 @@ Single-run result:
 | Representation | Events | Symbols | Elapsed ms | Events/sec |
 |---|---:|---:|---:|---:|
 | string map | 1,000,000 | 1,024 | 55.725 | 17,945,119 |
-| symbol id vec | 1,000,000 | 1,024 | 0.443 | 2,256,063,170 |
+| symbol slot vec | 1,000,000 | 1,024 | 0.443 | 2,256,063,170 |
 
-The interned-symbol/vector representation was about 126x faster on this
+The dense symbol-slot vector representation was about 126x faster on this
 microbenchmark. This does not mean full replay is 126x faster; it isolates one
 hot representation decision: map lookup by string versus direct indexed state.
+Production replay still pays for catalog validation and event slotting before
+the hot loop, so its end-to-end speedup should be smaller than this microbench.
 
 ## Surprise
 
@@ -201,10 +203,11 @@ project: before moving work to a more complicated architecture, make the
 point-in-time state representation boring and indexed.
 
 The replay implementation now applies that lesson directly. `Event` keeps the
-human symbol string for input and transcript rendering, while `StateStore` and
-`PredictionRecord` use a stable `SymbolId` in the replay path. Prediction
-provenance follows the same shape: input provenance is stored as compact inline
-event keys (`InputSet::Empty`, `InputSet::One`, or fixed-capacity
+human symbol string for input and transcript rendering, replay builds a
+collision-checked symbol catalog once, `StateStore` uses dense `SymbolSlot`
+indexes, and `PredictionRecord` keeps the stable `SymbolId` for audit output.
+Prediction provenance follows the same shape: input provenance is stored as
+compact inline event keys (`InputSet::Empty`, `InputSet::One`, or fixed-capacity
 `InputSet::Many`) and rendered back to human-readable event IDs only when
 producing the transcript. The windowed built-in signal uses that bounded inline
 set so multi-input provenance does not allocate a `Vec` per prediction.
