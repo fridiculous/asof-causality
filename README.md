@@ -215,7 +215,13 @@ The manifest links the fixture hash, prediction-output hash, checks-output hash,
 transcript hash, hash algorithm, invocation, UTC run timestamp, check counts,
 Rust toolchain, and optional Git commit. A reviewer can compare the manifest and
 artifacts to verify that a run's predictions, checks, and reported transcript
-belong to the same execution.
+belong to the same execution. The machine-readable manifest contract lives in
+[docs/manifest.schema.json](docs/manifest.schema.json).
+
+Generated `runs/` artifacts are intentionally ignored by git so stale local
+snapshots do not become part of the source artifact. Use
+`make run-suite-late-heavy` to rebuild the canonical local `runs/late-heavy`
+directory.
 
 ```sh
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
@@ -316,11 +322,40 @@ shipped with the repo so that the leak class is falsifiable, not just described.
 checks, and summary. The manifest is a compact linkage proof for the run: it
 records the invocation, run timestamp, source commit context, workspace dirty
 flag, Rust toolchain, fixture hash, prediction-output hash, checks-output hash,
-and final transcript hash. Public artifact hashes in the manifest use BLAKE3.
+and final transcript hash. Public artifact hashes in the manifest use BLAKE3,
+and the JSON contract is documented in
+[docs/manifest.schema.json](docs/manifest.schema.json).
 
 That means the result is not just "the CLI printed PASS." The output directory
 contains enough identity to answer: which data, which signal, which executable
 context, which checks, and which transcript produced this result?
+
+## Testing And Mutation Checks
+
+The normal gate is:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --workspace
+```
+
+The test suite includes fixture regressions, proptest-generated event streams,
+CLI integration checks, JSON Schema validation for audit and manifest output,
+and snapshots for stable user-visible command output.
+
+For mutation testing, install `cargo-mutants` and run this manually before
+claiming the causality kernel is hardened:
+
+```sh
+cargo mutants \
+  -f crates/asof-causality-core/src/checks.rs \
+  -f crates/asof-causality-core/src/replay.rs \
+  -f crates/asof-causality-core/src/log.rs
+```
+
+This is intentionally not a PR gate; it is a heavier review tool for checking
+whether causality-critical tests kill behavioral mutations.
 
 ## Why Rust Here
 
