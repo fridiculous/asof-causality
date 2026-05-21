@@ -111,6 +111,10 @@ fn selected_prediction_cutoffs(events: &[Event], options: CheckOptions) -> (Vec<
         return (vec![cutoffs[total - 1]], total);
     }
 
+    // Prefix-equivalence and future-mutation checks rerun replay for each
+    // selected cutoff. Exhaustive mode is strongest, but on large fixtures it
+    // scales with the number of prediction times. Sampled mode keeps the
+    // falsifier deterministic while avoiding an O(cutoffs * replay) CI path.
     let mut sampled = Vec::with_capacity(max_cutoffs);
     let last = total - 1;
     for index in 0..max_cutoffs {

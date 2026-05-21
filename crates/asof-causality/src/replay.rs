@@ -74,6 +74,11 @@ impl<S: Signal> ReplayEngine<S> {
         validate_event_identity(events)?;
 
         let mut ordered = events.to_vec();
+        // V1 replay is a deterministic batch verifier. The global sort makes
+        // transcript and manifest hashes independent of physical file order,
+        // but it also means this path is not an out-of-core streaming engine.
+        // Production-scale feeds should arrive pre-partitioned/sorted with a
+        // bounded reorder buffer rather than relying on a full in-memory sort.
         match order {
             ReplayOrder::ReceivedTime => {
                 ordered.sort_by(|left, right| left.replay_key().cmp(&right.replay_key()));

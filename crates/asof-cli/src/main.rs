@@ -17,6 +17,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+// Large-input checks replay multiple prefixes and mutated futures. Keep the
+// default deterministic but bounded; callers can opt into `--exhaustive` for
+// small fixtures or raise `--max-cutoffs` when runtime permits.
+const DEFAULT_CHECK_MAX_CUTOFFS: usize = 32;
+
 fn main() {
     if let Err(error) = run() {
         let _ = io::stdout().flush();
@@ -819,7 +824,7 @@ fn parse_path_signal_args(
 
 fn parse_check_args(args: &[String]) -> Result<(&str, CheckOptions, SignalChoice), Box<dyn Error>> {
     let mut path = "examples/late-arrival.pipe";
-    let mut options = CheckOptions::sampled(32);
+    let mut options = CheckOptions::sampled(DEFAULT_CHECK_MAX_CUTOFFS);
     let mut signal = SignalChoice::default();
     let mut index = 0;
 
@@ -910,7 +915,11 @@ fn run_suite(args: &[String]) -> Result<(), Box<dyn Error>> {
         ReplayOrder::ReceivedTime,
     )?;
     let replay_elapsed = replay_start.elapsed();
-    let report = run_checks_with_signal(signal, &stream.events, CheckOptions::sampled(32));
+    let report = run_checks_with_signal(
+        signal,
+        &stream.events,
+        CheckOptions::sampled(DEFAULT_CHECK_MAX_CUTOFFS),
+    );
 
     let predictions_output = format_prediction_output(&replay);
     let checks_output = format_check_report(&report);
@@ -3691,7 +3700,10 @@ fn print_run_suite_stdout(inputs: RunSuiteStdout<'_>) {
     println!();
 
     print_check_section(inputs.report, false);
-    let used_cutoffs = selected_cutoff_count(prediction_cutoff_count(&inputs.stream.events), 32);
+    let used_cutoffs = selected_cutoff_count(
+        prediction_cutoff_count(&inputs.stream.events),
+        DEFAULT_CHECK_MAX_CUTOFFS,
+    );
     let total_cutoffs = prediction_cutoff_count(&inputs.stream.events);
     println!(
         "  cutoffs_sampled   {} of {}  (deterministic sampling for large fixtures)",

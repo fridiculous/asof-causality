@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 /// Maximum number of input event keys stored inline in a prediction record.
 ///
 /// This is deliberately fixed-capacity so the replay path can carry multi-input
-/// provenance without allocating a `Vec` per prediction.
+/// provenance without allocating a `Vec` per prediction. The trade-off is
+/// intentional: short-window signals get stack-backed provenance in the hot
+/// loop, while long-window signals need a compact recipe/snapshot commitment
+/// instead of embedding every input key in each `PredictionRecord`.
 pub const MAX_INPUTS_PER_PREDICTION: usize = 8;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -33,7 +36,9 @@ impl SymbolId {
 ///
 /// A `SymbolSlot` is stable only within the symbol catalog built for one replay.
 /// Use it only with state that was sized from the same catalog. Audit records
-/// keep using `SymbolId`; slots are for indexing replay state.
+/// keep using `SymbolId`; slots are for indexing replay state. This is the
+/// cold-path/hot-path split: strings are accepted at ingestion, interned once,
+/// and then replaced by dense integer slots before state updates begin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SymbolSlot(usize);
 
@@ -78,7 +83,8 @@ impl InputSet {
     /// Builds a deterministic, deduplicated input set.
     ///
     /// Keys beyond `MAX_INPUTS_PER_PREDICTION` are truncated by design. Built-in
-    /// signals keep their windows at or below that cap.
+    /// signals keep their windows at or below that cap; larger provenance should be
+    /// represented by `feature_recipe_hash` or a future snapshot manifest.
     pub fn from_ordered_keys(keys: &[EventKey]) -> Self {
         let mut unique = [EventKey::default(); MAX_INPUTS_PER_PREDICTION];
         let mut len = 0;

@@ -22,6 +22,9 @@ pub struct SignalEvaluation {
 
 #[derive(Debug, Clone, PartialEq)]
 struct SymbolState {
+    // Fixed-size recent state keeps signal evaluation allocation-free. This is
+    // deliberately a short-window engine until larger recipe/snapshot
+    // commitments replace per-prediction inline provenance.
     recent: [FeatureObservation; MAX_INPUTS_PER_PREDICTION],
     recent_len: usize,
 }
@@ -69,6 +72,9 @@ struct FeatureObservation {
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct StateStore {
+    // Hot-loop state is indexed by replay-local `SymbolSlot`, never by symbol
+    // strings. The symbol catalog pays the parsing/interning cost before replay
+    // starts; apply/evaluate then reduce to dense Vec access.
     by_symbol_slot: Vec<SymbolState>,
 }
 
@@ -116,6 +122,10 @@ impl StateWriter<'_> {
 
 #[derive(Debug, Clone, Copy)]
 /// Opaque read-only state view exposed to signal implementations.
+///
+/// This is the correctness cage. Signal code can query only state that replay
+/// has already applied for the current symbol slot; it cannot scan the full
+/// event list, mutate state, or reach future rows through the type surface.
 pub struct AsOfView<'a> {
     store: &'a StateStore,
 }
