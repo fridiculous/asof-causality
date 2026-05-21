@@ -1,9 +1,10 @@
-# Real-Data Demo: Daily ALFRED Rates With SP500 Outcomes
+# Real-Data Demo: ALFRED Vintages And Revisions
 
-This fixture uses public daily Treasury-rate vintages from ALFRED and daily
-SP500 closes from FRED. It is a causality demo, not an alpha claim: the question
-is whether a daily SP500 prediction used only DGS10 observations available in
-the ALFRED vintage stream at prediction time.
+The primary fixture uses public daily Treasury-rate vintages from ALFRED and
+daily SP500 closes from FRED. The revision fixture uses ALFRED PAYEMS vintages.
+These are causality demos, not alpha claims: the question is whether a
+prediction used only macro observations available in the ALFRED vintage stream
+at prediction time.
 
 ## Data Sources
 
@@ -13,6 +14,9 @@ the ALFRED vintage stream at prediction time.
   `2020-03-17`, `2020-03-18`, `2020-03-19`, and `2020-03-20`.
 - FRED SP500 closes:
   `https://fred.stlouisfed.org/graph/fredgraph.csv?id=SP500&cosd=2020-03-16&coed=2020-03-20`
+- ALFRED PAYEMS revision fixture:
+  `https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=PAYEMS&cosd=2019-01-01&coed=2019-03-01&vintage_date=YYYY-MM-DD&revision_date=YYYY-MM-DD`
+  with vintage dates `2020-02-01` and `2020-03-01`.
 
 The checked-in fixture is
 [`examples/alfred-dgs10-sp500.pipe`](../examples/alfred-dgs10-sp500.pipe).
@@ -20,6 +24,14 @@ It can be regenerated from the public source CSVs with:
 
 ```sh
 make verify-real-data-demo
+```
+
+The checked-in PAYEMS revision fixture is
+[`examples/alfred-payems-revision.pipe`](../examples/alfred-payems-revision.pipe).
+It can be regenerated with:
+
+```sh
+make verify-real-revision-demo
 ```
 
 Verification requires internet access to the public ALFRED and FRED CSV
@@ -56,12 +68,30 @@ the prediction as impossible. This anchors the demo in the common ALFRED vintage
 failure mode: treating today's final macro data as if it existed in yesterday's
 research environment.
 
+## Real Revision Target
+
+The PAYEMS fixture includes a real ALFRED correction:
+
+- observation date: `2019-01-01`
+- value in the `2020-02-01` vintage: `150587`
+- value in the `2020-03-01` vintage: `150134`
+
+The checked-in fixture encodes the first value as a `feature` and the second
+value as a `feature_correction`. The prediction
+`p_after_initial_before_revision` is emitted on `2020-02-14`, after the first
+vintage but before the revised vintage arrives on `2020-03-01`. Received-time
+replay must not use the correction for that prediction. An observed-time replay
+does use it and should mark the prediction as impossible.
+
 ## Commands
 
 ```sh
 uv run --script scripts/rebuild-alfred-example.py --check
+uv run --script scripts/rebuild-alfred-revision-example.py --check
 cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
+cargo run -p asof-causality-cli -- check examples/alfred-payems-revision.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- replay examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
+cargo run -p asof-causality-cli -- negative-control examples/alfred-payems-revision.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- audit examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --outcomes examples/alfred-dgs10-sp500.pipe --out runs/alfred-dgs10-sp500-audit.jsonl
 ```

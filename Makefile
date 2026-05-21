@@ -1,4 +1,4 @@
-.PHONY: check test replay check-fixture run-suite-late-heavy verify-real-data-demo bench
+.PHONY: check test replay check-fixture run-suite-late-heavy verify-real-data-demo verify-real-revision-demo bench
 
 check:
 	cargo fmt --check
@@ -18,6 +18,9 @@ run-suite-late-heavy:
 
 verify-real-data-demo:
 	uv run --script scripts/rebuild-alfred-example.py --check
+
+verify-real-revision-demo:
+	uv run --script scripts/rebuild-alfred-revision-example.py --check
 
 bench:
 	cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024

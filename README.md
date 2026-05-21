@@ -111,9 +111,11 @@ cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
+cargo run -p asof-causality-cli -- check examples/alfred-payems-revision.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --scenario lookahead --lookahead-range 0..100 --steps 4 --details --out runs/alfred-sensitivity
 cargo run -p asof-causality-cli -- sensitivity examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment --scenario late-arrivals --out runs/late-arrival-sensitivity
 make verify-real-data-demo
+make verify-real-revision-demo
 cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
@@ -123,8 +125,12 @@ cargo test
 This repository has no runtime network dependency. Most fixtures are synthetic;
 `examples/alfred-dgs10-sp500.pipe` is a small checked-in real-data fixture
 derived from public ALFRED/FRED CSV downloads. `make verify-real-data-demo`
-rebuilds that fixture from the source CSVs and checks it byte-for-byte. It does
-not require an API key, an LLM key, CUDA, or a database.
+rebuilds that fixture from the source CSVs and checks it byte-for-byte.
+`examples/alfred-payems-revision.pipe` is a separate ALFRED-only fixture with a
+real PAYEMS revision; `make verify-real-revision-demo` rebuilds it from the
+source vintages. Those verification commands require internet access to the
+public CSV endpoints, but they do not require an API key, an LLM key, CUDA, or a
+database.
 
 ## Event Format
 
@@ -298,6 +304,18 @@ semantics are first-class. Sensitivity descriptors and the manifest record
 `calendar_aware: false`; on `YYYYMMDDHHMM` fixtures like ALFRED, intermediate
 lookahead percentages are synthetic ordered-integer stresses, not calendar
 durations.
+
+The PAYEMS fixture anchors an actual ALFRED correction:
+
+```sh
+cargo run -p asof-causality-cli -- check examples/alfred-payems-revision.pipe --signal windowed-zscore
+cargo run -p asof-causality-cli -- negative-control examples/alfred-payems-revision.pipe --signal windowed-zscore
+```
+
+It compares the PAYEMS `2019-01-01` observation across two ALFRED vintages:
+`150587` in the `2020-02-01` vintage and `150134` in the `2020-03-01` vintage.
+The second row is encoded as `feature_correction`, so strict received-time
+replay must not let `p_after_initial_before_revision` use the revised value.
 
 ```sh
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
