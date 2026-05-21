@@ -14,7 +14,6 @@ impl SymbolCatalog {
         Self::default()
     }
 
-    #[cfg(test)]
     pub(crate) fn from_events(events: &[Event]) -> Result<Self, ParseEventError> {
         let mut catalog = Self::new();
         for event in events {

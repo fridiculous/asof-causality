@@ -1,5 +1,5 @@
 use crate::catalog::SymbolCatalog;
-use crate::{Event, EventKey, InputSet, SymbolId};
+use crate::{Event, EventKey, InputSet, ParseEventError, SymbolId};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
@@ -101,19 +101,10 @@ pub struct PredictionLog {
 }
 
 impl PredictionLog {
-    /// Creates an empty prediction log with labels collected from events.
-    pub fn with_event_catalog(events: &[Event]) -> Self {
-        let event_labels = event_labels(events);
-        let symbol_labels = events
-            .iter()
-            .map(|event| (event.symbol_key, event.symbol.clone()))
-            .collect();
-
-        Self {
-            records: Vec::new(),
-            event_labels,
-            symbol_labels,
-        }
+    /// Creates an empty prediction log with labels collected from validated events.
+    pub fn with_event_catalog(events: &[Event]) -> Result<Self, ParseEventError> {
+        let symbol_catalog = SymbolCatalog::from_events(events)?;
+        Ok(Self::with_symbol_catalog(events, &symbol_catalog))
     }
 
     pub(crate) fn with_symbol_catalog(events: &[Event], symbol_catalog: &SymbolCatalog) -> Self {
@@ -301,4 +292,46 @@ fn update_hash_field(hasher: &mut blake3::Hasher, name: &[u8], value: &[u8]) {
     hasher.update(name);
     hasher.update(&(value.len() as u64).to_le_bytes());
     hasher.update(value);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::EventRole;
+
+    #[test]
+    fn event_catalog_rejects_symbol_id_collisions() {
+        let mut events = [
+            Event::new(
+                "a1",
+                1,
+                1,
+                1,
+                EventRole::Feature,
+                "AAPL",
+                "sentiment=positive",
+            ),
+            Event::new(
+                "m1",
+                2,
+                2,
+                2,
+                EventRole::Feature,
+                "MSFT",
+                "sentiment=negative",
+            ),
+        ];
+        events[1].symbol_key = events[0].symbol_key;
+
+        let error = PredictionLog::with_event_catalog(&events).unwrap_err();
+
+        assert!(matches!(
+            error,
+            ParseEventError::SymbolIdCollision {
+                existing_symbol,
+                conflicting_symbol,
+                ..
+            } if existing_symbol == "AAPL" && conflicting_symbol == "MSFT"
+        ));
+    }
 }
