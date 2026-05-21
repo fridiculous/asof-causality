@@ -1,6 +1,6 @@
 use asof_causality_core::{
     parse_pipe_events, run_adversarial_checks, ReplayEngine, ReplayOptions, ReplayOrder,
-    WindowedFeatureSentimentSignal, WindowedZScoreSignal,
+    VolAdjustedMomentumSignal, WindowedFeatureSentimentSignal, WindowedZScoreSignal,
 };
 
 fn fixture_events() -> Vec<asof_causality_core::Event> {
@@ -193,6 +193,41 @@ fn zscore_fixture_passes_adversarial_checks() {
 fn observed_time_baseline_leaks_numeric_zscore_input() {
     let events = zscore_events();
     let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+        .replay_with_order(
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ObservedTimeLeaky,
+        )
+        .unwrap();
+
+    let leaked = output
+        .predictions
+        .records()
+        .iter()
+        .find(|record| record.prediction_time == 100)
+        .expect("zscore fixture should emit prediction at 100");
+
+    assert_eq!(leaked.signal_value, 1);
+    assert_eq!(leaked.max_input_received_time, 120);
+    assert_eq!(output.predictions.impossible_predictions().len(), 1);
+}
+
+#[test]
+fn vol_adjusted_momentum_fixture_passes_adversarial_checks() {
+    let events = zscore_events();
+    let report = asof_causality_core::run_adversarial_checks_with_options_for_signal(
+        &events,
+        asof_causality_core::CheckOptions::exhaustive(),
+        VolAdjustedMomentumSignal::new(),
+    );
+
+    assert!(report.passed(), "{report:?}");
+}
+
+#[test]
+fn observed_time_baseline_leaks_vol_adjusted_momentum_input() {
+    let events = zscore_events();
+    let output = ReplayEngine::with_signal(VolAdjustedMomentumSignal::new())
         .replay_with_order(
             &events,
             ReplayOptions::default(),

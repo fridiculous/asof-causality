@@ -7,7 +7,7 @@ the exact replay key when the prediction was made.
 Most backtests ask, "Did the signal work?" This repo asks the prior systems
 question: "Could the signal or training-data pipeline have known what it used
 at that time?" Temporal leakage shows up in backtests, time-series training
-data, and AI-assisted research workflows whenever historical code can see rows
+data, and automated research workflows whenever historical code can see rows
 that were not actually available yet.
 
 The engine enforces a two-clock event model, restricts signal code to an opaque
@@ -80,7 +80,8 @@ predictions that could not have used them in live replay.
   `outcome`
 - deterministic replay by `(received_time, sequence, event_id)`
 - a restricted signal API that receives only an opaque `AsOfView`
-- built-in single-input, windowed multi-input, and numeric Z-score signals
+- built-in single-input, windowed multi-input, fixed-point Z-score, and
+  volatility-adjusted momentum signals
 - immutable `PredictionRecord` output with input-event provenance
 - JSONL audit output with its schema documented in `docs/audit.schema.json`
 - dense symbol slots in replay state, with stable symbol IDs in prediction records
@@ -92,10 +93,14 @@ predictions that could not have used them in live replay.
 - a synthetic throughput benchmark comparing string-keyed state with dense
   symbol-slot state
 
-The kernel is signal-agnostic. The built-ins include deliberately simple
-sentiment signals and a numeric `windowed-zscore` signal over continuous
-`score=...` payloads. The non-trivial part is the correctness cage around the
-signal: all of them receive only an opaque as-of view and emit provenance.
+The kernel is signal-agnostic. Feature payload fields have explicit
+`FeatureDType`s: `sentiment` is text parsed by the legacy label fixtures, while
+`score` is `FixedDecimal { scale: 6 }` for deterministic numeric replay. There
+is intentionally no separate ML-semantic `FeatureValueKind` layer yet. The
+built-ins include fixed-point numeric signals and `vol-adjusted-momentum` as a
+recognizable fast/slow moving-average crossover gated by realized volatility.
+The non-trivial part is the correctness cage around the signal: all of them
+receive only an opaque as-of view and emit provenance.
 
 ## Quick Start
 
@@ -109,6 +114,7 @@ cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
+cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
 make verify-real-data-demo
 cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
@@ -120,7 +126,7 @@ This repository has no runtime network dependency. Most fixtures are synthetic;
 `examples/alfred-dgs10-sp500.pipe` is a small checked-in real-data fixture
 derived from public ALFRED/FRED CSV downloads. `make verify-real-data-demo`
 rebuilds that fixture from the source CSVs and checks it byte-for-byte. It does
-not require an API key, an LLM key, CUDA, or a database.
+not require an API key, CUDA, or a database.
 
 ## Event Format
 
@@ -148,6 +154,13 @@ The canonical roles are:
 | `prediction` | Scheduled point where the signal emits a prediction |
 | `outcome` | Future evaluation data excluded from signal state |
 
+Built-in feature payload fields are:
+
+| Field | DType | Meaning |
+|---|---|---|
+| `sentiment` | `Text` | Legacy fixture label parsed as `negative`, `neutral`, or `positive` |
+| `score` | `FixedDecimal { scale: 6 }` | Deterministic numeric value used by fixed-point signals |
+
 ## Current Commands
 
 ```sh
@@ -157,8 +170,9 @@ cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
 Prints deterministic prediction records and a transcript hash.
 
 Use `--signal windowed-feature-sentiment` to run the same replay through the
-bounded multi-input signal, or `--signal windowed-zscore` for numeric
-`score=...` features. The default is `last-feature-sentiment`.
+bounded multi-input signal, `--signal windowed-zscore` for fixed-decimal
+`score=...` fields, `--signal vol-adjusted-momentum` for a fixed-point
+trend-following signal. The default is `last-feature-sentiment`.
 
 ```sh
 cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
@@ -261,10 +275,20 @@ cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pi
 The numeric fixture exercises the same boundary with continuous inputs. In the
 broken observed-time baseline, `p_before_late_score` can see `px_late_spike`
 before it was received. The received-time engine cannot, and the audit invariant
-marks the spike as a future input.
+marks the spike as a future input. Numeric `score=...` payloads are parsed into
+scaled integers, so replay decisions do not depend on architecture-specific
+floating-point behavior.
 
 ```sh
-cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
+cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal vol-adjusted-momentum
+```
+
+The same fixture can be replayed through `vol-adjusted-momentum`, a standard
+moving-average crossover shape with a realized-volatility gate, implemented with
+the same fixed-point numeric view.
+
+```sh
+cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
 ```
 
 This is the lookahead-bias falsification harness for the repo's real-data
@@ -355,16 +379,18 @@ The causality boundary depends on hiding future state from signal code and
 making replay deterministic. Rust is useful for that narrow job: the core API
 keeps mutable replay state crate-private, exposes only an opaque `AsOfView`, and
 stores hot-path provenance in fixed-size values rather than heap-heavy records.
-The repo keeps the interface small enough that a Python or AI-assisted research
-pipeline could call this as an external verifier without moving all research
-logic into Rust.
+The repo keeps the interface small enough that a Python research pipeline could
+call this as an external verifier without moving all research logic into Rust.
 
-## AI-Ready Boundary
+## Signal Boundary
 
-An LLM-backed signal would need the same shape as the built-ins: opaque
-`AsOfView` in and `SymbolSnapshot` out. This repo does not ship an AI signal,
-but the causality boundary is the right one for AI-assisted signals too: the
-model cannot leak from data that never enters the view.
+Each built-in signal earns a different piece of the causality story:
+`last-feature-sentiment` proves the minimal single-input path,
+`windowed-feature-sentiment` proves bounded multi-input provenance,
+`windowed-zscore` proves deterministic fixed-point numeric window math over a
+declared `FeatureDType`, and `vol-adjusted-momentum` proves a recognizable
+finance-style signal can run inside the same `AsOfView` boundary. None of these
+are alpha claims; they are test fixtures for the replay cage.
 
 ## Scope Of Conclusions
 

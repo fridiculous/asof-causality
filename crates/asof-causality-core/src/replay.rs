@@ -213,7 +213,7 @@ impl From<ParseEventError> for ReplayError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{WindowedFeatureSentimentSignal, WindowedZScoreSignal};
+    use crate::{VolAdjustedMomentumSignal, WindowedFeatureSentimentSignal, WindowedZScoreSignal};
 
     #[test]
     fn ignores_comments_and_blank_lines() {
@@ -339,6 +339,27 @@ p1|140|140|5|prediction|XYZ|
 ";
         let events = parse_pipe_events(input).unwrap();
         let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+            .replay(&events, ReplayOptions::default())
+            .unwrap();
+        let record = &output.predictions.records()[0];
+
+        assert_eq!(record.signal_value, 1);
+        assert_eq!(record.input_event_ids_used.len(), 4);
+        assert_eq!(record.max_input_received_time, 130);
+        assert_eq!(record.max_input_sequence, 4);
+    }
+
+    #[test]
+    fn vol_adjusted_momentum_records_crossover_input_provenance() {
+        let input = "\
+px1|100|100|1|feature|XYZ|score=10
+px2|110|110|2|feature|XYZ|score=10
+px3|120|120|3|feature|XYZ|score=10
+px4|130|130|4|feature|XYZ|score=30
+p1|140|140|5|prediction|XYZ|
+";
+        let events = parse_pipe_events(input).unwrap();
+        let output = ReplayEngine::with_signal(VolAdjustedMomentumSignal::new())
             .replay(&events, ReplayOptions::default())
             .unwrap();
         let record = &output.predictions.records()[0];

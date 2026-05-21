@@ -26,8 +26,11 @@ Implement a point-in-time causality test suite that:
 - restricts signal code to as-of state
 - proves future rows cannot affect past predictions
 
-The built-in signals are deliberately simple so the correctness properties remain the
-center of the artifact.
+The built-in signals keep alpha claims out of scope, but the cage is exercised
+with recognizable residents: a fixed-point volatility-adjusted momentum signal
+with a fast/slow moving-average crossover, plus fixed-point numeric window
+statistics. That keeps the focus on causality while still demonstrating that
+the boundary holds familiar signal shapes.
 
 ## Related Systems
 

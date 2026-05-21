@@ -30,7 +30,8 @@ endpoints.
 - `observed_time`: DGS10 observation date at `15:00`, encoded as
   `YYYYMMDDHHMM`.
 - `received_time`: ALFRED vintage date at `09:00`, encoded as `YYYYMMDDHHMM`.
-- `score`: daily DGS10 change in percentage points.
+- `score`: daily DGS10 change in percentage points, declared as
+  `FeatureDType::FixedDecimal { scale: 6 }`.
 - `prediction`: SP500 daily risk-on/risk-off prediction at `16:00`.
 - `outcome`: next trading-day SP500 return in basis points, attached after the
   next close.
@@ -64,4 +65,6 @@ cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --sign
 cargo run -p asof-causality-cli -- replay examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- audit examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --outcomes examples/alfred-dgs10-sp500.pipe --out runs/alfred-dgs10-sp500-audit.jsonl
+cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
+cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
 ```

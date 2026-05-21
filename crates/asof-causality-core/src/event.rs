@@ -3,6 +3,49 @@ use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
 
+pub const FIXED_DECIMAL_SCALE: i64 = 1_000_000;
+pub const FIXED_DECIMAL_SCALE_DIGITS: usize = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureDType {
+    FixedDecimal { scale: usize },
+    Int64,
+    Bool,
+    Text,
+}
+
+impl fmt::Display for FeatureDType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FixedDecimal { scale } => write!(f, "fixed_decimal(scale={scale})"),
+            Self::Int64 => write!(f, "int64"),
+            Self::Bool => write!(f, "bool"),
+            Self::Text => write!(f, "text"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeatureSpec {
+    pub name: &'static str,
+    pub dtype: FeatureDType,
+}
+
+impl FeatureSpec {
+    pub const fn new(name: &'static str, dtype: FeatureDType) -> Self {
+        Self { name, dtype }
+    }
+}
+
+pub const SENTIMENT_FEATURE: FeatureSpec = FeatureSpec::new("sentiment", FeatureDType::Text);
+pub const SCORE_FEATURE: FeatureSpec = FeatureSpec::new(
+    "score",
+    FeatureDType::FixedDecimal {
+        scale: FIXED_DECIMAL_SCALE_DIGITS,
+    },
+);
+pub const BUILTIN_FEATURE_SPECS: [FeatureSpec; 2] = [SENTIMENT_FEATURE, SCORE_FEATURE];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Role of an event in the causality replay stream.
 pub enum EventRole {
@@ -64,7 +107,58 @@ pub struct FeatureValues {
     /// Optional discrete sentiment value.
     pub sentiment: Option<Sentiment>,
     /// Optional numeric score value.
-    pub score: Option<f64>,
+    pub score: Option<FixedDecimal>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Deterministic fixed-point decimal with six fractional digits.
+pub struct FixedDecimal {
+    scaled: i64,
+}
+
+impl FixedDecimal {
+    /// Fixed scale used by `FixedDecimal`.
+    pub const SCALE: i64 = FIXED_DECIMAL_SCALE;
+
+    /// Builds a fixed decimal from its already-scaled integer representation.
+    pub const fn from_scaled(scaled: i64) -> Self {
+        Self { scaled }
+    }
+
+    /// Returns the scaled integer representation.
+    pub const fn scaled(self) -> i64 {
+        self.scaled
+    }
+
+    /// Returns the absolute value, saturating at `i64::MAX`.
+    pub fn abs(self) -> Self {
+        Self {
+            scaled: self.scaled.saturating_abs(),
+        }
+    }
+}
+
+impl fmt::Display for FixedDecimal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let sign = if self.scaled < 0 { "-" } else { "" };
+        let magnitude = i128::from(self.scaled).abs();
+        let whole = magnitude / i128::from(FIXED_DECIMAL_SCALE);
+        let mut fractional = format!(
+            "{:0width$}",
+            magnitude % i128::from(FIXED_DECIMAL_SCALE),
+            width = FIXED_DECIMAL_SCALE_DIGITS
+        );
+
+        while fractional.ends_with('0') {
+            fractional.pop();
+        }
+
+        if fractional.is_empty() {
+            write!(f, "{sign}{whole}")
+        } else {
+            write!(f, "{sign}{whole}.{fractional}")
+        }
+    }
 }
 
 impl Sentiment {
@@ -198,19 +292,19 @@ impl Event {
             return Ok(None);
         }
 
-        payload_field(&self.payload, "sentiment")
+        payload_field(&self.payload, SENTIMENT_FEATURE.name)
             .map(|value| value.parse().map(Some))
             .unwrap_or(Ok(None))
     }
 
     /// Parses the optional `score` payload field for feature roles.
-    pub fn score(&self) -> Result<Option<f64>, ParseEventError> {
+    pub fn score(&self) -> Result<Option<FixedDecimal>, ParseEventError> {
         if !self.role.updates_signal_state() {
             return Ok(None);
         }
 
-        payload_field(&self.payload, "score")
-            .map(|value| parse_f64("score", value).map(Some))
+        payload_field(&self.payload, SCORE_FEATURE.name)
+            .map(|value| parse_fixed_decimal(SCORE_FEATURE.name, value).map(Some))
             .unwrap_or(Ok(None))
     }
 
@@ -377,14 +471,77 @@ fn parse_u64(field: &'static str, value: &str) -> Result<u64, ParseEventError> {
         })
 }
 
-fn parse_f64(field: &'static str, value: &str) -> Result<f64, ParseEventError> {
-    value
-        .trim()
-        .parse()
-        .map_err(|_| ParseEventError::InvalidNumber {
+fn parse_fixed_decimal(field: &'static str, value: &str) -> Result<FixedDecimal, ParseEventError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ParseEventError::InvalidNumber {
             field,
-            value: value.trim().to_string(),
-        })
+            value: trimmed.to_string(),
+        });
+    }
+
+    let (sign, unsigned) = match trimmed.as_bytes()[0] {
+        b'-' => (-1_i128, &trimmed[1..]),
+        b'+' => (1_i128, &trimmed[1..]),
+        _ => (1_i128, trimmed),
+    };
+
+    let (whole, fractional) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    if (whole.is_empty() && fractional.is_empty())
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fractional.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(ParseEventError::InvalidNumber {
+            field,
+            value: trimmed.to_string(),
+        });
+    }
+
+    let whole_value = if whole.is_empty() {
+        0_i128
+    } else {
+        whole
+            .parse::<i128>()
+            .map_err(|_| ParseEventError::InvalidNumber {
+                field,
+                value: trimmed.to_string(),
+            })?
+    };
+
+    let mut fractional_value = 0_i128;
+    let kept_digits = fractional.len().min(FIXED_DECIMAL_SCALE_DIGITS);
+    for byte in fractional.bytes().take(kept_digits) {
+        fractional_value = fractional_value * 10 + i128::from(byte - b'0');
+    }
+    for _ in kept_digits..FIXED_DECIMAL_SCALE_DIGITS {
+        fractional_value *= 10;
+    }
+
+    if fractional
+        .as_bytes()
+        .get(FIXED_DECIMAL_SCALE_DIGITS)
+        .is_some_and(|byte| *byte >= b'5')
+    {
+        fractional_value += 1;
+    }
+
+    let magnitude = whole_value
+        .checked_mul(i128::from(FIXED_DECIMAL_SCALE))
+        .and_then(|value| value.checked_add(fractional_value))
+        .ok_or_else(|| ParseEventError::InvalidNumber {
+            field,
+            value: trimmed.to_string(),
+        })?;
+
+    let scaled = magnitude
+        .checked_mul(sign)
+        .and_then(|value| i64::try_from(value).ok())
+        .ok_or_else(|| ParseEventError::InvalidNumber {
+            field,
+            value: trimmed.to_string(),
+        })?;
+
+    Ok(FixedDecimal::from_scaled(scaled))
 }
 
 fn payload_field<'a>(payload: &'a str, field: &str) -> Option<&'a str> {
@@ -415,8 +572,40 @@ mod tests {
         let event = Event::from_pipe_record("px1|1|1|1|feature|AAPL|score=0.73").unwrap();
 
         assert_eq!(event.sentiment().unwrap(), None);
-        assert_eq!(event.score().unwrap(), Some(0.73));
-        assert_eq!(event.feature_values().unwrap().unwrap().score, Some(0.73));
+        assert_eq!(
+            event.score().unwrap(),
+            Some(FixedDecimal::from_scaled(730_000))
+        );
+        assert_eq!(
+            event.feature_values().unwrap().unwrap().score,
+            Some(FixedDecimal::from_scaled(730_000))
+        );
+    }
+
+    #[test]
+    fn parses_score_payload_as_rounded_fixed_point() {
+        let event = Event::from_pipe_record("px1|1|1|1|feature|AAPL|score=-0.1234567").unwrap();
+
+        assert_eq!(
+            event.score().unwrap(),
+            Some(FixedDecimal::from_scaled(-123_457))
+        );
+        assert_eq!(event.score().unwrap().unwrap().to_string(), "-0.123457");
+    }
+
+    #[test]
+    fn declares_builtin_feature_dtypes() {
+        assert_eq!(SENTIMENT_FEATURE.name, "sentiment");
+        assert_eq!(SENTIMENT_FEATURE.dtype, FeatureDType::Text);
+        assert_eq!(SCORE_FEATURE.name, "score");
+        assert_eq!(
+            SCORE_FEATURE.dtype,
+            FeatureDType::FixedDecimal {
+                scale: FIXED_DECIMAL_SCALE_DIGITS
+            }
+        );
+        assert_eq!(BUILTIN_FEATURE_SPECS, [SENTIMENT_FEATURE, SCORE_FEATURE]);
+        assert_eq!(SCORE_FEATURE.dtype.to_string(), "fixed_decimal(scale=6)");
     }
 
     #[test]

@@ -2,8 +2,8 @@ use asof_causality_core::{
     generate_events, parse_pipe_events, run_adversarial_checks_with_options_for_signal,
     run_representation_benchmark, CheckOptions, CheckReport, Event, EventKey, EventRole,
     GenerateConfig, GeneratedStream, LastFeatureSentimentSignal, ReplayEngine, ReplayOptions,
-    ReplayOrder, ReplayOutput, Scenario, SymbolId, WindowedFeatureSentimentSignal,
-    WindowedZScoreSignal,
+    ReplayOrder, ReplayOutput, Scenario, SymbolId, VolAdjustedMomentumSignal,
+    WindowedFeatureSentimentSignal, WindowedZScoreSignal,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Number;
@@ -48,6 +48,7 @@ enum SignalChoice {
     LastFeatureSentiment,
     WindowedFeatureSentiment,
     WindowedZScore,
+    VolAdjustedMomentum,
 }
 
 impl SignalChoice {
@@ -56,8 +57,9 @@ impl SignalChoice {
             "last-feature-sentiment" => Ok(Self::LastFeatureSentiment),
             "windowed-feature-sentiment" => Ok(Self::WindowedFeatureSentiment),
             "windowed-zscore" => Ok(Self::WindowedZScore),
+            "vol-adjusted-momentum" => Ok(Self::VolAdjustedMomentum),
             other => Err(format!(
-                "unknown signal {other}; expected last-feature-sentiment, windowed-feature-sentiment, or windowed-zscore"
+                "unknown signal {other}; expected last-feature-sentiment, windowed-feature-sentiment, windowed-zscore, or vol-adjusted-momentum"
             )
             .into()),
         }
@@ -68,6 +70,7 @@ impl SignalChoice {
             Self::LastFeatureSentiment => "last-feature-sentiment",
             Self::WindowedFeatureSentiment => "windowed-feature-sentiment",
             Self::WindowedZScore => "windowed-zscore",
+            Self::VolAdjustedMomentum => "vol-adjusted-momentum",
         }
     }
 }
@@ -335,6 +338,10 @@ fn replay_with_signal(
         }
         SignalChoice::WindowedZScore => ReplayEngine::with_signal(WindowedZScoreSignal::default())
             .replay_with_order(events, options, order),
+        SignalChoice::VolAdjustedMomentum => {
+            ReplayEngine::with_signal(VolAdjustedMomentumSignal::default())
+                .replay_with_order(events, options, order)
+        }
     }
 }
 
@@ -358,6 +365,11 @@ fn run_checks_with_signal(
             events,
             options,
             WindowedZScoreSignal::default(),
+        ),
+        SignalChoice::VolAdjustedMomentum => run_adversarial_checks_with_options_for_signal(
+            events,
+            options,
+            VolAdjustedMomentumSignal::default(),
         ),
     }
 }
@@ -2001,6 +2013,7 @@ fn print_help() {
     println!("  last-feature-sentiment (default)");
     println!("  windowed-feature-sentiment");
     println!("  windowed-zscore");
+    println!("  vol-adjusted-momentum");
 }
 
 #[cfg(test)]
@@ -2104,6 +2117,18 @@ mod tests {
         .unwrap();
 
         assert_eq!(signal, SignalChoice::WindowedZScore);
+    }
+
+    #[test]
+    fn parses_vol_adjusted_momentum_signal() {
+        let (_, signal) = parse_path_signal_args(
+            &args(&["--signal", "vol-adjusted-momentum"]),
+            "default.pipe",
+            "replay",
+        )
+        .unwrap();
+
+        assert_eq!(signal, SignalChoice::VolAdjustedMomentum);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::{
-    Event, EventKey, FeatureRecipeHash, InputSet, Sentiment, SymbolSlot, MAX_INPUTS_PER_PREDICTION,
+    Event, EventKey, FeatureRecipeHash, FixedDecimal, InputSet, Sentiment, SymbolSlot,
+    FIXED_DECIMAL_SCALE, MAX_INPUTS_PER_PREDICTION,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,7 +61,7 @@ impl Default for SymbolState {
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 struct FeatureObservation {
     sentiment: Option<Sentiment>,
-    score: Option<f64>,
+    score: Option<FixedDecimal>,
     input_key: EventKey,
     received_time: u64,
     sequence: u64,
@@ -186,7 +187,7 @@ impl AsOfView<'_> {
         &self,
         symbol: SymbolSlot,
         window: usize,
-        threshold: f64,
+        threshold_scaled: i64,
     ) -> SymbolSnapshot {
         let state = &self.store.by_symbol_slot[symbol.as_usize()];
 
@@ -195,34 +196,47 @@ impl AsOfView<'_> {
             return empty_snapshot();
         }
 
-        let mut keys = [EventKey::default(); MAX_INPUTS_PER_PREDICTION];
-        let mut max_observation = observations[0];
+        score_snapshot_from_observations(
+            &observations,
+            zscore_signal_value(&observations, threshold_scaled),
+        )
+    }
 
-        for (index, observation) in observations.iter().enumerate() {
-            keys[index] = observation.input_key;
-            if (
-                observation.received_time,
-                observation.sequence,
-                observation.input_key,
-            ) > (
-                max_observation.received_time,
-                max_observation.sequence,
-                max_observation.input_key,
-            ) {
-                max_observation = *observation;
-            }
+    pub fn score_momentum_snapshot(
+        &self,
+        symbol: SymbolSlot,
+        fast_window: usize,
+        slow_window: usize,
+        min_trend: FixedDecimal,
+        volatility_divisor: i64,
+    ) -> SymbolSnapshot {
+        let state = &self.store.by_symbol_slot[symbol.as_usize()];
+
+        let slow_window = slow_window.clamp(1, MAX_INPUTS_PER_PREDICTION);
+        let fast_window = fast_window.clamp(1, slow_window);
+        let observations = recent_observations_with_score(state, slow_window);
+        if observations.is_empty() {
+            return empty_snapshot();
+        }
+        if observations.len() < slow_window {
+            return score_snapshot_from_observations(&observations, 0);
         }
 
-        let signal_value = zscore_signal_value(&observations, threshold);
+        let slow_mean = mean_score(&observations);
+        let fast_mean = mean_score(&observations[observations.len() - fast_window..]);
+        let trend = i128::from(fast_mean.scaled()) - i128::from(slow_mean.scaled());
+        let volatility = i128::from(mean_absolute_deviation(&observations, slow_mean).scaled());
+        let volatility_gate = volatility / i128::from(volatility_divisor.max(1));
+        let threshold = i128::from(min_trend.scaled()).abs().max(volatility_gate);
+        let signal_value = if trend >= threshold {
+            1
+        } else if trend <= -threshold {
+            -1
+        } else {
+            0
+        };
 
-        SymbolSnapshot {
-            signal_value,
-            input_event_ids_used: InputSet::from_ordered_keys(&keys[..observations.len()]),
-            max_input_received_time: max_observation.received_time,
-            max_input_sequence: max_observation.sequence,
-            max_input_event_key: Some(max_observation.input_key),
-            feature_recipe_hash: None,
-        }
+        score_snapshot_from_observations(&observations, signal_value)
     }
 }
 
@@ -255,49 +269,126 @@ fn recent_observations_matching(
     observations
 }
 
-fn zscore_signal_value(observations: &[FeatureObservation], threshold: f64) -> i8 {
+fn zscore_signal_value(observations: &[FeatureObservation], threshold_scaled: i64) -> i8 {
     if observations.len() < 2 {
         return 0;
     }
 
-    let count = observations.len() as f64;
-    let mean = observations
+    let count = observations.len() as i128;
+    let sum = observations
         .iter()
-        .map(score_from_filtered_observation)
-        .sum::<f64>()
-        / count;
-    let variance = observations
+        .map(|observation| i128::from(score_from_filtered_observation(observation).scaled()))
+        .sum::<i128>();
+    let sum_squared_deviations = observations
         .iter()
         .map(|observation| {
-            let delta = score_from_filtered_observation(observation) - mean;
+            let delta =
+                i128::from(score_from_filtered_observation(observation).scaled()) * count - sum;
             delta * delta
         })
-        .sum::<f64>()
-        / count;
-    let stddev = variance.sqrt();
-    if stddev == 0.0 {
+        .sum::<i128>();
+    if sum_squared_deviations == 0 {
         return 0;
     }
 
-    let latest = score_from_filtered_observation(
-        observations
-            .last()
-            .expect("observation length is checked before z-score calculation"),
-    );
-    let zscore = (latest - mean) / stddev;
-    if zscore >= threshold {
+    let latest_delta = i128::from(
+        score_from_filtered_observation(
+            observations
+                .last()
+                .expect("observation length is checked before z-score calculation"),
+        )
+        .scaled(),
+    ) * count
+        - sum;
+    if latest_delta == 0 {
+        return 0;
+    }
+
+    let threshold = i128::from(threshold_scaled.saturating_abs());
+    let scale = i128::from(FIXED_DECIMAL_SCALE);
+    let lhs = latest_delta
+        .saturating_mul(latest_delta)
+        .saturating_mul(count)
+        .saturating_mul(scale)
+        .saturating_mul(scale);
+    let rhs = threshold
+        .saturating_mul(threshold)
+        .saturating_mul(sum_squared_deviations);
+
+    if lhs < rhs {
+        return 0;
+    }
+
+    if latest_delta > 0 {
         1
-    } else if zscore <= -threshold {
-        -1
     } else {
-        0
+        -1
     }
 }
 
-fn score_from_filtered_observation(observation: &FeatureObservation) -> f64 {
+fn score_from_filtered_observation(observation: &FeatureObservation) -> FixedDecimal {
     observation
         .score
-        .expect("score observations are filtered before z-score calculation")
+        .expect("score observations are filtered before numeric calculations")
+}
+
+fn mean_score(observations: &[FeatureObservation]) -> FixedDecimal {
+    let sum = observations
+        .iter()
+        .map(|observation| i128::from(score_from_filtered_observation(observation).scaled()))
+        .sum::<i128>();
+    fixed_decimal_from_i128(sum / observations.len() as i128)
+}
+
+fn mean_absolute_deviation(
+    observations: &[FeatureObservation],
+    center: FixedDecimal,
+) -> FixedDecimal {
+    let sum = observations
+        .iter()
+        .map(|observation| {
+            (i128::from(score_from_filtered_observation(observation).scaled())
+                - i128::from(center.scaled()))
+            .abs()
+        })
+        .sum::<i128>();
+    fixed_decimal_from_i128(sum / observations.len() as i128)
+}
+
+fn fixed_decimal_from_i128(value: i128) -> FixedDecimal {
+    FixedDecimal::from_scaled(value.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64)
+}
+
+fn score_snapshot_from_observations(
+    observations: &[FeatureObservation],
+    signal_value: i8,
+) -> SymbolSnapshot {
+    let mut keys = [EventKey::default(); MAX_INPUTS_PER_PREDICTION];
+    let mut max_observation = observations[0];
+
+    for (index, observation) in observations.iter().enumerate() {
+        keys[index] = observation.input_key;
+        if (
+            observation.received_time,
+            observation.sequence,
+            observation.input_key,
+        ) > (
+            max_observation.received_time,
+            max_observation.sequence,
+            max_observation.input_key,
+        ) {
+            max_observation = *observation;
+        }
+    }
+
+    SymbolSnapshot {
+        signal_value,
+        input_event_ids_used: InputSet::from_ordered_keys(&keys[..observations.len()]),
+        max_input_received_time: max_observation.received_time,
+        max_input_sequence: max_observation.sequence,
+        max_input_event_key: Some(max_observation.input_key),
+        feature_recipe_hash: None,
+    }
 }
 
 fn empty_snapshot() -> SymbolSnapshot {
@@ -388,7 +479,33 @@ mod tests {
         let (store, catalog) = store_with_events(&events);
         let symbol = catalog.slot_for_event(&events[0]).unwrap();
 
-        let snapshot = store.as_of_view().score_window_snapshot(symbol, 5, 1.0);
+        let snapshot = store
+            .as_of_view()
+            .score_window_snapshot(symbol, 5, FIXED_DECIMAL_SCALE);
+
+        assert_eq!(snapshot.signal_value, 1);
+        assert_eq!(snapshot.input_event_ids_used.len(), 4);
+        assert_eq!(snapshot.max_input_event_key, Some(events[3].event_key));
+    }
+
+    #[test]
+    fn score_momentum_snapshot_uses_fixed_point_crossover() {
+        let events = [
+            Event::new("px1", 10, 10, 1, EventRole::Feature, "XYZ", "score=10"),
+            Event::new("px2", 20, 20, 2, EventRole::Feature, "XYZ", "score=10"),
+            Event::new("px3", 30, 30, 3, EventRole::Feature, "XYZ", "score=10"),
+            Event::new("px4", 40, 40, 4, EventRole::Feature, "XYZ", "score=30"),
+        ];
+        let (store, catalog) = store_with_events(&events);
+        let symbol = catalog.slot_for_event(&events[0]).unwrap();
+
+        let snapshot = store.as_of_view().score_momentum_snapshot(
+            symbol,
+            2,
+            4,
+            FixedDecimal::from_scaled(0),
+            2,
+        );
 
         assert_eq!(snapshot.signal_value, 1);
         assert_eq!(snapshot.input_event_ids_used.len(), 4);

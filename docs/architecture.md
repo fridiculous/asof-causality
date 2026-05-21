@@ -16,6 +16,7 @@ generator or pipe fixture
 | Concept | Responsibility |
 |---|---|
 | `Event` | Two-clock input row with stable `event_id`, human symbol, derived `SymbolId`, role, and payload |
+| `FeatureDType` | Declares deterministic feature value representation, not ML modeling semantics |
 | `StateStore` | Internal mutable state created from received events |
 | `AsOfView` | Public opaque read-only view exposed to signal code |
 | `Signal` | Restricted API over `AsOfView`, never the full event list |
@@ -30,12 +31,26 @@ mutate it, or access the full event list through the signal API. The default
 `last-feature-sentiment` signal records one input event. The
 `windowed-feature-sentiment` signal records a bounded
 inline set of recent feature inputs, proving the provenance path is not limited
-to one-row examples. The `windowed-zscore` signal reads continuous `score=...`
-features through the same opaque view and buckets the latest rolling Z-score to
-`-1`, `0`, or `1`, showing that the kernel is not sentiment-coupled.
-Numeric signals currently use `f64` arithmetic; floating-point transcript
-determinism is guaranteed for a fixed toolchain and architecture, not as a
-cross-platform bit-identity promise.
+to one-row examples. The `windowed-zscore` signal reads `score=...` fields with
+`FeatureDType::FixedDecimal { scale: 6 }` through the same opaque view and
+buckets the latest rolling Z-score to `-1`, `0`, or `1`, showing that the kernel
+is not sentiment-coupled.
+`vol-adjusted-momentum` implements a fixed-parameter fast/slow moving-average
+crossover gated by realized volatility.
+
+Built-in feature schema is intentionally small: `sentiment` has dtype `Text`
+and `score` has dtype `FixedDecimal { scale: 6 }`. There is no separate
+`FeatureValueKind` such as continuous or categorical in the core contract yet;
+that would be downstream modeling metadata, not required for point-in-time
+replay.
+
+Numeric `score=...` payloads are parsed according to that fixed-decimal dtype
+into `FixedDecimal`, a signed scaled integer with six decimal places. Numeric
+replay decisions are integer deterministic: the Z-score threshold comparison
+uses squared integer arithmetic instead of `sqrt`, the momentum signal uses
+integer moving averages and mean absolute deviation. Benchmark throughput
+reporting may format rates with floats, but prediction transcripts do not
+depend on floating-point arithmetic.
 
 For a public real-data demonstration of the same bitemporal boundary on
 ALFRED/FRED source data, see `docs/real-data-demo.md`.
@@ -80,7 +95,7 @@ expanding the verifier into a backtester.
 
 | Role | Behavior |
 |---|---|
-| `feature` | Updates per-symbol feature state from `sentiment=...`, `score=...`, or both |
+| `feature` | Updates per-symbol feature state from declared payload fields such as `sentiment=...` or `score=...` |
 | `feature_correction` | Append-only feature correction with its own received time |
 | `prediction` | Emits a prediction for the symbol at this received time |
 | `outcome` | Optional future outcome data; excluded from prediction state |
