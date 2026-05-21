@@ -25,14 +25,13 @@ pub mod replay;
 /// Sensitivity analysis orchestration around replay.
 #[allow(missing_docs)]
 pub mod sensitivity;
-/// Signal trait and built-in signals.
+/// Signal trait implemented by external signal crates.
 pub mod signal;
 /// Opaque as-of state view exposed to signals.
 pub mod state;
 
 pub use bench::{run_representation_benchmark, BenchResult};
 pub use checks::{
-    run_adversarial_checks, run_adversarial_checks_with_options,
     run_adversarial_checks_with_options_for_signal, CheckOptions, CheckReport, CheckResult,
 };
 pub use event::{
@@ -54,8 +53,5 @@ pub use sensitivity::{
     PolicyCategory, PolicyKind, PolicyPoint, PolicyRun, SensitivityDetail, SensitivityError,
     SensitivityPolicyResult, SensitivitySummary, SensitivitySweep,
 };
-pub use signal::{
-    LastFeatureSentimentSignal, Signal, VolAdjustedMomentumSignal, WindowedFeatureSentimentSignal,
-    WindowedZScoreSignal,
-};
+pub use signal::Signal;
 pub use state::{AsOfView, SignalEvaluation};

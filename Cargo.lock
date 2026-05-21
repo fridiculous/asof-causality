@@ -50,10 +50,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
-name = "asof-causality-cli"
+name = "asof-causality"
 version = "0.1.0"
 dependencies = [
- "asof-causality-core",
+ "blake3",
+ "proptest",
+]
+
+[[package]]
+name = "asof-cli"
+version = "0.1.0"
+dependencies = [
+ "asof-causality",
+ "asof-signals",
  "assert_cmd",
  "insta",
  "jsonschema",
@@ -64,11 +73,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "asof-causality-core"
+name = "asof-signals"
 version = "0.1.0"
 dependencies = [
- "blake3",
- "proptest",
+ "asof-causality",
 ]
 
 [[package]]

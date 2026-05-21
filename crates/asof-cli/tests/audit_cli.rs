@@ -13,7 +13,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn cli() -> Result<Command, Box<dyn std::error::Error>> {
-    let mut command = Command::cargo_bin("asof-causality")?;
+    let mut command = Command::cargo_bin("asof")?;
     command.current_dir(repo_root());
     Ok(command)
 }
@@ -266,7 +266,7 @@ fn run_suite_writes_expected_artifacts_and_valid_manifest() -> TestResult {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("asof-causality run-suite"))
+        .stdout(predicate::str::contains("asof run-suite"))
         .stdout(predicate::str::contains("ARTIFACTS"))
         .stdout(predicate::str::contains("manifest.json"))
         .stderr(predicate::str::is_empty());
@@ -341,7 +341,7 @@ fn unknown_top_level_command_prints_help_to_stdout() -> TestResult {
         .assert()
         .success()
         .stdout(predicate::str::contains("usage:"))
-        .stdout(predicate::str::contains("asof-causality negative-control"))
+        .stdout(predicate::str::contains("asof negative-control"))
         .stderr(predicate::str::is_empty());
 
     Ok(())
@@ -350,7 +350,8 @@ fn unknown_top_level_command_prints_help_to_stdout() -> TestResult {
 #[test]
 fn replay_stdout_snapshot() -> TestResult {
     let output = success_output(&["replay", "examples/late-arrival.pipe"])?;
-    insta::assert_snapshot!(stdout_text(&output), @r###"replay path=examples/late-arrival.pipe signal=last-feature-sentiment events=7
+    insta::assert_snapshot!(stdout_text(&output), @r###"
+replay path=examples/late-arrival.pipe signal=last-feature-sentiment events=7
 prediction_replay_key|symbol|signal_value|input_event_ids|max_input_replay_key
 580:3:p1|AAPL|0|-|-
 590:4:p2|AAPL|1|n1|585:2:n1
@@ -366,7 +367,8 @@ outcomes_seen=1
 #[test]
 fn check_stdout_snapshot() -> TestResult {
     let output = success_output(&["check", "examples/late-arrival.pipe", "--exhaustive"])?;
-    insta::assert_snapshot!(stdout_text(&output), @r###"asof-causality check
+    insta::assert_snapshot!(stdout_text(&output), @r###"
+asof check
   fixture    examples/late-arrival.pipe
   events     7
   signal     last-feature-sentiment
@@ -399,7 +401,8 @@ fn negative_control_stdout_snapshot() -> TestResult {
         "--signal",
         "windowed-feature-sentiment",
     ])?;
-    insta::assert_snapshot!(stdout_text(&output), @r###"asof-causality negative-control
+    insta::assert_snapshot!(stdout_text(&output), @r###"
+asof negative-control
   fixture  examples/lookahead-negative-control.pipe
   events   12
   signal   windowed-feature-sentiment

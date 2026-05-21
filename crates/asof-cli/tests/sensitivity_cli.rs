@@ -28,7 +28,7 @@ fn validate_json(schema_path: &Path, value: &Value) {
 }
 
 fn run_sensitivity(args: &[String]) {
-    let output = Command::new(env!("CARGO_BIN_EXE_asof-causality"))
+    let output = Command::new(env!("CARGO_BIN_EXE_asof"))
         .args(args)
         .output()
         .expect("sensitivity command should run");
@@ -41,7 +41,7 @@ fn run_sensitivity(args: &[String]) {
 }
 
 fn run_sensitivity_failure(args: &[String]) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_asof-causality"))
+    let output = Command::new(env!("CARGO_BIN_EXE_asof"))
         .args(args)
         .output()
         .expect("sensitivity command should run");
@@ -72,7 +72,7 @@ fn read_jsonl(path: &Path) -> Vec<Value> {
 }
 
 fn file_hash(path: &Path) -> String {
-    asof_causality_core::blake3_hex(&fs::read(path).expect("artifact should be readable"))
+    asof_causality::blake3_hex(&fs::read(path).expect("artifact should be readable"))
 }
 
 fn assert_artifact_hash(manifest: &Value, path_key: &str, hash_key: &str) {
@@ -287,7 +287,7 @@ fn svg_height(svg: &str) -> usize {
 
 #[test]
 fn sensitivity_cli_writes_summary_details_and_manifest() {
-    let bin = env!("CARGO_BIN_EXE_asof-causality");
+    let bin = env!("CARGO_BIN_EXE_asof");
     let repo_root = repo_root();
     let events = repo_root.join("examples/alfred-dgs10-sp500.pipe");
     let out_dir = std::env::temp_dir().join(format!("asof-sensitivity-{}", std::process::id()));
@@ -423,7 +423,7 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
 
 #[test]
 fn sensitivity_cli_accepts_normalized_lookahead_range() {
-    let bin = env!("CARGO_BIN_EXE_asof-causality");
+    let bin = env!("CARGO_BIN_EXE_asof");
     let repo_root = repo_root();
     let events = repo_root.join("examples/late-arrival.pipe");
     let out_dir =
@@ -496,7 +496,7 @@ fn sensitivity_cli_accepts_normalized_lookahead_range() {
 
 #[test]
 fn sensitivity_cli_accepts_late_arrival_scenario() {
-    let bin = env!("CARGO_BIN_EXE_asof-causality");
+    let bin = env!("CARGO_BIN_EXE_asof");
     let repo_root = repo_root();
     let events = repo_root.join("examples/lookahead-negative-control.pipe");
     let out_dir =

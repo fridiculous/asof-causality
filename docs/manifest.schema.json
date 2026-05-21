@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/fridiculous/asof-causality/docs/manifest.schema.json",
-  "title": "asof-causality run-suite manifest",
+  "title": "asof run-suite manifest",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -35,7 +35,7 @@
       "const": 3
     },
     "tool": {
-      "const": "asof-causality"
+      "const": "asof"
     },
     "hash_algorithm": {
       "const": "blake3"

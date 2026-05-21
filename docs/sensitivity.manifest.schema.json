@@ -41,7 +41,7 @@
       "const": "sensitivity-v1"
     },
     "tool": {
-      "const": "asof-causality"
+      "const": "asof"
     },
     "hash_algorithm": {
       "const": "blake3"

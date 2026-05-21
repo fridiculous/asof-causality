@@ -117,15 +117,15 @@ the sampled lag removal easier to interpret.
 uv run --script scripts/rebuild-alfred-example.py --check
 uv run --script scripts/rebuild-alfred-revision-example.py --check
 uv run --script scripts/rebuild-alfred-revision-example.py --variant large --check
-cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- check examples/alfred-payems-revision.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- check examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- replay examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- negative-control examples/alfred-payems-revision.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- negative-control examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- sensitivity examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore --scenario late-arrivals --out runs/alfred-payems-large-sensitivity
-cargo run -p asof-causality-cli -- audit examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --outcomes examples/alfred-dgs10-sp500.pipe --out runs/alfred-dgs10-sp500-audit.jsonl
-cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
-cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
+cargo run -p asof-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
+cargo run -p asof-cli -- check examples/alfred-payems-revision.pipe --signal windowed-zscore
+cargo run -p asof-cli -- check examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
+cargo run -p asof-cli -- replay examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
+cargo run -p asof-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
+cargo run -p asof-cli -- negative-control examples/alfred-payems-revision.pipe --signal windowed-zscore
+cargo run -p asof-cli -- negative-control examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
+cargo run -p asof-cli -- sensitivity examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore --scenario late-arrivals --out runs/alfred-payems-large-sensitivity
+cargo run -p asof-cli -- audit examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --outcomes examples/alfred-dgs10-sp500.pipe --out runs/alfred-dgs10-sp500-audit.jsonl
+cargo run -p asof-cli -- check examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
+cargo run -p asof-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
 ```

@@ -18,13 +18,13 @@ observed-time replay would emit. It evaluates causality, not predictive alpha.
 ## 30-Second Demo
 
 ```sh
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
+cargo run -p asof-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 ```
 
 Expected diagnostic:
 
 ```text
-asof-causality negative-control
+asof negative-control
   fixture  examples/lookahead-negative-control.pipe
   events   12
   signal   windowed-feature-sentiment
@@ -75,7 +75,7 @@ into predictions that could not have used them in live replay.
 
 ## What This Builds
 
-- a Rust workspace with a reusable core crate and CLI
+- a Rust workspace split into `asof-causality`, `asof-signals`, and `asof-cli`
 - a pipe-delimited event format with `observed_time` and `received_time`
 - canonical event roles: `feature`, `feature_correction`, `prediction`, and
   `outcome`
@@ -99,43 +99,43 @@ into predictions that could not have used them in live replay.
 - a synthetic throughput benchmark comparing string-keyed state with dense
   symbol-slot state
 
-The kernel is signal-agnostic. Feature payload fields have explicit
-`FeatureDType`s: `sentiment` is text parsed by the legacy label fixtures, while
-`score` is `FixedDecimal { scale: 6 }` for deterministic numeric replay. There
-is intentionally no separate ML-semantic `FeatureValueKind` layer yet. The
-built-ins include fixed-point numeric signals and `vol-adjusted-momentum` as a
-recognizable fast/slow moving-average crossover gated by realized volatility.
-Fixed-point arithmetic is used for cross-architecture transcript determinism;
-if a Z-score comparison would overflow checked `i128` arithmetic, the built-in
-numeric signal fails closed to neutral rather than producing a directional
-record from saturated math.
-The non-trivial part is the correctness cage around the signal: all of them
-receive only an opaque as-of view and return `SignalEvaluation` provenance that
-the replay engine records.
+The `asof-causality` kernel is signal-agnostic. Built-ins live in
+`asof-signals`. Feature payload fields have explicit `FeatureDType`s:
+`sentiment` is text parsed by the legacy label fixtures, while `score` is
+`FixedDecimal { scale: 6 }` for deterministic numeric replay. The built-ins
+include fixed-point numeric signals and `vol-adjusted-momentum` as a recognizable
+fast/slow moving-average crossover gated by realized volatility. The non-trivial
+part is the correctness cage around the signal: all of them receive only an
+opaque as-of view and return `SignalEvaluation` provenance that the replay
+engine records.
 
 ## Quick Start
 
-Install Rust 1.78+ if needed, then:
+Install Rust 1.95+ if needed, then:
 
 ```sh
-cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
-cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
-cargo run -p asof-causality-cli -- audit examples/late-arrival.pipe
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
-cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- check examples/alfred-payems-revision.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --scenario lookahead --lookahead-range 0..100 --steps 4 --details --out runs/alfred-sensitivity
-cargo run -p asof-causality-cli -- sensitivity examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment --scenario late-arrivals --out runs/late-arrival-sensitivity
-cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
+cargo run -p asof-cli -- replay examples/late-arrival.pipe
+cargo run -p asof-cli -- check examples/late-arrival.pipe
+cargo run -p asof-cli -- audit examples/late-arrival.pipe
+cargo run -p asof-cli -- negative-control examples/lookahead-negative-control.pipe
+cargo run -p asof-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
+cargo run -p asof-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
+cargo run -p asof-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
+cargo run -p asof-cli -- check examples/alfred-payems-revision.pipe --signal windowed-zscore
+cargo run -p asof-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --scenario lookahead --lookahead-range 0..100 --steps 4 --details --out runs/alfred-sensitivity
+cargo run -p asof-cli -- sensitivity examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment --scenario late-arrivals --out runs/late-arrival-sensitivity
+cargo run -p asof-cli -- check examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
+uv run --script scripts/quant_workflow_demo.py --dataset macro-research-v1 --signal windowed-zscore
 make verify-real-data-demo
 make verify-real-revision-demo
-cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
-cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
-cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
+cargo run -p asof-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
+cargo run -p asof-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
+cargo run -p asof-cli -- bench --events 1000000 --symbols 1024
 cargo test
 ```
+
+When installed, the binary is `asof`, so the same commands become
+`asof replay ...`, `asof check ...`, and `asof audit ...`.
 
 This repository has no runtime network dependency. Most fixtures are synthetic;
 `examples/alfred-dgs10-sp500.pipe` is a small checked-in real-data fixture
@@ -148,6 +148,11 @@ including 76 feature corrections and 23 predictions. `make
 verify-real-revision-demo` rebuilds both from the source vintages. Those
 verification commands require internet access to the public CSV endpoints, but
 they do not require an API key, an LLM key, CUDA, or a database.
+
+For a quant-facing signal-validation workflow around the ALFRED/FRED fixture,
+see [docs/demo.md](docs/demo.md). The demo keeps Python as orchestration only:
+it resolves a named dataset, invokes the Rust CLI as a subprocess, summarizes
+the audit JSONL, and optionally renders negative-control leak examples.
 
 ## Event Format
 
@@ -189,7 +194,7 @@ Built-in feature payload fields are:
 ## Current Commands
 
 ```sh
-cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
+cargo run -p asof-cli -- replay examples/late-arrival.pipe
 ```
 
 Prints deterministic `PredictionRecord`s and a transcript hash.
@@ -200,7 +205,7 @@ bounded multi-input signal, `--signal windowed-zscore` for fixed-decimal
 trend-following signal. The default is `last-feature-sentiment`.
 
 ```sh
-cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
+cargo run -p asof-cli -- check examples/late-arrival.pipe
 ```
 
 Runs the adversarial replay suite against the fixture.
@@ -211,7 +216,7 @@ for the expensive prefix-equivalence and future-mutation checks. Use
 `--max-cutoffs N` to set the deterministic cutoff sample size.
 
 ```sh
-cargo run -p asof-causality-cli -- audit examples/late-arrival.pipe --signal windowed-feature-sentiment
+cargo run -p asof-cli -- audit examples/late-arrival.pipe --signal windowed-feature-sentiment
 ```
 
 Emits one JSON object per replay-derived `PredictionRecord`. Each record
@@ -226,7 +231,7 @@ To audit stored predictions instead of only emitting the replay-derived audit
 surface:
 
 ```sh
-cargo run -p asof-causality-cli -- audit events.pipe stored_predictions.jsonl outcomes.pipe --out audit.jsonl
+cargo run -p asof-cli -- audit events.pipe stored_predictions.jsonl outcomes.pipe --out audit.jsonl
 ```
 
 Stored predictions are matched by `(symbol, prediction_replay_key)` and should
@@ -238,7 +243,7 @@ compute PnL or scoring metrics. Use `--outcomes path` to attach outcome
 attributions without supplying stored predictions.
 
 ```sh
-cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
+cargo run -p asof-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 ```
 
 Generates a deterministic pipe fixture with a fixed seed. The `late-heavy`
@@ -248,7 +253,7 @@ includes a small sentinel late-arrival received sequence so the contrast checks
 have a known adversarial case even when random rates are low.
 
 ```sh
-cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
+cargo run -p asof-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
 ```
 
 Runs the start-to-finish path: generate an adversarial fixture, replay it, run
@@ -257,10 +262,11 @@ the checks, and write `events.pipe`, `predictions.pipe`, `checks.txt`, and
 
 It also writes `manifest.json`, the run certificate for the output directory.
 The manifest links the fixture hash, prediction-output hash, checks-output hash,
-transcript hash, hash algorithm, invocation, UTC run timestamp, check counts,
-Rust toolchain, and optional Git commit. A reviewer can compare the manifest and
-artifacts to verify that a run's predictions, checks, and reported transcript
-belong to the same execution. The machine-readable manifest contract lives in
+transcript hash, hash algorithm, signal name, invocation, UTC run timestamp,
+check counts, Rust toolchain, and optional Git commit. A reviewer can compare
+the manifest and artifacts to verify that a run's predictions, checks, and
+reported transcript belong to the same execution. The machine-readable manifest
+contract lives in
 [docs/manifest.schema.json](docs/manifest.schema.json).
 
 Generated `runs/` artifacts are intentionally ignored by git so stale local
@@ -269,7 +275,7 @@ snapshots do not become part of the source artifact. Use
 directory.
 
 ```sh
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
+cargo run -p asof-cli -- negative-control examples/lookahead-negative-control.pipe
 ```
 
 Runs a negative-control fixture through the correct received-time replay and a
@@ -278,7 +284,7 @@ a late positive feature, and a late negative feature correction; a backtester
 ordered by observed time leaks both late records into earlier predictions.
 
 ```sh
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
+cargo run -p asof-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 ```
 
 The windowed signal makes multi-input provenance visible. The expected
@@ -294,7 +300,7 @@ The leaky baseline is intentionally included as a negative control; it shows the
 class of impossible prediction that the normal engine prevents.
 
 ```sh
-cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
+cargo run -p asof-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
 ```
 
 The numeric fixture exercises the same boundary with continuous inputs. In the
@@ -305,7 +311,7 @@ scaled integers, so replay decisions do not depend on architecture-specific
 floating-point behavior.
 
 ```sh
-cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal vol-adjusted-momentum
+cargo run -p asof-cli -- negative-control examples/zscore-lookahead.pipe --signal vol-adjusted-momentum
 ```
 
 The same fixture can be replayed through `vol-adjusted-momentum`, a standard
@@ -313,7 +319,7 @@ moving-average crossover shape with a realized-volatility gate, implemented with
 the same fixed-point numeric view.
 
 ```sh
-cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
+cargo run -p asof-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal vol-adjusted-momentum
 ```
 
 This is the lookahead-bias falsification harness for the repo's real-data
@@ -324,7 +330,7 @@ next ALFRED vintage. See
 [docs/real-data-demo.md](docs/real-data-demo.md) for source URLs and mapping.
 
 ```sh
-cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --scenario lookahead --lookahead-range 0..100 --steps 4 --details --out runs/alfred-sensitivity
+cargo run -p asof-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --scenario lookahead --lookahead-range 0..100 --steps 4 --details --out runs/alfred-sensitivity
 ```
 
 Runs a stability sweep outside the strict kernel: the baseline uses received
@@ -343,7 +349,7 @@ policy. In summary and manifest records, `events_transformed` means rows whose
 Late-arrival attribution is a separate sensitivity scenario:
 
 ```sh
-cargo run -p asof-causality-cli -- sensitivity examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment --scenario late-arrivals --out runs/late-arrival-sensitivity
+cargo run -p asof-cli -- sensitivity examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment --scenario late-arrivals --out runs/late-arrival-sensitivity
 ```
 
 This builds automatic cumulative percent-of-lag samples from late feature
@@ -369,8 +375,8 @@ toward its own observed time by the sampled percentage.
 The PAYEMS fixture anchors an actual ALFRED correction:
 
 ```sh
-cargo run -p asof-causality-cli -- check examples/alfred-payems-revision.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- negative-control examples/alfred-payems-revision.pipe --signal windowed-zscore
+cargo run -p asof-cli -- check examples/alfred-payems-revision.pipe --signal windowed-zscore
+cargo run -p asof-cli -- negative-control examples/alfred-payems-revision.pipe --signal windowed-zscore
 ```
 
 It compares the PAYEMS `2019-01-01` observation across two ALFRED vintages:
@@ -381,9 +387,9 @@ replay must not let `p_after_initial_before_revision` use the revised value.
 For a larger correction-heavy sample, use the 2020-2021 PAYEMS fixture:
 
 ```sh
-cargo run -p asof-causality-cli -- check examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- negative-control examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- sensitivity examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore --scenario late-arrivals --out runs/alfred-payems-large-sensitivity
+cargo run -p asof-cli -- check examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
+cargo run -p asof-cli -- negative-control examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
+cargo run -p asof-cli -- sensitivity examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore --scenario late-arrivals --out runs/alfred-payems-large-sensitivity
 ```
 
 This larger fixture has 133 actual events, 76 feature corrections, and 23
@@ -391,7 +397,7 @@ predictions. It is useful for seeing a cumulative late-arrival sensitivity
 curve instead of a single hand-inspectable correction case.
 
 ```sh
-cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
+cargo run -p asof-cli -- bench --events 1000000 --symbols 1024
 ```
 
 Generates synthetic events and reports replay throughput for two state
@@ -447,8 +453,8 @@ The normal gate is:
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
 cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The test suite includes fixture regressions, proptest-generated event streams,
@@ -460,9 +466,9 @@ claiming the causality kernel is hardened:
 
 ```sh
 cargo mutants \
-  -f crates/asof-causality-core/src/checks.rs \
-  -f crates/asof-causality-core/src/replay.rs \
-  -f crates/asof-causality-core/src/log.rs
+  -f crates/asof-causality/src/checks.rs \
+  -f crates/asof-causality/src/replay.rs \
+  -f crates/asof-causality/src/log.rs
 ```
 
 This is intentionally not a PR gate; it is a heavier review tool for checking

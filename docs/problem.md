@@ -27,11 +27,9 @@ Implement a point-in-time causality test suite that:
 - restricts signal code to as-of state
 - proves future rows cannot affect prior `PredictionRecord`s
 
-The built-in signals keep alpha claims out of scope, but the cage is exercised
-with recognizable residents: a fixed-point volatility-adjusted momentum signal
-with a fast/slow moving-average crossover, plus fixed-point numeric window
-statistics. That keeps the focus on causality while still demonstrating that
-the boundary holds familiar signal shapes.
+The built-in signals in `asof-signals` keep alpha claims out of scope, but the
+cage is exercised with recognizable shapes: fixed-point numeric windows and a
+volatility-adjusted momentum crossover.
 
 ## Related Systems
 
@@ -39,5 +37,5 @@ General backtesters are usually optimized around portfolio simulation, order
 modeling, and research ergonomics. This artifact is intentionally narrower: it
 is a reference replay engine plus adversarial test suite for receipt-time
 causality. If a production research platform already tracks receipt-time
-semantics internally, `asof-causality` is the executable fixture and negative
+semantics internally, the `asof` CLI is the executable fixture and negative
 control that make those semantics independently inspectable.

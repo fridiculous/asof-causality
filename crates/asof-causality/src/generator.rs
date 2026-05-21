@@ -108,7 +108,7 @@ pub struct GeneratedStream {
 impl GeneratedStream {
     pub fn to_pipe_string(&self) -> String {
         let mut output = String::new();
-        let _ = writeln!(output, "# generated_by=asof-causality");
+        let _ = writeln!(output, "# generated_by=asof");
         let _ = writeln!(
             output,
             "# scenario={} seed={} data_events={} rows={} symbols={} shuffled={}",
@@ -410,7 +410,28 @@ impl SplitMix64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{parse_pipe_events, run_adversarial_checks, ReplayEngine, ReplayOptions};
+    use crate::{
+        parse_pipe_events, run_adversarial_checks_with_options_for_signal, AsOfView, CheckOptions,
+        ReplayEngine, ReplayOptions, Signal, SignalEvaluation, SymbolSlot,
+    };
+
+    #[derive(Clone, Copy)]
+    struct LastFeatureTestSignal;
+
+    impl Signal for LastFeatureTestSignal {
+        fn name(&self) -> &'static str {
+            "last-feature-sentiment"
+        }
+
+        fn evaluate(
+            &self,
+            view: AsOfView<'_>,
+            symbol: SymbolSlot,
+            _as_of_timestamp: u64,
+        ) -> SignalEvaluation {
+            view.snapshot(symbol)
+        }
+    }
 
     #[test]
     fn same_seed_produces_same_pipe_file() {
@@ -437,12 +458,16 @@ mod tests {
         let generated = generate_events(&config);
         let parsed = parse_pipe_events(&generated.to_pipe_string()).unwrap();
 
-        let output = ReplayEngine::new()
+        let output = ReplayEngine::with_signal(LastFeatureTestSignal)
             .replay(&parsed, ReplayOptions::default())
             .unwrap();
         assert!(!output.predictions.records().is_empty());
 
-        let report = run_adversarial_checks(&parsed);
+        let report = run_adversarial_checks_with_options_for_signal(
+            &parsed,
+            CheckOptions::exhaustive(),
+            LastFeatureTestSignal,
+        );
         assert!(report.passed(), "{report:?}");
     }
 

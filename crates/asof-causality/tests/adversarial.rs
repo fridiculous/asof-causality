@@ -1,35 +1,122 @@
-use asof_causality_core::{
-    parse_pipe_events, run_adversarial_checks, EventRole, ReplayEngine, ReplayOptions, ReplayOrder,
-    VolAdjustedMomentumSignal, WindowedFeatureSentimentSignal, WindowedZScoreSignal,
+use asof_causality::{
+    parse_pipe_events, run_adversarial_checks_with_options_for_signal, AsOfView, CheckOptions,
+    EventRole, FixedDecimal, ReplayEngine, ReplayOptions, ReplayOrder, Signal, SignalEvaluation,
+    SymbolSlot, FIXED_DECIMAL_SCALE,
 };
 
-fn fixture_events() -> Vec<asof_causality_core::Event> {
+#[derive(Clone, Copy)]
+struct LastFeatureTestSignal;
+
+impl Signal for LastFeatureTestSignal {
+    fn name(&self) -> &'static str {
+        "last-feature-sentiment"
+    }
+
+    fn evaluate(
+        &self,
+        view: AsOfView<'_>,
+        symbol: SymbolSlot,
+        _as_of_timestamp: u64,
+    ) -> SignalEvaluation {
+        view.snapshot(symbol)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct WindowedFeatureTestSignal {
+    window: usize,
+}
+
+impl Signal for WindowedFeatureTestSignal {
+    fn name(&self) -> &'static str {
+        "windowed-feature-sentiment"
+    }
+
+    fn config_descriptor(&self) -> String {
+        format!("window={}", self.window)
+    }
+
+    fn evaluate(
+        &self,
+        view: AsOfView<'_>,
+        symbol: SymbolSlot,
+        _as_of_timestamp: u64,
+    ) -> SignalEvaluation {
+        view.windowed_snapshot(symbol, self.window)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ZScoreTestSignal;
+
+impl Signal for ZScoreTestSignal {
+    fn name(&self) -> &'static str {
+        "windowed-zscore"
+    }
+
+    fn config_descriptor(&self) -> String {
+        "window=5;threshold=1".to_string()
+    }
+
+    fn evaluate(
+        &self,
+        view: AsOfView<'_>,
+        symbol: SymbolSlot,
+        _as_of_timestamp: u64,
+    ) -> SignalEvaluation {
+        view.score_window_snapshot(symbol, 5, FIXED_DECIMAL_SCALE)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct VolAdjustedMomentumTestSignal;
+
+impl Signal for VolAdjustedMomentumTestSignal {
+    fn name(&self) -> &'static str {
+        "vol-adjusted-momentum"
+    }
+
+    fn config_descriptor(&self) -> String {
+        "fast_window=2;slow_window=4;min_trend=0;volatility_divisor=2".to_string()
+    }
+
+    fn evaluate(
+        &self,
+        view: AsOfView<'_>,
+        symbol: SymbolSlot,
+        _as_of_timestamp: u64,
+    ) -> SignalEvaluation {
+        view.score_momentum_snapshot(symbol, 2, 4, FixedDecimal::from_scaled(0), 2)
+    }
+}
+
+fn fixture_events() -> Vec<asof_causality::Event> {
     parse_pipe_events(include_str!("../../../examples/late-arrival.pipe")).unwrap()
 }
 
-fn negative_control_events() -> Vec<asof_causality_core::Event> {
+fn negative_control_events() -> Vec<asof_causality::Event> {
     parse_pipe_events(include_str!(
         "../../../examples/lookahead-negative-control.pipe"
     ))
     .unwrap()
 }
 
-fn zscore_events() -> Vec<asof_causality_core::Event> {
+fn zscore_events() -> Vec<asof_causality::Event> {
     parse_pipe_events(include_str!("../../../examples/zscore-lookahead.pipe")).unwrap()
 }
 
-fn alfred_events() -> Vec<asof_causality_core::Event> {
+fn alfred_events() -> Vec<asof_causality::Event> {
     parse_pipe_events(include_str!("../../../examples/alfred-dgs10-sp500.pipe")).unwrap()
 }
 
-fn alfred_payems_revision_events() -> Vec<asof_causality_core::Event> {
+fn alfred_payems_revision_events() -> Vec<asof_causality::Event> {
     parse_pipe_events(include_str!(
         "../../../examples/alfred-payems-revision.pipe"
     ))
     .unwrap()
 }
 
-fn alfred_payems_large_revision_events() -> Vec<asof_causality_core::Event> {
+fn alfred_payems_large_revision_events() -> Vec<asof_causality::Event> {
     parse_pipe_events(include_str!(
         "../../../examples/alfred-payems-revisions-2020.pipe"
     ))
@@ -38,7 +125,11 @@ fn alfred_payems_large_revision_events() -> Vec<asof_causality_core::Event> {
 
 fn assert_check_passes(name: &str) {
     let events = fixture_events();
-    let report = run_adversarial_checks(&events);
+    let report = run_adversarial_checks_with_options_for_signal(
+        &events,
+        CheckOptions::exhaustive(),
+        LastFeatureTestSignal,
+    );
     let result = report
         .results
         .iter()
@@ -91,7 +182,7 @@ fn prediction_audit_invariant_holds() {
 #[test]
 fn disabling_outcome_computation_does_not_change_transcript_hash() {
     let events = fixture_events();
-    let with_outcomes = ReplayEngine::new()
+    let with_outcomes = ReplayEngine::with_signal(LastFeatureTestSignal)
         .replay(
             &events,
             ReplayOptions {
@@ -101,7 +192,7 @@ fn disabling_outcome_computation_does_not_change_transcript_hash() {
         .unwrap()
         .predictions
         .transcript_hash();
-    let without_outcomes = ReplayEngine::new()
+    let without_outcomes = ReplayEngine::with_signal(LastFeatureTestSignal)
         .replay(
             &events,
             ReplayOptions {
@@ -118,7 +209,7 @@ fn disabling_outcome_computation_does_not_change_transcript_hash() {
 #[test]
 fn received_time_engine_survives_negative_control() {
     let events = negative_control_events();
-    let output = ReplayEngine::new()
+    let output = ReplayEngine::with_signal(LastFeatureTestSignal)
         .replay_with_order(&events, ReplayOptions::default(), ReplayOrder::ReceivedTime)
         .unwrap();
 
@@ -128,7 +219,7 @@ fn received_time_engine_survives_negative_control() {
 #[test]
 fn observed_time_baseline_leaks_on_negative_control() {
     let events = negative_control_events();
-    let output = ReplayEngine::new()
+    let output = ReplayEngine::with_signal(LastFeatureTestSignal)
         .replay_with_order(
             &events,
             ReplayOptions::default(),
@@ -181,7 +272,7 @@ fn observed_time_baseline_leaks_on_negative_control() {
 #[test]
 fn windowed_signal_records_multi_input_provenance() {
     let events = negative_control_events();
-    let output = ReplayEngine::with_signal(WindowedFeatureSentimentSignal::new(5))
+    let output = ReplayEngine::with_signal(WindowedFeatureTestSignal { window: 5 })
         .replay_with_order(&events, ReplayOptions::default(), ReplayOrder::ReceivedTime)
         .unwrap();
 
@@ -200,10 +291,10 @@ fn windowed_signal_records_multi_input_provenance() {
 #[test]
 fn zscore_fixture_passes_adversarial_checks() {
     let events = zscore_events();
-    let report = asof_causality_core::run_adversarial_checks_with_options_for_signal(
+    let report = asof_causality::run_adversarial_checks_with_options_for_signal(
         &events,
-        asof_causality_core::CheckOptions::exhaustive(),
-        WindowedZScoreSignal::new(),
+        asof_causality::CheckOptions::exhaustive(),
+        ZScoreTestSignal,
     );
 
     assert!(report.passed(), "{report:?}");
@@ -212,7 +303,7 @@ fn zscore_fixture_passes_adversarial_checks() {
 #[test]
 fn observed_time_baseline_leaks_numeric_zscore_input() {
     let events = zscore_events();
-    let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+    let output = ReplayEngine::with_signal(ZScoreTestSignal)
         .replay_with_order(
             &events,
             ReplayOptions::default(),
@@ -235,10 +326,10 @@ fn observed_time_baseline_leaks_numeric_zscore_input() {
 #[test]
 fn vol_adjusted_momentum_fixture_passes_adversarial_checks() {
     let events = zscore_events();
-    let report = asof_causality_core::run_adversarial_checks_with_options_for_signal(
+    let report = asof_causality::run_adversarial_checks_with_options_for_signal(
         &events,
-        asof_causality_core::CheckOptions::exhaustive(),
-        VolAdjustedMomentumSignal::new(),
+        asof_causality::CheckOptions::exhaustive(),
+        VolAdjustedMomentumTestSignal,
     );
 
     assert!(report.passed(), "{report:?}");
@@ -247,7 +338,7 @@ fn vol_adjusted_momentum_fixture_passes_adversarial_checks() {
 #[test]
 fn observed_time_baseline_leaks_vol_adjusted_momentum_input() {
     let events = zscore_events();
-    let output = ReplayEngine::with_signal(VolAdjustedMomentumSignal::new())
+    let output = ReplayEngine::with_signal(VolAdjustedMomentumTestSignal)
         .replay_with_order(
             &events,
             ReplayOptions::default(),
@@ -270,7 +361,7 @@ fn observed_time_baseline_leaks_vol_adjusted_momentum_input() {
 #[test]
 fn alfred_fixture_blocks_same_day_vintage_until_received() {
     let events = alfred_events();
-    let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+    let output = ReplayEngine::with_signal(ZScoreTestSignal)
         .replay_with_order(&events, ReplayOptions::default(), ReplayOrder::ReceivedTime)
         .unwrap();
     let blocked_input = events
@@ -300,7 +391,7 @@ fn alfred_fixture_blocks_same_day_vintage_until_received() {
 #[test]
 fn observed_time_baseline_leaks_alfred_same_day_vintage() {
     let events = alfred_events();
-    let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+    let output = ReplayEngine::with_signal(ZScoreTestSignal)
         .replay_with_order(
             &events,
             ReplayOptions::default(),
@@ -329,7 +420,7 @@ fn observed_time_baseline_leaks_alfred_same_day_vintage() {
 #[test]
 fn alfred_payems_revision_is_not_used_before_received() {
     let events = alfred_payems_revision_events();
-    let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+    let output = ReplayEngine::with_signal(ZScoreTestSignal)
         .replay_with_order(&events, ReplayOptions::default(), ReplayOrder::ReceivedTime)
         .unwrap();
     let correction = events
@@ -358,7 +449,7 @@ fn alfred_payems_revision_is_not_used_before_received() {
 #[test]
 fn observed_time_baseline_leaks_alfred_payems_revision() {
     let events = alfred_payems_revision_events();
-    let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+    let output = ReplayEngine::with_signal(ZScoreTestSignal)
         .replay_with_order(
             &events,
             ReplayOptions::default(),
@@ -399,13 +490,13 @@ fn alfred_payems_large_revision_fixture_exercises_many_real_corrections() {
     assert_eq!(feature_corrections, 76);
     assert_eq!(predictions, 23);
 
-    let strict = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+    let strict = ReplayEngine::with_signal(ZScoreTestSignal)
         .replay_with_order(&events, ReplayOptions::default(), ReplayOrder::ReceivedTime)
         .unwrap();
 
     assert!(strict.predictions.impossible_predictions().is_empty());
 
-    let observed_time = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+    let observed_time = ReplayEngine::with_signal(ZScoreTestSignal)
         .replay_with_order(
             &events,
             ReplayOptions::default(),

@@ -2,8 +2,7 @@ use crate::catalog::SymbolCatalog;
 use crate::ids::SymbolSlot;
 use crate::state::StateStore;
 use crate::{
-    feature_recipe_hash, Event, EventRole, LastFeatureSentimentSignal, ParseEventError,
-    PredictionLog, PredictionRecord, Signal,
+    feature_recipe_hash, Event, EventRole, ParseEventError, PredictionLog, PredictionRecord, Signal,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -44,19 +43,10 @@ pub enum ReplayOrder {
     ObservedTimeLeaky,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 /// Deterministic as-of replay engine parameterized by a signal.
-pub struct ReplayEngine<S = LastFeatureSentimentSignal> {
+pub struct ReplayEngine<S> {
     signal: S,
-}
-
-impl ReplayEngine<LastFeatureSentimentSignal> {
-    /// Creates a replay engine with the default last-feature sentiment signal.
-    pub fn new() -> Self {
-        Self {
-            signal: LastFeatureSentimentSignal,
-        }
-    }
 }
 
 impl<S: Signal> ReplayEngine<S> {
@@ -257,7 +247,93 @@ impl From<ParseEventError> for ReplayError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{VolAdjustedMomentumSignal, WindowedFeatureSentimentSignal, WindowedZScoreSignal};
+    use crate::{AsOfView, FixedDecimal, SignalEvaluation, SymbolSlot, FIXED_DECIMAL_SCALE};
+
+    #[derive(Clone, Copy)]
+    struct LastFeatureTestSignal;
+
+    impl Signal for LastFeatureTestSignal {
+        fn name(&self) -> &'static str {
+            "last-feature-sentiment"
+        }
+
+        fn evaluate(
+            &self,
+            view: AsOfView<'_>,
+            symbol: SymbolSlot,
+            _as_of_timestamp: u64,
+        ) -> SignalEvaluation {
+            view.snapshot(symbol)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct WindowedFeatureTestSignal {
+        window: usize,
+    }
+
+    impl Signal for WindowedFeatureTestSignal {
+        fn name(&self) -> &'static str {
+            "windowed-feature-sentiment"
+        }
+
+        fn config_descriptor(&self) -> String {
+            format!("window={}", self.window)
+        }
+
+        fn evaluate(
+            &self,
+            view: AsOfView<'_>,
+            symbol: SymbolSlot,
+            _as_of_timestamp: u64,
+        ) -> SignalEvaluation {
+            view.windowed_snapshot(symbol, self.window)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct ZScoreTestSignal;
+
+    impl Signal for ZScoreTestSignal {
+        fn name(&self) -> &'static str {
+            "windowed-zscore"
+        }
+
+        fn config_descriptor(&self) -> String {
+            "window=5;threshold=1".to_string()
+        }
+
+        fn evaluate(
+            &self,
+            view: AsOfView<'_>,
+            symbol: SymbolSlot,
+            _as_of_timestamp: u64,
+        ) -> SignalEvaluation {
+            view.score_window_snapshot(symbol, 5, FIXED_DECIMAL_SCALE)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct VolAdjustedMomentumTestSignal;
+
+    impl Signal for VolAdjustedMomentumTestSignal {
+        fn name(&self) -> &'static str {
+            "vol-adjusted-momentum"
+        }
+
+        fn config_descriptor(&self) -> String {
+            "fast_window=2;slow_window=4;min_trend=0;volatility_divisor=2".to_string()
+        }
+
+        fn evaluate(
+            &self,
+            view: AsOfView<'_>,
+            symbol: SymbolSlot,
+            _as_of_timestamp: u64,
+        ) -> SignalEvaluation {
+            view.score_momentum_snapshot(symbol, 2, 4, FixedDecimal::from_scaled(0), 2)
+        }
+    }
 
     #[test]
     fn ignores_comments_and_blank_lines() {
@@ -274,7 +350,7 @@ n1|572|585|2|feature|AAPL|sentiment=positive
 p2|590|590|4|prediction|AAPL|
 ";
         let events = parse_pipe_events(input).unwrap();
-        let output = ReplayEngine::new()
+        let output = ReplayEngine::with_signal(LastFeatureTestSignal)
             .replay(&events, ReplayOptions::default())
             .unwrap();
         let records = output.predictions.records();
@@ -297,7 +373,7 @@ pa|110|110|3|prediction|AAPL|
 pm|115|115|4|prediction|MSFT|
 ";
         let events = parse_pipe_events(input).unwrap();
-        let output = ReplayEngine::new()
+        let output = ReplayEngine::with_signal(LastFeatureTestSignal)
             .replay(&events, ReplayOptions::default())
             .unwrap();
         let records = output.predictions.records();
@@ -332,7 +408,7 @@ pm|115|115|4|prediction|MSFT|
         ];
         events[1].symbol_key = events[0].symbol_key;
 
-        let error = ReplayEngine::new()
+        let error = ReplayEngine::with_signal(LastFeatureTestSignal)
             .replay(&events, ReplayOptions::default())
             .unwrap_err();
 
@@ -356,7 +432,7 @@ e1|110|110|2|prediction|XYZ|
         )
         .unwrap();
 
-        let error = ReplayEngine::new()
+        let error = ReplayEngine::with_signal(LastFeatureTestSignal)
             .replay(&events, ReplayOptions::default())
             .unwrap_err();
 
@@ -376,7 +452,7 @@ p1|110|100|1|prediction|XYZ|
         )
         .unwrap();
 
-        let error = ReplayEngine::new()
+        let error = ReplayEngine::with_signal(LastFeatureTestSignal)
             .replay(&events, ReplayOptions::default())
             .unwrap_err();
 
@@ -399,7 +475,7 @@ f3|120|120|3|feature|XYZ|sentiment=positive
 p1|130|130|4|prediction|XYZ|
 ";
         let events = parse_pipe_events(input).unwrap();
-        let output = ReplayEngine::with_signal(WindowedFeatureSentimentSignal::new(5))
+        let output = ReplayEngine::with_signal(WindowedFeatureTestSignal { window: 5 })
             .replay(&events, ReplayOptions::default())
             .unwrap();
         let record = &output.predictions.records()[0];
@@ -426,7 +502,7 @@ px4|130|130|4|feature|XYZ|score=30
 p1|140|140|5|prediction|XYZ|
 ";
         let events = parse_pipe_events(input).unwrap();
-        let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+        let output = ReplayEngine::with_signal(ZScoreTestSignal)
             .replay(&events, ReplayOptions::default())
             .unwrap();
         let record = &output.predictions.records()[0];
@@ -447,7 +523,7 @@ px4|130|130|4|feature|XYZ|score=30
 p1|140|140|5|prediction|XYZ|
 ";
         let events = parse_pipe_events(input).unwrap();
-        let output = ReplayEngine::with_signal(VolAdjustedMomentumSignal::new())
+        let output = ReplayEngine::with_signal(VolAdjustedMomentumTestSignal)
             .replay(&events, ReplayOptions::default())
             .unwrap();
         let record = &output.predictions.records()[0];
@@ -468,7 +544,7 @@ px4|130|130|4|feature|XYZ|score=10
 p1|140|140|5|prediction|XYZ|
 ";
         let events = parse_pipe_events(input).unwrap();
-        let output = ReplayEngine::with_signal(VolAdjustedMomentumSignal::new())
+        let output = ReplayEngine::with_signal(VolAdjustedMomentumTestSignal)
             .replay(&events, ReplayOptions::default())
             .unwrap();
         let record = &output.predictions.records()[0];
@@ -486,10 +562,10 @@ f1|100|100|1|feature|XYZ|sentiment=positive
 p1|110|110|2|prediction|XYZ|
 ";
         let events = parse_pipe_events(input).unwrap();
-        let last_feature = ReplayEngine::new()
+        let last_feature = ReplayEngine::with_signal(LastFeatureTestSignal)
             .replay(&events, ReplayOptions::default())
             .unwrap();
-        let windowed = ReplayEngine::with_signal(WindowedFeatureSentimentSignal::new(5))
+        let windowed = ReplayEngine::with_signal(WindowedFeatureTestSignal { window: 5 })
             .replay(&events, ReplayOptions::default())
             .unwrap();
 

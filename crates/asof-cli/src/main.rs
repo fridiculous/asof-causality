@@ -1,11 +1,10 @@
-use asof_causality_core::{
-    generate_events, parse_pipe_events, run_adversarial_checks_with_options_for_signal,
-    run_representation_benchmark, run_sensitivity_sweep, CheckOptions, CheckReport, Event,
-    EventKey, EventRole, GenerateConfig, GeneratedStream, LastFeatureSentimentSignal, PolicyKind,
-    PolicyPoint, PolicyRun, ReplayEngine, ReplayOptions, ReplayOrder, ReplayOutput, Scenario,
-    SensitivityPolicyResult, SensitivitySweep, Signal, SymbolId, VolAdjustedMomentumSignal,
-    WindowedFeatureSentimentSignal, WindowedZScoreSignal,
+use asof_causality::{
+    generate_events, parse_pipe_events, run_representation_benchmark, CheckOptions, CheckReport,
+    Event, EventKey, EventRole, GenerateConfig, GeneratedStream, PolicyKind, PolicyPoint,
+    PolicyRun, ReplayOptions, ReplayOrder, ReplayOutput, Scenario, SensitivityPolicyResult,
+    SensitivitySweep, SymbolId,
 };
+use asof_signals::RegisteredSignal as SignalChoice;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Number, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,50 +39,6 @@ fn run() -> Result<(), Box<dyn Error>> {
         _ => {
             print_help();
             Ok(())
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum SignalChoice {
-    #[default]
-    LastFeatureSentiment,
-    WindowedFeatureSentiment,
-    WindowedZScore,
-    VolAdjustedMomentum,
-}
-
-impl SignalChoice {
-    fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
-        match value {
-            "last-feature-sentiment" => Ok(Self::LastFeatureSentiment),
-            "windowed-feature-sentiment" => Ok(Self::WindowedFeatureSentiment),
-            "windowed-zscore" => Ok(Self::WindowedZScore),
-            "vol-adjusted-momentum" => Ok(Self::VolAdjustedMomentum),
-            other => Err(format!(
-                "unknown signal {other}; expected last-feature-sentiment, windowed-feature-sentiment, windowed-zscore, or vol-adjusted-momentum"
-            )
-            .into()),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::LastFeatureSentiment => "last-feature-sentiment",
-            Self::WindowedFeatureSentiment => "windowed-feature-sentiment",
-            Self::WindowedZScore => "windowed-zscore",
-            Self::VolAdjustedMomentum => "vol-adjusted-momentum",
-        }
-    }
-
-    fn config_descriptor(self) -> String {
-        match self {
-            Self::LastFeatureSentiment => String::new(),
-            Self::WindowedFeatureSentiment => {
-                WindowedFeatureSentimentSignal::default().config_descriptor()
-            }
-            Self::WindowedZScore => WindowedZScoreSignal::default().config_descriptor(),
-            Self::VolAdjustedMomentum => VolAdjustedMomentumSignal::default().config_descriptor(),
         }
     }
 }
@@ -375,21 +330,8 @@ fn run_sensitivity_with_signal(
     signal: SignalChoice,
     events: &[Event],
     policies: &[PolicyPoint],
-) -> Result<SensitivitySweep, asof_causality_core::SensitivityError> {
-    match signal {
-        SignalChoice::LastFeatureSentiment => {
-            run_sensitivity_sweep(events, policies, LastFeatureSentimentSignal)
-        }
-        SignalChoice::WindowedFeatureSentiment => {
-            run_sensitivity_sweep(events, policies, WindowedFeatureSentimentSignal::default())
-        }
-        SignalChoice::WindowedZScore => {
-            run_sensitivity_sweep(events, policies, WindowedZScoreSignal::default())
-        }
-        SignalChoice::VolAdjustedMomentum => {
-            run_sensitivity_sweep(events, policies, VolAdjustedMomentumSignal::default())
-        }
-    }
+) -> Result<SensitivitySweep, asof_causality::SensitivityError> {
+    signal.sensitivity(events, policies)
 }
 
 fn parse_sensitivity_args(args: &[String]) -> Result<SensitivityArgs, Box<dyn Error>> {
@@ -832,53 +774,19 @@ fn bench(args: &[String]) -> Result<(), Box<dyn Error>> {
 
 fn replay_with_signal(
     signal: SignalChoice,
-    events: &[asof_causality_core::Event],
+    events: &[asof_causality::Event],
     options: ReplayOptions,
     order: ReplayOrder,
-) -> Result<ReplayOutput, asof_causality_core::ReplayError> {
-    match signal {
-        SignalChoice::LastFeatureSentiment => ReplayEngine::with_signal(LastFeatureSentimentSignal)
-            .replay_with_order(events, options, order),
-        SignalChoice::WindowedFeatureSentiment => {
-            ReplayEngine::with_signal(WindowedFeatureSentimentSignal::default())
-                .replay_with_order(events, options, order)
-        }
-        SignalChoice::WindowedZScore => ReplayEngine::with_signal(WindowedZScoreSignal::default())
-            .replay_with_order(events, options, order),
-        SignalChoice::VolAdjustedMomentum => {
-            ReplayEngine::with_signal(VolAdjustedMomentumSignal::default())
-                .replay_with_order(events, options, order)
-        }
-    }
+) -> Result<ReplayOutput, asof_causality::ReplayError> {
+    signal.replay(events, options, order)
 }
 
 fn run_checks_with_signal(
     signal: SignalChoice,
-    events: &[asof_causality_core::Event],
+    events: &[asof_causality::Event],
     options: CheckOptions,
 ) -> CheckReport {
-    match signal {
-        SignalChoice::LastFeatureSentiment => run_adversarial_checks_with_options_for_signal(
-            events,
-            options,
-            LastFeatureSentimentSignal,
-        ),
-        SignalChoice::WindowedFeatureSentiment => run_adversarial_checks_with_options_for_signal(
-            events,
-            options,
-            WindowedFeatureSentimentSignal::default(),
-        ),
-        SignalChoice::WindowedZScore => run_adversarial_checks_with_options_for_signal(
-            events,
-            options,
-            WindowedZScoreSignal::default(),
-        ),
-        SignalChoice::VolAdjustedMomentum => run_adversarial_checks_with_options_for_signal(
-            events,
-            options,
-            VolAdjustedMomentumSignal::default(),
-        ),
-    }
+    signal.check(events, options)
 }
 
 fn parse_path_signal_args(
@@ -1161,7 +1069,7 @@ where
     Ok(required_arg(args, index, flag)?.parse()?)
 }
 
-fn load_events(path: &str) -> Result<Vec<asof_causality_core::Event>, Box<dyn Error>> {
+fn load_events(path: &str) -> Result<Vec<asof_causality::Event>, Box<dyn Error>> {
     let input = fs::read_to_string(path)?;
     Ok(parse_pipe_events(&input)?)
 }
@@ -1314,7 +1222,7 @@ fn format_audit_jsonl(
 fn format_audit_record_json(
     signal: SignalChoice,
     output: &ReplayOutput,
-    record: &asof_causality_core::PredictionRecord,
+    record: &asof_causality::PredictionRecord,
     stored_predictions: Option<&BTreeMap<AuditKey, StoredPrediction>>,
     outcomes: &BTreeMap<AuditKey, OutcomeAttribution>,
     allow_missing_recipe_hash: bool,
@@ -2906,7 +2814,7 @@ fn xml_escape(value: &str) -> String {
 fn sensitivity_detail_json(
     sweep: &SensitivitySweep,
     result: &SensitivityPolicyResult,
-    detail: &asof_causality_core::SensitivityDetail,
+    detail: &asof_causality::SensitivityDetail,
 ) -> String {
     let baseline_output = &sweep.baseline.output;
     let comparison_output = &result.run.output;
@@ -2943,7 +2851,7 @@ fn sensitivity_detail_json(
 
 fn prediction_record_sensitivity_json(
     output: &ReplayOutput,
-    record: &asof_causality_core::PredictionRecord,
+    record: &asof_causality::PredictionRecord,
 ) -> Value {
     json!({
         "signal_value": record.signal_value,
@@ -2957,26 +2865,26 @@ fn format_sensitivity_manifest_json(inputs: SensitivityManifestInputs<'_>) -> St
     let details_path = inputs.details_path.map(|path| path.display().to_string());
     let details_hash = inputs
         .details_jsonl
-        .map(|details| asof_causality_core::blake3_hex(details.as_bytes()));
+        .map(|details| asof_causality::blake3_hex(details.as_bytes()));
     let sensitivity_curve_svg_path = inputs
         .sensitivity_curve_svg_path
         .map(|path| path.display().to_string());
     let sensitivity_curve_svg_hash = inputs
         .sensitivity_curve_svg
-        .map(|svg| asof_causality_core::blake3_hex(svg.as_bytes()));
+        .map(|svg| asof_causality::blake3_hex(svg.as_bytes()));
     let late_arrival_impact_svg_path = inputs
         .late_arrival_impact_svg_path
         .map(|path| path.display().to_string());
     let late_arrival_impact_svg_hash = inputs
         .late_arrival_impact_svg
-        .map(|svg| asof_causality_core::blake3_hex(svg.as_bytes()));
+        .map(|svg| asof_causality::blake3_hex(svg.as_bytes()));
     let policies = std::iter::once(&inputs.sweep.baseline)
         .chain(inputs.sweep.results.iter().map(|result| &result.run))
         .map(policy_run_manifest_json)
         .collect::<Vec<_>>();
     let manifest = json!({
         "schema_version": "sensitivity-v1",
-        "tool": "asof-causality",
+        "tool": "asof",
         "hash_algorithm": "blake3",
         "run_started_utc": system_time_to_utc_iso8601(SystemTime::now()),
         "invocation": shell_join(&invocation_args),
@@ -2987,20 +2895,20 @@ fn format_sensitivity_manifest_json(inputs: SensitivityManifestInputs<'_>) -> St
         "timestamp_shift_time_axis": "fixture_native_integer",
         "timestamp_shift_semantics": "raw signed integer arithmetic on received_time; no calendar validation",
         "fixture_path": inputs.events_path,
-        "fixture_hash": asof_causality_core::blake3_hex(inputs.fixture_input.as_bytes()),
+        "fixture_hash": asof_causality::blake3_hex(inputs.fixture_input.as_bytes()),
         "signal": inputs.signal.as_str(),
         "signal_config_descriptor": inputs.signal.config_descriptor(),
         "baseline_policy": inputs.sweep.baseline.policy.name.as_str(),
         "baseline_transcript_hash": inputs.sweep.baseline.output.predictions.transcript_digest(),
         "policies": policies,
         "summary_path": inputs.summary_path.display().to_string(),
-        "summary_hash": asof_causality_core::blake3_hex(inputs.summary_jsonl.as_bytes()),
+        "summary_hash": asof_causality::blake3_hex(inputs.summary_jsonl.as_bytes()),
         "sensitivity_curve_svg_path": sensitivity_curve_svg_path,
         "sensitivity_curve_svg_hash": sensitivity_curve_svg_hash,
         "flip_rate_svg_path": inputs.flip_rate_svg_path.display().to_string(),
-        "flip_rate_svg_hash": asof_causality_core::blake3_hex(inputs.flip_rate_svg.as_bytes()),
+        "flip_rate_svg_hash": asof_causality::blake3_hex(inputs.flip_rate_svg.as_bytes()),
         "input_change_svg_path": inputs.input_change_svg_path.display().to_string(),
-        "input_change_svg_hash": asof_causality_core::blake3_hex(inputs.input_change_svg.as_bytes()),
+        "input_change_svg_hash": asof_causality::blake3_hex(inputs.input_change_svg.as_bytes()),
         "late_arrival_impact_svg_path": late_arrival_impact_svg_path,
         "late_arrival_impact_svg_hash": late_arrival_impact_svg_hash,
         "details_path": details_path,
@@ -3135,7 +3043,7 @@ fn print_sensitivity_stdout(
     sweep: &SensitivitySweep,
     artifacts: SensitivityArtifactPaths<'_>,
 ) {
-    println!("asof-causality sensitivity");
+    println!("asof sensitivity");
     println!("  fixture   {}", args.events_path);
     println!("  signal    {}", args.signal.as_str());
     println!("  scenario  {}", args.scenario.as_str());
@@ -3373,7 +3281,7 @@ fn print_check_stdout(
     report: &CheckReport,
     replay: Option<&ReplayOutput>,
 ) {
-    println!("asof-causality check");
+    println!("asof check");
     println!("  fixture    {path}");
     println!("  events     {}", events.len());
     println!("  signal     {}", signal.as_str());
@@ -3410,7 +3318,7 @@ fn print_negative_control_stdout(
     observed_time: &ReplayOutput,
     labels: &EventLabels<'_>,
 ) {
-    println!("asof-causality negative-control");
+    println!("asof negative-control");
     println!("  fixture  {path}");
     println!("  events   {}", events.len());
     println!("  signal   {}", signal.as_str());
@@ -3684,7 +3592,7 @@ fn format_suite_summary(
     report: &CheckReport,
 ) -> String {
     let mut text = String::new();
-    let _ = writeln!(text, "# asof-causality run suite");
+    let _ = writeln!(text, "# asof run suite");
     let _ = writeln!(text);
     let _ = writeln!(text, "- scenario: {}", stream.stats.scenario.as_str());
     let _ = writeln!(text, "- signal: {}", signal.as_str());
@@ -3726,7 +3634,7 @@ struct RunSuiteStdout<'a> {
 }
 
 fn print_run_suite_stdout(inputs: RunSuiteStdout<'_>) {
-    println!("asof-causality run-suite");
+    println!("asof run-suite");
     println!("  scenario   {}", inputs.stream.stats.scenario.as_str());
     println!("  seed       {}", inputs.stream.stats.seed);
     println!("  signal     {}", inputs.signal.as_str());
@@ -3986,7 +3894,7 @@ impl RunManifest {
     ) -> Self {
         Self {
             schema_version: 3,
-            tool: "asof-causality",
+            tool: "asof",
             hash_algorithm: "blake3",
             run_started_utc: system_time_to_utc_iso8601(run_started),
             invocation: shell_join(&invocation_args),
@@ -4003,11 +3911,11 @@ impl RunManifest {
             late_rate: inputs.config.late_rate,
             feature_correction_rate: inputs.config.feature_correction_rate,
             outcome_rate: inputs.config.outcome_rate,
-            data_fixture_hash: asof_causality_core::blake3_hex(inputs.events_output.as_bytes()),
-            prediction_output_hash: asof_causality_core::blake3_hex(
+            data_fixture_hash: asof_causality::blake3_hex(inputs.events_output.as_bytes()),
+            prediction_output_hash: asof_causality::blake3_hex(
                 inputs.predictions_output.as_bytes(),
             ),
-            checks_output_hash: asof_causality_core::blake3_hex(inputs.checks_output.as_bytes()),
+            checks_output_hash: asof_causality::blake3_hex(inputs.checks_output.as_bytes()),
             transcript_hash: inputs.replay.predictions.transcript_digest(),
             checks_passed: inputs.report.passed(),
             checks: CheckCounts::from_report(inputs.report),
@@ -4228,24 +4136,27 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
 }
 
 fn print_help() {
-    println!("asof-causality");
+    println!("asof");
     println!();
     println!("usage:");
-    println!("  asof-causality replay [path] [--signal name]");
-    println!("  asof-causality check [path] [--signal name] [--max-cutoffs N|--exhaustive]");
-    println!("  asof-causality audit [events] [stored_predictions.jsonl] [legacy_outcomes] [--signal name] [--out path] [--outcomes path] [--allow-missing-recipe-hash]");
+    println!("  asof replay [path] [--signal name]");
+    println!("  asof check [path] [--signal name] [--max-cutoffs N|--exhaustive]");
+    println!("  asof audit [events] [stored_predictions.jsonl] [legacy_outcomes] [--signal name] [--out path] [--outcomes path] [--allow-missing-recipe-hash]");
     println!("      prefer --outcomes path when attaching outcomes without stored predictions");
-    println!("  asof-causality negative-control [path] [--signal name]");
-    println!("  asof-causality generate [--scenario late-heavy] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out path]");
-    println!("  asof-causality run-suite [--scenario late-heavy] [--signal name] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out dir]");
-    println!("  asof-causality sensitivity [path] [--signal name] [--scenario lookahead|late-arrivals] [--lookahead-range 0..100] [--steps N] [--details] --out dir");
-    println!("  asof-causality bench [--events N] [--symbols N]");
+    println!("  asof negative-control [path] [--signal name]");
+    println!("  asof generate [--scenario late-heavy] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out path]");
+    println!("  asof run-suite [--scenario late-heavy] [--signal name] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out dir]");
+    println!("  asof sensitivity [path] [--signal name] [--scenario lookahead|late-arrivals] [--lookahead-range 0..100] [--steps N] [--details] --out dir");
+    println!("  asof bench [--events N] [--symbols N]");
     println!();
     println!("signals:");
-    println!("  last-feature-sentiment (default)");
-    println!("  windowed-feature-sentiment");
-    println!("  windowed-zscore");
-    println!("  vol-adjusted-momentum");
+    for (index, name) in SignalChoice::names().iter().enumerate() {
+        if index == 0 {
+            println!("  {name} (default)");
+        } else {
+            println!("  {name}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -4303,12 +4214,7 @@ mod tests {
                 checks_output: &checks_output,
             },
             UNIX_EPOCH + Duration::from_secs(1_704_067_200),
-            args(&[
-                "asof-causality",
-                "run-suite",
-                "--out",
-                "/tmp/path with space",
-            ]),
+            args(&["asof", "run-suite", "--out", "/tmp/path with space"]),
             Some("abcdef1234567890".to_string()),
             Some(false),
             Some("rustc test".to_string()),
@@ -4607,12 +4513,13 @@ mod tests {
         let json = format_run_manifest(&manifest);
 
         assert!(json.contains("\"schema_version\": 3"));
-        assert!(json.contains("\"tool\": \"asof-causality\""));
+        assert!(json.contains("\"tool\": \"asof\""));
         assert!(json.contains("\"hash_algorithm\": \"blake3\""));
         assert!(json.contains("\"run_started_utc\": \"2024-01-01T00:00:00Z\""));
-        assert!(json
-            .contains("\"invocation\": \"asof-causality run-suite --out '/tmp/path with space'\""));
-        assert!(json.contains("\"invocation_args\": [\"asof-causality\", \"run-suite\", \"--out\", \"/tmp/path with space\"]"));
+        assert!(json.contains("\"invocation\": \"asof run-suite --out '/tmp/path with space'\""));
+        assert!(json.contains(
+            "\"invocation_args\": [\"asof\", \"run-suite\", \"--out\", \"/tmp/path with space\"]"
+        ));
         assert!(json.contains("\"source_commit\": \"abcdef1234567890\""));
         assert!(json.contains("\"workspace_dirty\": false"));
         assert!(json.contains("\"rust_toolchain\": \"rustc test\""));
@@ -4636,11 +4543,11 @@ mod tests {
 
     #[test]
     fn invocation_args_serialize_as_json_array_with_escaping() {
-        let values = args(&["asof-causality", "quote\"arg", "slash\\arg"]);
+        let values = args(&["asof", "quote\"arg", "slash\\arg"]);
 
         assert_eq!(
             json_string_array(&values),
-            "[\"asof-causality\", \"quote\\\"arg\", \"slash\\\\arg\"]"
+            "[\"asof\", \"quote\\\"arg\", \"slash\\\\arg\"]"
         );
     }
 

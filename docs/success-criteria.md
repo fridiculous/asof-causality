@@ -52,7 +52,7 @@ produces zero impossible `PredictionRecord`s and the observed-time baseline
 produces at least one on the negative-control fixture. This is the visible
 proof that the checks catch a real class of naive backtest error.
 
-The windowed built-in signal succeeds when a replay-derived
+The windowed built-in signal in `asof-signals` succeeds when a replay-derived
 `PredictionRecord` can cite multiple feature inputs while still satisfying the
 same audit invariant. This proves the provenance model is signal-shaped rather
 than a one-row special case.

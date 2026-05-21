@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/fridiculous/asof-causality/docs/audit.schema.json",
-  "title": "asof-causality prediction audit record",
+  "title": "asof prediction audit record",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -29,20 +29,20 @@ generator or pipe fixture
 
 `StateStore` and `StateWriter` are crate-private. Signal authors receive a
 replay-local `SymbolSlot` and can query `AsOfView`, but cannot construct it,
-mutate it, or access the full event list through the signal API.
-`Signal::evaluate` also receives the `as_of_timestamp` for the replay event
-being evaluated; the view contains only state received by that replay key. The
-default `last-feature-sentiment` signal returns the latest feature value and
-cites one input event. The `windowed-feature-sentiment` signal returns a
-bounded inline set of recent feature inputs, proving the provenance path is not
-limited to one-row examples. The `windowed-zscore` signal reads `score=...`
-fields with
+mutate it, or access the full event list through the signal API. The kernel has
+no built-in default signal. `Signal::evaluate` also receives the
+`as_of_timestamp` for the replay event being evaluated; the view contains only
+state received by that replay key.
+
+The `asof-signals` crate registers the built-ins. `last-feature-sentiment`
+returns the latest feature value and cites one input event.
+`windowed-feature-sentiment` returns a bounded inline set of recent feature
+inputs. `windowed-zscore` reads `score=...` fields with
 `FeatureDType::FixedDecimal { scale: 6 }` through the same opaque view and
-buckets the latest rolling Z-score to `-1`, `0`, or `1`, showing that the kernel
-is not sentiment-coupled.
+buckets the latest rolling Z-score to `-1`, `0`, or `1`.
 `vol-adjusted-momentum` implements a fixed-parameter fast/slow moving-average
-crossover gated by realized volatility and returns the same `SignalEvaluation`
-shape.
+crossover gated by realized volatility. These prove the provenance path is not
+limited to one-row examples and that the kernel is not sentiment-coupled.
 
 Built-in feature schema is intentionally small: `sentiment` has dtype `Text`
 and `score` has dtype `FixedDecimal { scale: 6 }`. There is no separate

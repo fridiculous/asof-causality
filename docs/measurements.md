@@ -19,7 +19,7 @@ Build: release for bench, dev for replay/check
 Command:
 
 ```text
-cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
+cargo run -p asof-cli -- replay examples/late-arrival.pipe
 ```
 
 Output:
@@ -43,13 +43,13 @@ same transcript hash is produced.
 Command:
 
 ```text
-cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
+cargo run -p asof-cli -- check examples/late-arrival.pipe
 ```
 
 Result:
 
 ```text
-asof-causality check
+asof check
   fixture    examples/late-arrival.pipe
   events     7
   signal     last-feature-sentiment
@@ -81,7 +81,7 @@ ignoring late events.
 Command:
 
 ```text
-cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
+cargo run -p asof-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 ```
 
 Result:
@@ -103,13 +103,13 @@ checks across the full generated file.
 Command:
 
 ```text
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe
+cargo run -p asof-cli -- negative-control examples/lookahead-negative-control.pipe
 ```
 
 Expected interpretation:
 
 ```text
-asof-causality negative-control
+asof negative-control
   fixture  examples/lookahead-negative-control.pipe
   events   12
   signal   last-feature-sentiment
@@ -162,7 +162,7 @@ as `max_input_replay_key > prediction_replay_key`.
 The same fixture also exercises the bounded multi-input signal:
 
 ```text
-cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
+cargo run -p asof-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 ```
 
 The leaky baseline then renders multi-input provenance directly:
@@ -178,7 +178,7 @@ The leaky baseline then renders multi-input provenance directly:
 Command:
 
 ```text
-cargo run --release -p asof-causality-cli -- bench --events 1000000 --symbols 1024
+cargo run --release -p asof-cli -- bench --events 1000000 --symbols 1024
 ```
 
 Single-run result:
