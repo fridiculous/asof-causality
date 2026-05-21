@@ -62,6 +62,13 @@ The windowed built-in signal in `asof-signals` succeeds when a replay-derived
 same audit invariant. This proves the provenance model is signal-shaped rather
 than a one-row special case.
 
+## Sensitivity Evidence
+
+`sensitivity` succeeds when it writes schema-valid summary, detail, manifest,
+and chart artifacts for bounded timestamp perturbations. A healthy result is not
+"zero flips" in all cases; it is an attributable curve where flip-rate spikes
+can be traced to specific lookahead or late-arrival cohorts.
+
 ## Performance Evidence
 
 The benchmark should report single-node replay throughput for:

@@ -85,5 +85,6 @@ The cage prevents mechanical lookahead through the replay API; it does not preve
 - [docs/audit-artifacts.md](docs/audit-artifacts.md): JSONL, manifests, schemas
 - [docs/success-criteria.md](docs/success-criteria.md): check list and pass criteria
 - [docs/architecture.md](docs/architecture.md): bitemporal kernel design
+- [docs/problem.md](docs/problem.md): prior art and scope
 - [docs/roadmap.md](docs/roadmap.md): limitations and production path
 - [docs/measurements.md](docs/measurements.md): benchmark methodology

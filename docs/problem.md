@@ -26,6 +26,7 @@ Implement a point-in-time causality test suite that:
 - appends immutable `PredictionRecord`s
 - restricts signal code to as-of state
 - proves future rows cannot affect prior `PredictionRecord`s
+- reports signal stability under bounded timestamp perturbations
 
 The built-in signals in `asof-signals` keep alpha claims out of scope, but the
 cage is exercised with recognizable shapes: fixed-point numeric windows and a

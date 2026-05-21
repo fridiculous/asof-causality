@@ -231,6 +231,22 @@ need to be implemented as delayed availability, a cutoff-aware `AsOfView` over
 sufficient history, or bounded history with explicit overflow/fail-closed
 behavior.
 
+## Sensitivity
+
+Sensitivity analysis sits outside the strict causality kernel. It perturbs event
+timestamps under a policy, replays the signal, and measures how much the
+`PredictionRecord` stream moves. A signal can be causal and still be brittle if
+small receipt-time shifts flip decisions, so sensitivity is a robustness layer
+after the causality gate.
+
+The `lookahead` scenario asks how much fictitious early availability changes the
+signal. The `late-arrivals` scenario asks which late-arrival cohorts explain
+output flips. For cumulative late-arrival policies, `flip_rate` is not expected
+to be monotonic: moving more inputs earlier can change which prior inputs are
+visible at each prediction cutoff. See [cli.md](cli.md#sensitivity) for
+invocation and [audit-artifacts.md](audit-artifacts.md#sensitivity-artifacts)
+for outputs.
+
 ## Start-To-Finish Flow
 
 `run-suite` wires the artifact together:
