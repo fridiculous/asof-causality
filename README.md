@@ -297,10 +297,12 @@ Late-arrival attribution is a separate sensitivity scenario:
 cargo run -p asof-causality-cli -- sensitivity examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment --scenario late-arrivals --out runs/late-arrival-sensitivity
 ```
 
-This builds automatic cumulative fixture-native lag thresholds from late
-feature arrivals. The output adds `late-arrival-impact.svg`, a cumulative
-exposure curve: x is the late-arrival threshold percentile and y is admitted new
-input uses as a share of the maximum sampled exposure. V1 still accepts raw
+This builds automatic cumulative percent-of-lag samples from late feature
+arrivals. The output adds `late-arrival-impact.svg`, a cumulative exposure
+curve: x is the percent of each late-arrival lag removed and y is admitted new
+input admissions as a share of the maximum sampled cumulative exposure.
+`--steps N` controls the sample grain, so `--steps 20` samples 5%, 10%, ...,
+100%. V1 still accepts raw
 `--shift-features` integer offsets as an expert mode, but typed durations such
 as `-1d` are deferred until timestamp semantics are first-class. Sensitivity
 descriptors and the manifest record

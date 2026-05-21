@@ -101,8 +101,8 @@ predictions. A strict received-time check passes; the observed-time negative
 control surfaces many impossible predictions because it can see future
 corrections by observation date. The late-arrival sensitivity output uses a
 cumulative exposure curve: each sampled point moves all late feature and
-correction events up to that lateness threshold and reports admitted new input
-uses as the y-axis.
+correction events by that percentage of their own observed-to-received lag and
+reports cumulative unique new input admissions as the y-axis.
 
 ## Commands
 
