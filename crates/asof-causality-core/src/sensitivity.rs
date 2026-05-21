@@ -225,8 +225,11 @@ pub fn transform_events_for_policy(
             for event in events {
                 let mut event = event.clone();
                 if roles_affected.contains(&event.role) {
-                    event.received_time = shift_time(event.received_time, *shift, &policy.name)?;
-                    events_transformed += 1;
+                    let shifted = shift_time(event.received_time, *shift, &policy.name)?;
+                    if shifted != event.received_time {
+                        event.received_time = shifted;
+                        events_transformed += 1;
+                    }
                 }
                 transformed.push(event);
             }
@@ -615,6 +618,23 @@ o1|130|130|4|outcome|XYZ|return_bps=1
         assert_eq!(transformed[1].received_time, 110);
         assert_eq!(transformed[2].received_time, 110);
         assert_eq!(transformed[3].received_time, 130);
+    }
+
+    #[test]
+    fn zero_shift_counts_no_transformed_events() {
+        let events = parse_pipe_events(
+            "\
+f1|100|100|1|feature|XYZ|sentiment=positive
+p1|110|110|2|prediction|XYZ|
+",
+        )
+        .unwrap();
+        let policy = PolicyPoint::shift_features("shift_features_minus_0", 0);
+        let (transformed, count, order) = transform_events_for_policy(&events, &policy).unwrap();
+
+        assert_eq!(count, 0);
+        assert_eq!(order, ReplayOrder::ReceivedTime);
+        assert_eq!(transformed, events);
     }
 
     #[test]

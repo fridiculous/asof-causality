@@ -588,6 +588,9 @@ fn parse_percent_bps(value: &str) -> Result<u16, Box<dyn Error>> {
     {
         return Err(format!("invalid lookahead percentage: {value}").into());
     }
+    if fractional.len() > 2 {
+        return Err("lookahead percentage supports at most two fractional digits".into());
+    }
 
     let whole: u16 = whole.parse()?;
     if whole > 100 {
@@ -4465,6 +4468,23 @@ mod tests {
             parsed.policies[0].kind,
             PolicyKind::ReceivedTimeLagFraction { pct_bps: 2500, .. }
         ));
+    }
+
+    #[test]
+    fn rejects_lookahead_range_with_excess_fractional_precision() {
+        let error = parse_sensitivity_args(&args(&[
+            "examples/late-arrival.pipe",
+            "--lookahead-range",
+            "100.001..100.001",
+            "--steps",
+            "4",
+            "--out",
+            "runs/sensitivity",
+        ]))
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("at most two fractional digits"));
     }
 
     #[test]
