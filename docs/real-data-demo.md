@@ -22,6 +22,9 @@ It can be regenerated from the public source CSVs with:
 make verify-real-data-demo
 ```
 
+Verification requires internet access to the public ALFRED and FRED CSV
+endpoints.
+
 ## Mapping
 
 - `observed_time`: DGS10 observation date at `15:00`, encoded as
@@ -31,6 +34,10 @@ make verify-real-data-demo
 - `prediction`: SP500 daily risk-on/risk-off prediction at `16:00`.
 - `outcome`: next trading-day SP500 return in basis points, attached after the
   next close.
+
+The DGS10 feature rows use ALFRED vintages. SP500 outcome rows use FRED closes;
+their `received_time` is a fixture convention for post-close attribution, not a
+vintage claim.
 
 The fixture deliberately places predictions before the next DGS10 vintage is
 available. A replay ordered by `observed_time` leaks same-day DGS10 rows into

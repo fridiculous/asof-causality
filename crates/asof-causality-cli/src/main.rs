@@ -1990,7 +1990,8 @@ fn print_help() {
     println!("usage:");
     println!("  asof-causality replay [path] [--signal name]");
     println!("  asof-causality check [path] [--signal name] [--max-cutoffs N|--exhaustive]");
-    println!("  asof-causality audit [events] [stored_predictions.jsonl] [outcomes] [--signal name] [--out path] [--outcomes path] [--allow-missing-recipe-hash]");
+    println!("  asof-causality audit [events] [stored_predictions.jsonl] [legacy_outcomes] [--signal name] [--out path] [--outcomes path] [--allow-missing-recipe-hash]");
+    println!("      prefer --outcomes path when attaching outcomes without stored predictions");
     println!("  asof-causality negative-control [path] [--signal name]");
     println!("  asof-causality generate [--scenario late-heavy] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out path]");
     println!("  asof-causality run-suite [--scenario late-heavy] [--signal name] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out dir]");

@@ -36,6 +36,9 @@ Numeric signals currently use `f64` arithmetic; floating-point transcript
 determinism is guaranteed for a fixed toolchain and architecture, not as a
 cross-platform bit-identity promise.
 
+For a public real-data demonstration of the same bitemporal boundary on
+ALFRED/FRED source data, see `docs/real-data-demo.md`.
+
 `InputSet::Many` stores up to eight event keys inline. That cap is deliberate:
 it keeps prediction records fixed-size and allocation-free in the replay path.
 Signals that need larger provenance should use a separate compact recipe hash or
