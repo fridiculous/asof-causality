@@ -157,7 +157,7 @@ fn audit_jsonl_validates_against_schema() -> TestResult {
         "--signal",
         "windowed-feature-sentiment",
     ])?;
-    let schema_path = repo_root().join("docs/audit.schema.json");
+    let schema_path = repo_root().join("docs/schemas/audit.schema.json");
     let validator = schema_validator(&schema_path)?;
     let stdout = stdout_text(&output);
     let records = stdout
@@ -286,7 +286,10 @@ fn run_suite_writes_expected_artifacts_and_valid_manifest() -> TestResult {
 
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(out_dir.join("manifest.json"))?)?;
-    validate_json(&repo_root().join("docs/manifest.schema.json"), &manifest)?;
+    validate_json(
+        &repo_root().join("docs/schemas/manifest.schema.json"),
+        &manifest,
+    )?;
     assert_eq!(manifest["schema_version"], 3);
     assert_eq!(manifest["checks_passed"].as_bool(), Some(true));
 

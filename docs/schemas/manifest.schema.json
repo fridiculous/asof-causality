@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/fridiculous/asof-causality/docs/manifest.schema.json",
+  "$id": "https://github.com/fridiculous/asof-causality/docs/schemas/manifest.schema.json",
   "title": "asof run-suite manifest",
   "type": "object",
   "additionalProperties": false,

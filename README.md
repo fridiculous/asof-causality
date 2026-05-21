@@ -87,9 +87,9 @@ into predictions that could not have used them in live replay.
 - built-in single-input, windowed multi-input, fixed-point Z-score, and
   volatility-adjusted momentum signals
 - immutable `PredictionRecord` output with input-event provenance
-- JSONL audit output with its schema documented in `docs/audit.schema.json`
+- JSONL audit output with its schema documented in `docs/schemas/audit.schema.json`
 - sensitivity summary/detail/manifest contracts documented in
-  `docs/sensitivity.*.schema.json`
+  `docs/schemas/sensitivity.*.schema.json`
 - dense symbol slots in replay state, with stable symbol IDs in prediction records
   rendered back to human symbols in transcripts
 - adversarial leakage checks for late arrivals, feature corrections, outcomes, and
@@ -278,7 +278,7 @@ includes the prediction replay key, signal, symbol, signal value, ordered input
 event IDs, optional maximum input replay key, BLAKE3 `feature_recipe_hash`,
 `causally_valid`, optional `matched_stored_prediction`, and optional `outcome`.
 The machine-readable contract lives in
-[docs/audit.schema.json](docs/audit.schema.json). Use `--out path` to write the
+[docs/schemas/audit.schema.json](docs/schemas/audit.schema.json). Use `--out path` to write the
 same JSONL stream to a file.
 
 To audit stored predictions instead of only emitting the replay-derived audit
@@ -321,7 +321,7 @@ check counts, Rust toolchain, and optional Git commit. A reviewer can compare
 the manifest and artifacts to verify that a run's predictions, checks, and
 reported transcript belong to the same execution. The machine-readable manifest
 contract lives in
-[docs/manifest.schema.json](docs/manifest.schema.json).
+[docs/schemas/manifest.schema.json](docs/schemas/manifest.schema.json).
 
 Generated `runs/` artifacts are intentionally ignored by git so stale local
 snapshots do not become part of the source artifact. Use
@@ -502,7 +502,7 @@ records the invocation, run timestamp, source commit context, workspace dirty
 flag, Rust toolchain, fixture hash, prediction-output hash, checks-output hash,
 and final transcript hash. Public artifact hashes in the manifest use BLAKE3,
 and the JSON contract is documented in
-[docs/manifest.schema.json](docs/manifest.schema.json).
+[docs/schemas/manifest.schema.json](docs/schemas/manifest.schema.json).
 
 That means the result is not just "the CLI printed PASS." The output directory
 contains enough identity to answer: which data, which signal, which executable

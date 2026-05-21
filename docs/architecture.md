@@ -69,7 +69,7 @@ Signals that need larger provenance should use a separate compact recipe hash or
 snapshot manifest rather than growing per-prediction heap state.
 
 The CLI `audit` command renders those records as JSONL. The public shape is
-documented in `docs/audit.schema.json`. The JSONL audit record includes a BLAKE3
+documented in `docs/schemas/audit.schema.json`. The JSONL audit record includes a BLAKE3
 `feature_recipe_hash`, `causally_valid`, optional
 `matched_stored_prediction`, and optional outcome attribution. Stored
 predictions are matched by `(symbol, prediction_replay_key)`. The current CLI
