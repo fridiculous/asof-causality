@@ -98,6 +98,36 @@ an earlier prediction at that timestamp. Feature corrections are append-only
 events; a feature correction received at replay key `(10:15, 9, c1)` cannot
 affect a prediction emitted at `(10:15, 8, p1)`.
 
+### Why There Is No Safety-Lag Option
+
+The core contract intentionally proves exact receipt-time causality:
+
+```text
+input.received_time <= prediction_time
+```
+
+A production platform may choose a stricter availability rule such as:
+
+```text
+input.received_time <= prediction_time - safety_lag
+```
+
+That is useful when vendor timestamps are noisy, batch pipelines settle after a
+delay, or teams want conservative post-close attribution. This artifact does not
+expose `safety_lag` as a replay option because a naive lag filter can be
+causally safe but semantically wrong with bounded state.
+
+For example, if too-fresh events are applied to a bounded recent-feature array
+before filtering, they can evict older events that were still eligible under the
+lagged cutoff. A post-hoc audit would see no forbidden inputs and pass, while the
+lagged replay would no longer represent the state the model should have known.
+
+Conservative lags can still be modeled explicitly by shifting feature
+`received_time` values forward before replay. A first-class safety-lag mode would
+need to be implemented as delayed availability, a cutoff-aware `AsOfView` over
+sufficient history, or bounded history with explicit overflow/fail-closed
+behavior.
+
 ## Start-To-Finish Flow
 
 `run-suite` wires the artifact together:

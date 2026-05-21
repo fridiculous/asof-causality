@@ -132,6 +132,13 @@ Events are replayed by `(received_time, sequence, event_id)`, not by physical
 file order or observed time. A late event may influence future predictions, but
 it cannot mutate old predictions.
 
+There is intentionally no `--safety-lag` flag. The artifact proves exact
+receipt-time causality, `input.received_time <= prediction_time`. Conservative
+availability lags can be represented by shifting feature `received_time`s
+forward before replay; a built-in lag option would need first-class state
+semantics to avoid dropping older eligible inputs from the bounded as-of view.
+See [docs/architecture.md](docs/architecture.md#why-there-is-no-safety-lag-option).
+
 The canonical roles are:
 
 | Role | Meaning |
