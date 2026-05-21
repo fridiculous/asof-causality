@@ -1557,6 +1557,8 @@ fn format_sensitivity_flip_rate_svg(sweep: &SensitivitySweep) -> String {
             .iter()
             .map(|row| ChartRow {
                 label: row.label.clone(),
+                detail: row.detail.clone(),
+                tooltip: row.tooltip.clone(),
                 category: row.category.clone(),
                 value: row.flip_rate,
                 value_label: format!("{:.1}%", row.flip_rate * 100.0),
@@ -1580,6 +1582,8 @@ fn format_sensitivity_input_change_svg(sweep: &SensitivitySweep) -> String {
             .iter()
             .map(|row| ChartRow {
                 label: row.label.clone(),
+                detail: row.detail.clone(),
+                tooltip: row.tooltip.clone(),
                 category: row.category.clone(),
                 value: row.new_input_uses as f64,
                 value_label: row.new_input_uses.to_string(),
@@ -1601,19 +1605,34 @@ fn is_late_arrival_bucket_policy(kind: &PolicyKind) -> bool {
 }
 
 fn format_late_arrival_impact_svg(sweep: &SensitivitySweep) -> String {
+    let late_bucket_total = sweep
+        .results
+        .iter()
+        .filter(|result| is_late_arrival_bucket_policy(&result.run.policy.kind))
+        .count();
+    let mut late_bucket_index = 0;
     let rows = sweep
         .results
         .iter()
         .filter(|result| is_late_arrival_bucket_policy(&result.run.policy.kind))
-        .map(|result| ChartRow {
-            label: result.run.policy.name.clone(),
-            category: result.run.policy.category.as_str().to_string(),
-            value: result.summary.flip_rate,
-            value_label: format!(
-                "{} ({} changed)",
-                format_percent(result.summary.flip_rate),
-                result.summary.predictions_with_signal_change
-            ),
+        .map(|result| {
+            late_bucket_index += 1;
+            let chart_text = policy_chart_text(
+                &result.run.policy,
+                Some((late_bucket_index, late_bucket_total)),
+            );
+            ChartRow {
+                label: chart_text.label,
+                detail: chart_text.detail,
+                tooltip: chart_text.tooltip,
+                category: result.run.policy.category.as_str().to_string(),
+                value: result.summary.flip_rate,
+                value_label: format!(
+                    "{} ({} changed)",
+                    format_percent(result.summary.flip_rate),
+                    result.summary.predictions_with_signal_change
+                ),
+            }
         })
         .collect::<Vec<_>>();
 
@@ -1989,39 +2008,188 @@ fn format_percent(value: f64) -> String {
 #[derive(Debug, Clone, PartialEq)]
 struct SensitivityChartRow {
     label: String,
+    detail: String,
+    tooltip: String,
     category: String,
     flip_rate: f64,
     new_input_uses: usize,
 }
 
 fn sensitivity_chart_rows(sweep: &SensitivitySweep) -> Vec<SensitivityChartRow> {
-    sweep
+    let late_bucket_total = sweep
         .results
         .iter()
-        .map(|result| SensitivityChartRow {
-            label: result.run.policy.name.clone(),
+        .filter(|result| is_late_arrival_bucket_policy(&result.run.policy.kind))
+        .count();
+    let mut late_bucket_index = 0;
+    let mut rows = Vec::with_capacity(sweep.results.len());
+
+    for result in &sweep.results {
+        let late_bucket_position = if is_late_arrival_bucket_policy(&result.run.policy.kind) {
+            late_bucket_index += 1;
+            Some((late_bucket_index, late_bucket_total))
+        } else {
+            None
+        };
+        let chart_text = policy_chart_text(&result.run.policy, late_bucket_position);
+        rows.push(SensitivityChartRow {
+            label: chart_text.label,
+            detail: chart_text.detail,
+            tooltip: chart_text.tooltip,
             category: result.run.policy.category.as_str().to_string(),
             flip_rate: result.summary.flip_rate,
             new_input_uses: result.summary.new_input_uses,
-        })
-        .collect()
+        });
+    }
+
+    rows
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PolicyChartText {
+    label: String,
+    detail: String,
+    tooltip: String,
+}
+
+fn policy_chart_text(
+    policy: &PolicyPoint,
+    late_bucket_position: Option<(usize, usize)>,
+) -> PolicyChartText {
+    match &policy.kind {
+        PolicyKind::ReceivedTimeLagBucketLookahead {
+            min_lag,
+            max_lag_exclusive,
+            ..
+        } => {
+            let (index, total) = late_bucket_position.unwrap_or((1, 1));
+            let label = late_arrival_bucket_display_label(index, total);
+            PolicyChartText {
+                label: label.clone(),
+                detail: format!("bucket {index} of {total}; fixture lag band"),
+                tooltip: format!(
+                    "{label}: raw fixture lag {}",
+                    format_lag_range(*min_lag, *max_lag_exclusive)
+                ),
+            }
+        }
+        PolicyKind::ReceivedTimeLagFraction { pct_bps, .. } => {
+            let label = format!("{} lag removed", format_percent_bps_for_display(*pct_bps));
+            let detail = "synthetic stress; bounded by each event's observed_time".to_string();
+            PolicyChartText {
+                label: label.clone(),
+                detail: detail.clone(),
+                tooltip: format!("{label}: {detail}"),
+            }
+        }
+        PolicyKind::ReceivedTimeShift { shift, .. } => {
+            let label = format!("Feature timestamp shift {shift:+}");
+            let detail = "synthetic stress; fixture-native integer units".to_string();
+            PolicyChartText {
+                label: label.clone(),
+                detail: detail.clone(),
+                tooltip: format!("{label}: {detail}"),
+            }
+        }
+        PolicyKind::ReplayOrderOverride {
+            order: ReplayOrder::ObservedTimeLeaky,
+        } => {
+            let label = "Observed-time replay".to_string();
+            let detail = "realistic failure reference".to_string();
+            PolicyChartText {
+                label: label.clone(),
+                detail: detail.clone(),
+                tooltip: format!("{label}: {detail}"),
+            }
+        }
+        PolicyKind::ReplayOrderOverride { .. } => {
+            let label = policy.name.clone();
+            let detail = humanize_category(policy.category.as_str()).to_string();
+            PolicyChartText {
+                label: label.clone(),
+                detail: detail.clone(),
+                tooltip: format!("{label}: {detail}"),
+            }
+        }
+        PolicyKind::Identity => {
+            let label = "Strict received-time baseline".to_string();
+            let detail = humanize_category(policy.category.as_str()).to_string();
+            PolicyChartText {
+                label: label.clone(),
+                detail: detail.clone(),
+                tooltip: format!("{label}: {detail}"),
+            }
+        }
+    }
+}
+
+fn late_arrival_bucket_display_label(index: usize, total: usize) -> String {
+    match (index, total) {
+        (_, 0 | 1) => "Late arrivals".to_string(),
+        (1, _) => "Shortest late arrivals".to_string(),
+        (index, total) if index == total => "Longest late arrivals".to_string(),
+        (index, total) => format!("Late-arrival bucket {index} of {total}"),
+    }
+}
+
+fn format_lag_range(min_lag: u64, max_lag_exclusive: Option<u64>) -> String {
+    match max_lag_exclusive {
+        Some(max) => format!(
+            "[{}, {})",
+            format_u64_grouped(min_lag),
+            format_u64_grouped(max)
+        ),
+        None => format!(">= {}", format_u64_grouped(min_lag)),
+    }
+}
+
+fn format_u64_grouped(value: u64) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::new();
+    for (index, ch) in digits.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    grouped.chars().rev().collect()
+}
+
+fn format_percent_bps_for_display(pct_bps: u16) -> String {
+    let value = f64::from(pct_bps) / 100.0;
+    if pct_bps % 100 == 0 {
+        format!("{value:.0}%")
+    } else {
+        format!("{value:.2}%")
+    }
+}
+
+fn humanize_category(category: &str) -> &'static str {
+    match category {
+        "baseline" => "baseline",
+        "synthetic_stress" => "synthetic stress",
+        "realistic_failure" => "realistic failure",
+        _ => "comparison policy",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 struct ChartRow {
     label: String,
+    detail: String,
+    tooltip: String,
     category: String,
     value: f64,
     value_label: String,
 }
 
 fn format_bar_chart_svg(title: &str, subtitle: &str, rows: &[ChartRow], max_value: f64) -> String {
-    let row_height = 44_usize;
-    let top = 78_usize;
+    let row_height = 52_usize;
+    let top = 84_usize;
     let bottom = 42_usize;
-    let left = 230_usize;
-    let chart_width = 420_f64;
-    let width = 760_usize;
+    let left = 300_usize;
+    let chart_width = 470_f64;
+    let width = 900_usize;
     let height = top + bottom + rows.len().max(1) * row_height;
     let mut svg = String::new();
 
@@ -2037,8 +2205,8 @@ fn format_bar_chart_svg(title: &str, subtitle: &str, rows: &[ChartRow], max_valu
   text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
   .title { font-size: 22px; font-weight: 700; }
   .subtitle { font-size: 13px; fill: #64748b; }
-  .label { font-size: 12px; }
-  .category { font-size: 11px; fill: #64748b; }
+  .label { font-size: 12px; font-weight: 650; }
+  .detail { font-size: 10px; fill: #64748b; }
   .value { font-size: 12px; font-weight: 700; }
   .axis { stroke: #cbd5e1; stroke-width: 1; }
 </style>
@@ -2070,9 +2238,9 @@ fn format_bar_chart_svg(title: &str, subtitle: &str, rows: &[ChartRow], max_valu
 
     for (index, row) in rows.iter().enumerate() {
         let y = top + index * row_height;
-        let bar_y = y + 10;
+        let bar_y = y + 13;
         let label_y = y + 16;
-        let category_y = y + 32;
+        let detail_y = y + 34;
         let normalized = if max_value <= 0.0 {
             0.0
         } else {
@@ -2082,6 +2250,8 @@ fn format_bar_chart_svg(title: &str, subtitle: &str, rows: &[ChartRow], max_valu
         let fill = category_color(&row.category);
         let value_x = left as f64 + bar_width + 10.0;
 
+        let _ = writeln!(svg, "<g>");
+        let _ = writeln!(svg, "<title>{}</title>", xml_escape(&row.tooltip));
         let _ = writeln!(
             svg,
             r#"<text x="28" y="{label_y}" class="label">{}</text>"#,
@@ -2089,8 +2259,8 @@ fn format_bar_chart_svg(title: &str, subtitle: &str, rows: &[ChartRow], max_valu
         );
         let _ = writeln!(
             svg,
-            r#"<text x="28" y="{category_y}" class="category">{}</text>"#,
-            xml_escape(&row.category)
+            r#"<text x="28" y="{detail_y}" class="detail">{}</text>"#,
+            xml_escape(&row.detail)
         );
         let _ = writeln!(
             svg,
@@ -2102,6 +2272,7 @@ fn format_bar_chart_svg(title: &str, subtitle: &str, rows: &[ChartRow], max_valu
             bar_y + 14,
             xml_escape(&row.value_label)
         );
+        let _ = writeln!(svg, "</g>");
     }
 
     svg.push_str("</svg>\n");

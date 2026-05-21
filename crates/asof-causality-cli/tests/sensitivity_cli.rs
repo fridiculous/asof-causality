@@ -156,7 +156,7 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
     let flip_rate_svg = fs::read_to_string(&flip_rate_svg_path).expect("flip svg should read");
     assert!(flip_rate_svg.contains("<svg"));
     assert!(flip_rate_svg.contains("Sensitivity Flip Rate"));
-    assert!(flip_rate_svg.contains("observed_time_leaky"));
+    assert!(flip_rate_svg.contains("Observed-time replay"));
 
     let _ = fs::remove_dir_all(out_dir);
 }
@@ -309,6 +309,9 @@ fn sensitivity_cli_accepts_late_arrival_scenario() {
 
     let late_svg = fs::read_to_string(&late_svg_path).expect("late svg should be readable");
     assert!(late_svg.contains("Late Arrival Impact"));
+    assert!(late_svg.contains("Shortest late arrivals"));
+    assert!(late_svg.contains("fixture lag band"));
+    assert!(!late_svg.contains(">late_arrivals_lag_"));
 
     let _ = fs::remove_dir_all(out_dir);
 }
