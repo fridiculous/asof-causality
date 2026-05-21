@@ -1207,9 +1207,7 @@ fn sensitivity_summary_json(
         "predictions": predictions,
         "predictions_with_signal_change": predictions_with_signal_change,
         "predictions_with_recipe_change": predictions_with_recipe_change,
-        "feature_recipe_hashes_changed": predictions_with_recipe_change,
         "predictions_with_new_inputs": predictions_with_new_inputs,
-        "new_inputs_admitted": new_input_uses,
         "new_input_uses": new_input_uses,
         "unique_new_inputs": unique_new_inputs,
         "flip_rate": flip_rate,
@@ -1807,6 +1805,8 @@ fn format_sensitivity_manifest_json(inputs: SensitivityManifestInputs<'_>) -> St
         "source_commit": current_git_commit(),
         "workspace_dirty": current_workspace_dirty(),
         "rust_toolchain": current_rustc_version(),
+        "timestamp_shift_time_axis": "fixture_native_integer",
+        "timestamp_shift_semantics": "raw signed integer arithmetic on received_time; no calendar validation",
         "fixture_path": inputs.events_path,
         "fixture_hash": asof_causality_core::blake3_hex(inputs.fixture_input.as_bytes()),
         "signal": inputs.signal.as_str(),
@@ -1857,6 +1857,9 @@ fn policy_json(policy: &PolicyPoint) -> Value {
             "name": policy.name.as_str(),
             "category": policy.category.as_str(),
             "kind": "received_time_shift",
+            "time_axis": "fixture_native_integer",
+            "shift_units": "fixture_native_integer",
+            "calendar_aware": false,
             "roles_affected": roles_affected
                 .iter()
                 .map(|role| role.as_str())

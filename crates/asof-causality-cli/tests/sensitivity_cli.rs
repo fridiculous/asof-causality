@@ -1,12 +1,34 @@
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn schema_validator(path: &Path) -> jsonschema::Validator {
+    let schema: Value =
+        serde_json::from_str(&fs::read_to_string(path).expect("schema should be readable"))
+            .expect("schema should parse");
+    jsonschema::validator_for(&schema).expect("schema should compile")
+}
+
+fn validate_json(schema_path: &Path, value: &Value) {
+    let validator = schema_validator(schema_path);
+    validator.validate(value).unwrap_or_else(|error| {
+        panic!(
+            "{} failed schema validation against {}",
+            error,
+            schema_path.display()
+        )
+    });
+}
 
 #[test]
 fn sensitivity_cli_writes_summary_details_and_manifest() {
     let bin = env!("CARGO_BIN_EXE_asof-causality");
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let repo_root = repo_root();
     let events = repo_root.join("examples/alfred-dgs10-sp500.pipe");
     let out_dir = std::env::temp_dir().join(format!("asof-sensitivity-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out_dir);
@@ -60,15 +82,38 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
     assert_eq!(rows[3]["policy_name"], "observed_time_leaky");
     assert_eq!(rows[3]["category"], "realistic_failure");
     assert!(rows[3]["new_input_uses"].as_u64().unwrap() > 0);
+    assert_eq!(rows[1]["policy"]["time_axis"], "fixture_native_integer");
+    assert_eq!(rows[1]["policy"]["calendar_aware"], false);
+    assert!(rows[1].get("new_inputs_admitted").is_none());
+    assert!(rows[1].get("feature_recipe_hashes_changed").is_none());
+
+    let summary_schema = repo_root.join("docs/sensitivity.summary.schema.json");
+    for row in &rows {
+        validate_json(&summary_schema, row);
+    }
 
     let details = fs::read_to_string(&details_path).expect("details should be readable");
     assert!(!details.trim().is_empty());
+    let detail_schema = repo_root.join("docs/sensitivity.detail.schema.json");
+    for line in details.lines() {
+        let detail: Value = serde_json::from_str(line).expect("detail row should parse");
+        validate_json(&detail_schema, &detail);
+    }
+
     let manifest: Value = serde_json::from_str(
         &fs::read_to_string(&manifest_path).expect("manifest should be readable"),
     )
     .expect("manifest should parse");
     assert_eq!(manifest["schema_version"], "sensitivity-v1");
     assert_eq!(manifest["signal"], "windowed-zscore");
+    assert_eq!(
+        manifest["timestamp_shift_time_axis"],
+        "fixture_native_integer"
+    );
+    assert_eq!(
+        manifest["timestamp_shift_semantics"],
+        "raw signed integer arithmetic on received_time; no calendar validation"
+    );
     assert_eq!(manifest["policies"].as_array().unwrap().len(), 4);
     assert_eq!(manifest["details_path"], details_path.display().to_string());
     assert_eq!(
@@ -92,6 +137,10 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
     );
     assert!(manifest["flip_rate_svg_hash"].as_str().unwrap().len() == 64);
     assert!(manifest["input_change_svg_hash"].as_str().unwrap().len() == 64);
+    validate_json(
+        &repo_root.join("docs/sensitivity.manifest.schema.json"),
+        &manifest,
+    );
 
     let sensitivity_curve_svg =
         fs::read_to_string(&sensitivity_curve_svg_path).expect("curve svg should read");

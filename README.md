@@ -83,6 +83,8 @@ predictions that could not have used them in live replay.
 - built-in single-input, windowed multi-input, and numeric Z-score signals
 - immutable `PredictionRecord` output with input-event provenance
 - JSONL audit output with its schema documented in `docs/audit.schema.json`
+- sensitivity summary/detail/manifest contracts documented in
+  `docs/sensitivity.*.schema.json`
 - interned symbol IDs in replay state and prediction records, rendered back to
   human symbols in transcripts
 - adversarial leakage checks for late arrivals, feature corrections, outcomes, and
@@ -109,7 +111,7 @@ cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --shift-features -10000 --observed-time-leaky --details --out runs/alfred-sensitivity
+cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --shift-features -5000 --shift-features -10000 --observed-time-leaky --details --out runs/alfred-sensitivity
 make verify-real-data-demo
 cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
@@ -280,7 +282,10 @@ naive lookahead failure mode. The command writes `summary.jsonl`, a primary
 secondary static SVG charts (`flip-rate.svg` and `input-change.svg`), optional
 `details.jsonl`, and `manifest.json` with policy descriptors and transcript
 hashes. V1 accepts integer shifts only; typed durations such as `-1d` are
-deferred until timestamp semantics are first-class.
+deferred until timestamp semantics are first-class. Sensitivity descriptors and
+the manifest record `time_axis: "fixture_native_integer"` /
+`calendar_aware: false`; on `YYYYMMDDHHMM` fixtures like ALFRED, these shifts
+are synthetic raw-integer stresses, not calendar durations.
 
 ```sh
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024
@@ -341,8 +346,8 @@ cargo test --workspace
 ```
 
 The test suite includes fixture regressions, proptest-generated event streams,
-CLI integration checks, JSON Schema validation for audit and manifest output,
-and snapshots for stable user-visible command output.
+CLI integration checks, JSON Schema validation for audit, run-suite manifest,
+and sensitivity output, and snapshots for stable user-visible command output.
 
 For mutation testing, install `cargo-mutants` and run this manually before
 claiming the causality kernel is hardened:
