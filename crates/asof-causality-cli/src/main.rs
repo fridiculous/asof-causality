@@ -1684,16 +1684,14 @@ fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
             )
         })
         .unwrap_or_else(|| "first sampled effect: not observed in curve samples".into());
-    let endpoint_label = leaky_endpoint
-        .map(|result| {
-            format!(
-                "{} reference: {} flip, {} new input uses",
-                result.run.policy.name,
-                format_percent(result.summary.flip_rate),
-                result.summary.new_input_uses
-            )
-        })
-        .unwrap_or_else(|| "observed-time policy reference: not sampled".into());
+    let endpoint_label = leaky_endpoint.map(|result| {
+        format!(
+            "{} reference: {} flip, {} new input uses",
+            result.run.policy.name,
+            format_percent(result.summary.flip_rate),
+            result.summary.new_input_uses
+        )
+    });
     let subtitle = if uses_lag_fraction {
         "x = percent of each feature lag removed; y = flip rate"
     } else {
@@ -1778,11 +1776,13 @@ fn format_sensitivity_curve_svg(sweep: &SensitivitySweep) -> String {
         r#"<text x="28" y="98" class="note">{}</text>"#,
         xml_escape(&first_effect_label)
     );
-    let _ = writeln!(
-        svg,
-        r#"<text x="520" y="98" class="note">{}</text>"#,
-        xml_escape(&endpoint_label)
-    );
+    if let Some(endpoint_label) = endpoint_label {
+        let _ = writeln!(
+            svg,
+            r#"<text x="520" y="98" class="note">{}</text>"#,
+            xml_escape(&endpoint_label)
+        );
+    }
 
     for step in 0..=4 {
         let ratio = step as f64 / 4.0;
