@@ -21,6 +21,7 @@ verify-real-data-demo:
 
 verify-real-revision-demo:
 	uv run --script scripts/rebuild-alfred-revision-example.py --check
+	uv run --script scripts/rebuild-alfred-revision-example.py --variant large --check
 
 bench:
 	cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024

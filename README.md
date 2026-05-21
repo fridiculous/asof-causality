@@ -127,10 +127,12 @@ This repository has no runtime network dependency. Most fixtures are synthetic;
 derived from public ALFRED/FRED CSV downloads. `make verify-real-data-demo`
 rebuilds that fixture from the source CSVs and checks it byte-for-byte.
 `examples/alfred-payems-revision.pipe` is a separate ALFRED-only fixture with a
-real PAYEMS revision; `make verify-real-revision-demo` rebuilds it from the
-source vintages. Those verification commands require internet access to the
-public CSV endpoints, but they do not require an API key, an LLM key, CUDA, or a
-database.
+real PAYEMS revision. `examples/alfred-payems-revisions-2020.pipe` is the
+larger version for sensitivity exploration: 133 actual events across 2020-2021,
+including 76 feature corrections and 23 predictions. `make
+verify-real-revision-demo` rebuilds both from the source vintages. Those
+verification commands require internet access to the public CSV endpoints, but
+they do not require an API key, an LLM key, CUDA, or a database.
 
 ## Event Format
 
@@ -316,6 +318,18 @@ It compares the PAYEMS `2019-01-01` observation across two ALFRED vintages:
 `150587` in the `2020-02-01` vintage and `150134` in the `2020-03-01` vintage.
 The second row is encoded as `feature_correction`, so strict received-time
 replay must not let `p_after_initial_before_revision` use the revised value.
+
+For a larger correction-heavy sample, use the 2020-2021 PAYEMS fixture:
+
+```sh
+cargo run -p asof-causality-cli -- check examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
+cargo run -p asof-causality-cli -- negative-control examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
+cargo run -p asof-causality-cli -- sensitivity examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore --scenario late-arrivals --out runs/alfred-payems-large-sensitivity
+```
+
+This larger fixture has 133 actual events, 76 feature corrections, and 23
+predictions. It is useful for seeing late-arrival bucket attribution instead of
+a single hand-inspectable correction case.
 
 ```sh
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024

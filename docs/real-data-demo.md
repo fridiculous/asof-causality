@@ -14,9 +14,12 @@ at prediction time.
   `2020-03-17`, `2020-03-18`, `2020-03-19`, and `2020-03-20`.
 - FRED SP500 closes:
   `https://fred.stlouisfed.org/graph/fredgraph.csv?id=SP500&cosd=2020-03-16&coed=2020-03-20`
-- ALFRED PAYEMS revision fixture:
+- ALFRED PAYEMS minimal revision fixture:
   `https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=PAYEMS&cosd=2019-01-01&coed=2019-03-01&vintage_date=YYYY-MM-DD&revision_date=YYYY-MM-DD`
   with vintage dates `2020-02-01` and `2020-03-01`.
+- ALFRED PAYEMS larger revision fixture:
+  `https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=PAYEMS&cosd=2019-01-01&coed=2021-12-01&vintage_date=YYYY-MM-DD&revision_date=YYYY-MM-DD`
+  with monthly vintage dates from `2020-02-01` through `2021-12-01`.
 
 The checked-in fixture is
 [`examples/alfred-dgs10-sp500.pipe`](../examples/alfred-dgs10-sp500.pipe).
@@ -26,9 +29,11 @@ It can be regenerated from the public source CSVs with:
 make verify-real-data-demo
 ```
 
-The checked-in PAYEMS revision fixture is
-[`examples/alfred-payems-revision.pipe`](../examples/alfred-payems-revision.pipe).
-It can be regenerated with:
+The checked-in PAYEMS revision fixtures are
+[`examples/alfred-payems-revision.pipe`](../examples/alfred-payems-revision.pipe)
+and
+[`examples/alfred-payems-revisions-2020.pipe`](../examples/alfred-payems-revisions-2020.pipe).
+They can be regenerated with:
 
 ```sh
 make verify-real-revision-demo
@@ -83,15 +88,32 @@ vintage but before the revised vintage arrives on `2020-03-01`. Received-time
 replay must not use the correction for that prediction. An observed-time replay
 does use it and should mark the prediction as impossible.
 
+The larger PAYEMS fixture is intended for sensitivity runs rather than
+hand-inspection. It spans ALFRED monthly vintages from `2020-02-01` through
+`2021-12-01` and emits:
+
+- first-seen PAYEMS observations as `feature`
+- revised PAYEMS observations as `feature_correction`
+- one mid-month prediction after each vintage
+
+That gives 133 actual events: 34 features, 76 feature corrections, and 23
+predictions. A strict received-time check passes; the observed-time negative
+control surfaces many impossible predictions because it can see future
+corrections by observation date.
+
 ## Commands
 
 ```sh
 uv run --script scripts/rebuild-alfred-example.py --check
 uv run --script scripts/rebuild-alfred-revision-example.py --check
+uv run --script scripts/rebuild-alfred-revision-example.py --variant large --check
 cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- check examples/alfred-payems-revision.pipe --signal windowed-zscore
+cargo run -p asof-causality-cli -- check examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- replay examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- negative-control examples/alfred-payems-revision.pipe --signal windowed-zscore
+cargo run -p asof-causality-cli -- negative-control examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore
+cargo run -p asof-causality-cli -- sensitivity examples/alfred-payems-revisions-2020.pipe --signal windowed-zscore --scenario late-arrivals --out runs/alfred-payems-large-sensitivity
 cargo run -p asof-causality-cli -- audit examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --outcomes examples/alfred-dgs10-sp500.pipe --out runs/alfred-dgs10-sp500-audit.jsonl
 ```

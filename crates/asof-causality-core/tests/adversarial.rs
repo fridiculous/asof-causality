@@ -1,5 +1,5 @@
 use asof_causality_core::{
-    parse_pipe_events, run_adversarial_checks, ReplayEngine, ReplayOptions, ReplayOrder,
+    parse_pipe_events, run_adversarial_checks, EventRole, ReplayEngine, ReplayOptions, ReplayOrder,
     WindowedFeatureSentimentSignal, WindowedZScoreSignal,
 };
 
@@ -25,6 +25,13 @@ fn alfred_events() -> Vec<asof_causality_core::Event> {
 fn alfred_payems_revision_events() -> Vec<asof_causality_core::Event> {
     parse_pipe_events(include_str!(
         "../../../examples/alfred-payems-revision.pipe"
+    ))
+    .unwrap()
+}
+
+fn alfred_payems_large_revision_events() -> Vec<asof_causality_core::Event> {
+    parse_pipe_events(include_str!(
+        "../../../examples/alfred-payems-revisions-2020.pipe"
     ))
     .unwrap()
 }
@@ -333,4 +340,37 @@ fn observed_time_baseline_leaks_alfred_payems_revision() {
     assert_eq!(leaked.max_input_received_time, 202003010900);
     assert!(leaked.input_event_ids_used.contains_key(correction));
     assert!(leaked.max_input_received_time > leaked.prediction_time);
+}
+
+#[test]
+fn alfred_payems_large_revision_fixture_exercises_many_real_corrections() {
+    let events = alfred_payems_large_revision_events();
+    let feature_corrections = events
+        .iter()
+        .filter(|event| event.role == EventRole::FeatureCorrection)
+        .count();
+    let predictions = events
+        .iter()
+        .filter(|event| event.role == EventRole::Prediction)
+        .count();
+
+    assert_eq!(events.len(), 133);
+    assert_eq!(feature_corrections, 76);
+    assert_eq!(predictions, 23);
+
+    let strict = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+        .replay_with_order(&events, ReplayOptions::default(), ReplayOrder::ReceivedTime)
+        .unwrap();
+
+    assert!(strict.predictions.impossible_predictions().is_empty());
+
+    let observed_time = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+        .replay_with_order(
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ObservedTimeLeaky,
+        )
+        .unwrap();
+
+    assert_eq!(observed_time.predictions.impossible_predictions().len(), 22);
 }
