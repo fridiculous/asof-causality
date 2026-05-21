@@ -611,7 +611,7 @@ l1|640|640|8|outcome|AAPL|return_bps=12
     fn random_payload(role: EventRole, payload_value: i32, index: usize) -> String {
         match role {
             EventRole::Feature | EventRole::FeatureCorrection => {
-                if index % 2 == 0 {
+                if index.is_multiple_of(2) {
                     format!("score={payload_value}")
                 } else {
                     let sentiment = match payload_value.rem_euclid(3) {

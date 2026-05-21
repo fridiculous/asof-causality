@@ -1,11 +1,29 @@
+//! Deterministic as-of replay primitives for auditing temporal leakage.
+//!
+//! The crate parses two-clock event streams, replays them in received-time
+//! order, exposes only an opaque [`AsOfView`] to signal code, and emits
+//! [`PredictionRecord`] values with input provenance so callers can verify that
+//! each prediction used only data available at its replay key.
+
+#![warn(missing_docs, rustdoc::broken_intra_doc_links)]
+
+#[allow(missing_docs)]
 pub mod bench;
+#[allow(missing_docs)]
 pub mod checks;
+/// Event model and pipe-record parsing.
 pub mod event;
+#[allow(missing_docs)]
 pub mod generator;
+/// Stable compact identifiers and fixed-capacity provenance sets.
 pub mod ids;
+/// Prediction records, transcripts, and digest helpers.
 pub mod log;
+/// Received-time replay engine.
 pub mod replay;
+/// Signal trait and built-in signals.
 pub mod signal;
+/// Opaque as-of state view exposed to signals.
 pub mod state;
 
 pub use bench::{run_representation_benchmark, BenchResult};

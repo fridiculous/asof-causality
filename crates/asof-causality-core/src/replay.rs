@@ -7,7 +7,9 @@ use std::error::Error;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Options controlling non-prediction replay side effects.
 pub struct ReplayOptions {
+    /// Whether outcome rows should be counted after predictions are emitted.
     pub compute_outcomes: bool,
 }
 
@@ -20,24 +22,33 @@ impl Default for ReplayOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Result returned by a replay run.
 pub struct ReplayOutput {
+    /// Append-only prediction log produced during replay.
     pub predictions: PredictionLog,
+    /// Number of outcome rows observed when outcome computation is enabled.
     pub outcomes_seen: usize,
+    /// Number of events replayed after deterministic ordering.
     pub replayed_events: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Event ordering mode used by the replay engine.
 pub enum ReplayOrder {
+    /// Correct received-time replay ordering.
     ReceivedTime,
+    /// Deliberately leaky observed-time baseline for negative controls.
     ObservedTimeLeaky,
 }
 
 #[derive(Debug, Default)]
+/// Deterministic as-of replay engine parameterized by a signal.
 pub struct ReplayEngine<S = LastFeatureSentimentSignal> {
     signal: S,
 }
 
 impl ReplayEngine<LastFeatureSentimentSignal> {
+    /// Creates a replay engine with the default last-feature sentiment signal.
     pub fn new() -> Self {
         Self {
             signal: LastFeatureSentimentSignal,
@@ -46,10 +57,12 @@ impl ReplayEngine<LastFeatureSentimentSignal> {
 }
 
 impl<S: Signal> ReplayEngine<S> {
+    /// Creates a replay engine with a custom signal.
     pub fn with_signal(signal: S) -> Self {
         Self { signal }
     }
 
+    /// Replays events in received-time order.
     pub fn replay(
         &self,
         events: &[Event],
@@ -58,6 +71,7 @@ impl<S: Signal> ReplayEngine<S> {
         self.replay_with_order(events, options, ReplayOrder::ReceivedTime)
     }
 
+    /// Replays events with an explicit ordering mode.
     pub fn replay_with_order(
         &self,
         events: &[Event],
@@ -124,6 +138,7 @@ impl<S: Signal> ReplayEngine<S> {
     }
 }
 
+/// Parses newline-delimited pipe records into events.
 pub fn parse_pipe_events(input: &str) -> Result<Vec<Event>, ReplayError> {
     let mut events = Vec::new();
 
@@ -144,8 +159,11 @@ pub fn parse_pipe_events(input: &str) -> Result<Vec<Event>, ReplayError> {
 }
 
 #[derive(Debug)]
+/// Error returned while parsing or replaying an event stream.
 pub struct ReplayError {
+    /// One-based input line number when parsing failed on a specific line.
     pub line: Option<usize>,
+    /// Underlying parse or replay error.
     pub source: ParseEventError,
 }
 

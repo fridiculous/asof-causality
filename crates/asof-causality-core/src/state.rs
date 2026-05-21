@@ -4,12 +4,19 @@ use crate::{
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
+/// Signal-visible state snapshot for one symbol at one prediction point.
 pub struct SymbolSnapshot {
+    /// Emitted prediction value.
     pub signal_value: i8,
+    /// Input event keys used to produce the value.
     pub input_event_ids_used: InputSet,
+    /// Maximum received time among input events used by the prediction.
     pub max_input_received_time: u64,
+    /// Maximum sequence among input events at the maximum replay key.
     pub max_input_sequence: u64,
+    /// Event key for the maximum input replay key, when an input exists.
     pub max_input_event_key: Option<EventKey>,
+    /// Optional precomputed feature recipe hash supplied by a signal.
     pub feature_recipe_hash: Option<FeatureRecipeHash>,
 }
 
@@ -106,11 +113,13 @@ impl StateWriter<'_> {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Opaque read-only state view exposed to signal implementations.
 pub struct AsOfView<'a> {
     store: &'a StateStore,
 }
 
 impl AsOfView<'_> {
+    /// Returns the latest received sentiment snapshot for `symbol`.
     pub fn snapshot(&self, symbol: SymbolId) -> SymbolSnapshot {
         match self.store.by_symbol.get(&symbol) {
             Some(state) => match state
@@ -134,6 +143,7 @@ impl AsOfView<'_> {
         }
     }
 
+    /// Returns a bounded recent sentiment-window snapshot for `symbol`.
     pub fn windowed_snapshot(&self, symbol: SymbolId, window: usize) -> SymbolSnapshot {
         let Some(state) = self.store.by_symbol.get(&symbol) else {
             return empty_snapshot();
@@ -174,6 +184,7 @@ impl AsOfView<'_> {
         }
     }
 
+    /// Returns a bounded recent numeric-score z-score snapshot for `symbol`.
     pub fn score_window_snapshot(
         &self,
         symbol: SymbolId,
