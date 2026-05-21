@@ -58,7 +58,7 @@ provenance model is signal-shaped rather than a one-row special case.
 The benchmark should report single-node replay throughput for:
 
 - string-keyed map state
-- interned symbol-ID vector state
+- dense symbol-slot vector state
 
 These measurements show how representation choices affect point-in-time replay
 cost without claiming production trading latency.

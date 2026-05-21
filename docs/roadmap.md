@@ -53,10 +53,10 @@ compile-time surface area. The intended sequence is:
 3. Treat Parquet files as ergonomic exports, with JSONL remaining the simplest
    review and diff format.
 
-## Deferred Engine Work
+## Engine State Representation
 
 The benchmark shows that dense symbol-indexed state is the right direction for
-large replay workloads. The current replay path already uses stable `SymbolId`
-values in records and state keys, while the benchmark demonstrates the denser
-vector-backed representation. Moving the production `StateStore` to that shape
-is worthwhile after the audit contract is stable.
+large replay workloads. Production replay now builds a collision-checked symbol
+catalog before the hot loop, keeps stable `SymbolId` values in audit records,
+and uses replay-local `SymbolSlot` values to index a vector-backed
+`StateStore`.

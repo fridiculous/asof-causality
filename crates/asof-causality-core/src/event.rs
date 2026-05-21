@@ -279,6 +279,31 @@ pub enum ParseEventError {
     InvalidRole(String),
     /// The sentiment value was not recognized.
     InvalidSentiment(String),
+    /// Two different symbol labels resolved to the same stable symbol id.
+    SymbolIdCollision {
+        /// Stable id shared by both labels.
+        symbol_id: SymbolId,
+        /// First label registered for the id.
+        existing_symbol: String,
+        /// Later label that collided with the first label.
+        conflicting_symbol: String,
+    },
+    /// The same symbol label appeared with a different stable id.
+    SymbolIdentityMismatch {
+        /// Human-readable symbol label.
+        symbol: String,
+        /// Id registered when the label was first interned.
+        expected: SymbolId,
+        /// Id observed on a later event for the same label.
+        actual: SymbolId,
+    },
+    /// A catalog lookup requested a symbol that had not been interned.
+    UnknownSymbol {
+        /// Human-readable symbol label.
+        symbol: String,
+        /// Stable id from the lookup event.
+        symbol_id: SymbolId,
+    },
     /// A feature event did not contain any supported feature value.
     MissingPayloadField {
         /// Event identifier for the malformed row.
@@ -301,6 +326,29 @@ impl fmt::Display for ParseEventError {
             }
             Self::InvalidRole(role) => write!(f, "invalid event role: {role}"),
             Self::InvalidSentiment(value) => write!(f, "invalid sentiment: {value}"),
+            Self::SymbolIdCollision {
+                symbol_id,
+                existing_symbol,
+                conflicting_symbol,
+            } => write!(
+                f,
+                "symbol id collision for {:016x}: {existing_symbol} conflicts with {conflicting_symbol}",
+                symbol_id.0
+            ),
+            Self::SymbolIdentityMismatch {
+                symbol,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "symbol {symbol} changed identity: expected {:016x}, found {:016x}",
+                expected.0, actual.0
+            ),
+            Self::UnknownSymbol { symbol, symbol_id } => write!(
+                f,
+                "symbol {symbol} with id {:016x} was not present in the symbol catalog",
+                symbol_id.0
+            ),
             Self::MissingPayloadField { event_id, field } => {
                 write!(f, "event {event_id} is missing payload field {field}")
             }

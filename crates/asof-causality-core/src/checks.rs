@@ -943,7 +943,7 @@ f1|90|100|2|feature|XYZ|sentiment=positive
             fn predict(
                 &self,
                 _view: AsOfView<'_>,
-                _symbol: crate::SymbolId,
+                _symbol: crate::SymbolSlot,
                 _prediction_time: u64,
             ) -> SymbolSnapshot {
                 SymbolSnapshot {

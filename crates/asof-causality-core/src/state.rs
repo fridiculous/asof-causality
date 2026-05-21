@@ -1,7 +1,6 @@
 use crate::{
-    Event, EventKey, FeatureRecipeHash, InputSet, Sentiment, SymbolId, MAX_INPUTS_PER_PREDICTION,
+    Event, EventKey, FeatureRecipeHash, InputSet, Sentiment, SymbolSlot, MAX_INPUTS_PER_PREDICTION,
 };
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
 /// Signal-visible state snapshot for one symbol at one prediction point.
@@ -69,12 +68,14 @@ struct FeatureObservation {
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct StateStore {
-    by_symbol: BTreeMap<SymbolId, SymbolState>,
+    by_symbol_slot: Vec<SymbolState>,
 }
 
 impl StateStore {
-    pub(crate) fn new() -> Self {
-        Self::default()
+    pub(crate) fn with_symbol_count(symbols: usize) -> Self {
+        Self {
+            by_symbol_slot: vec![SymbolState::default(); symbols],
+        }
     }
 
     pub(crate) fn writer(&mut self) -> StateWriter<'_> {
@@ -91,22 +92,22 @@ pub(crate) struct StateWriter<'a> {
 }
 
 impl StateWriter<'_> {
-    pub(crate) fn apply(&mut self, event: &Event) -> Result<(), crate::ParseEventError> {
+    pub(crate) fn apply(
+        &mut self,
+        event: &Event,
+        symbol: SymbolSlot,
+    ) -> Result<(), crate::ParseEventError> {
         let Some(values) = event.feature_values()? else {
             return Ok(());
         };
 
-        self.store
-            .by_symbol
-            .entry(event.symbol_key)
-            .or_default()
-            .push(FeatureObservation {
-                sentiment: values.sentiment,
-                score: values.score,
-                input_key: event.event_key,
-                received_time: event.received_time,
-                sequence: event.sequence,
-            });
+        self.store.by_symbol_slot[symbol.index()].push(FeatureObservation {
+            sentiment: values.sentiment,
+            score: values.score,
+            input_key: event.event_key,
+            received_time: event.received_time,
+            sequence: event.sequence,
+        });
 
         Ok(())
     }
@@ -120,34 +121,30 @@ pub struct AsOfView<'a> {
 
 impl AsOfView<'_> {
     /// Returns the latest received sentiment snapshot for `symbol`.
-    pub fn snapshot(&self, symbol: SymbolId) -> SymbolSnapshot {
-        match self.store.by_symbol.get(&symbol) {
-            Some(state) => match state
-                .recent_window(MAX_INPUTS_PER_PREDICTION)
-                .iter()
-                .rev()
-                .find(|observation| observation.sentiment.is_some())
-                .copied()
-            {
-                Some(observation) => SymbolSnapshot {
-                    signal_value: observation.sentiment.unwrap().signal_value(),
-                    input_event_ids_used: InputSet::one(observation.input_key),
-                    max_input_received_time: observation.received_time,
-                    max_input_sequence: observation.sequence,
-                    max_input_event_key: Some(observation.input_key),
-                    feature_recipe_hash: None,
-                },
-                None => empty_snapshot(),
+    pub fn snapshot(&self, symbol: SymbolSlot) -> SymbolSnapshot {
+        let state = &self.store.by_symbol_slot[symbol.index()];
+        match state
+            .recent_window(MAX_INPUTS_PER_PREDICTION)
+            .iter()
+            .rev()
+            .find(|observation| observation.sentiment.is_some())
+            .copied()
+        {
+            Some(observation) => SymbolSnapshot {
+                signal_value: observation.sentiment.unwrap().signal_value(),
+                input_event_ids_used: InputSet::one(observation.input_key),
+                max_input_received_time: observation.received_time,
+                max_input_sequence: observation.sequence,
+                max_input_event_key: Some(observation.input_key),
+                feature_recipe_hash: None,
             },
             None => empty_snapshot(),
         }
     }
 
     /// Returns a bounded recent sentiment-window snapshot for `symbol`.
-    pub fn windowed_snapshot(&self, symbol: SymbolId, window: usize) -> SymbolSnapshot {
-        let Some(state) = self.store.by_symbol.get(&symbol) else {
-            return empty_snapshot();
-        };
+    pub fn windowed_snapshot(&self, symbol: SymbolSlot, window: usize) -> SymbolSnapshot {
+        let state = &self.store.by_symbol_slot[symbol.index()];
 
         let observations = recent_observations_with_sentiment(state, window);
         if observations.is_empty() {
@@ -187,13 +184,11 @@ impl AsOfView<'_> {
     /// Returns a bounded recent numeric-score z-score snapshot for `symbol`.
     pub fn score_window_snapshot(
         &self,
-        symbol: SymbolId,
+        symbol: SymbolSlot,
         window: usize,
         threshold: f64,
     ) -> SymbolSnapshot {
-        let Some(state) = self.store.by_symbol.get(&symbol) else {
-            return empty_snapshot();
-        };
+        let state = &self.store.by_symbol_slot[symbol.index()];
 
         let observations = recent_observations_with_score(state, window);
         if observations.is_empty() {
@@ -319,11 +314,21 @@ fn empty_snapshot() -> SymbolSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::SymbolCatalog;
     use crate::EventRole;
+
+    fn store_with_events(events: &[Event]) -> (StateStore, SymbolCatalog) {
+        let catalog = SymbolCatalog::from_events(events).unwrap();
+        let mut store = StateStore::with_symbol_count(catalog.len());
+        for event in events {
+            let symbol = catalog.slot_for_event(event).unwrap();
+            store.writer().apply(event, symbol).unwrap();
+        }
+        (store, catalog)
+    }
 
     #[test]
     fn windowed_snapshot_records_multiple_feature_inputs() {
-        let mut store = StateStore::new();
         let events = [
             Event::new(
                 "f1",
@@ -353,14 +358,10 @@ mod tests {
                 "sentiment=positive",
             ),
         ];
+        let (store, catalog) = store_with_events(&events);
+        let symbol = catalog.slot_for_event(&events[0]).unwrap();
 
-        for event in &events {
-            store.writer().apply(event).unwrap();
-        }
-
-        let snapshot = store
-            .as_of_view()
-            .windowed_snapshot(events[0].symbol_key, 3);
+        let snapshot = store.as_of_view().windowed_snapshot(symbol, 3);
 
         assert_eq!(snapshot.signal_value, 1);
         assert_eq!(snapshot.input_event_ids_used.len(), 3);
@@ -378,21 +379,16 @@ mod tests {
 
     #[test]
     fn score_window_snapshot_buckets_latest_zscore() {
-        let mut store = StateStore::new();
         let events = [
             Event::new("px1", 10, 10, 1, EventRole::Feature, "XYZ", "score=10"),
             Event::new("px2", 20, 20, 2, EventRole::Feature, "XYZ", "score=10"),
             Event::new("px3", 30, 30, 3, EventRole::Feature, "XYZ", "score=10"),
             Event::new("px4", 40, 40, 4, EventRole::Feature, "XYZ", "score=30"),
         ];
+        let (store, catalog) = store_with_events(&events);
+        let symbol = catalog.slot_for_event(&events[0]).unwrap();
 
-        for event in &events {
-            store.writer().apply(event).unwrap();
-        }
-
-        let snapshot = store
-            .as_of_view()
-            .score_window_snapshot(events[0].symbol_key, 5, 1.0);
+        let snapshot = store.as_of_view().score_window_snapshot(symbol, 5, 1.0);
 
         assert_eq!(snapshot.signal_value, 1);
         assert_eq!(snapshot.input_event_ids_used.len(), 4);
@@ -401,7 +397,6 @@ mod tests {
 
     #[test]
     fn sentiment_snapshot_ignores_score_only_features() {
-        let mut store = StateStore::new();
         let events = [
             Event::new(
                 "s1",
@@ -414,12 +409,10 @@ mod tests {
             ),
             Event::new("px1", 20, 20, 2, EventRole::Feature, "XYZ", "score=100"),
         ];
+        let (store, catalog) = store_with_events(&events);
+        let symbol = catalog.slot_for_event(&events[0]).unwrap();
 
-        for event in &events {
-            store.writer().apply(event).unwrap();
-        }
-
-        let snapshot = store.as_of_view().snapshot(events[0].symbol_key);
+        let snapshot = store.as_of_view().snapshot(symbol);
 
         assert_eq!(snapshot.signal_value, 1);
         assert_eq!(
