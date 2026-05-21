@@ -1,4 +1,4 @@
-use crate::ids::SymbolCatalog;
+use crate::catalog::SymbolCatalog;
 use crate::{Event, EventKey, InputSet, SymbolId};
 use std::collections::BTreeMap;
 use std::fmt::Write;

@@ -314,7 +314,7 @@ fn empty_snapshot() -> SymbolSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::SymbolCatalog;
+    use crate::catalog::SymbolCatalog;
     use crate::EventRole;
 
     fn store_with_events(events: &[Event]) -> (StateStore, SymbolCatalog) {

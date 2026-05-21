@@ -1,4 +1,5 @@
-use crate::ids::{SymbolCatalog, SymbolSlot};
+use crate::catalog::SymbolCatalog;
+use crate::ids::SymbolSlot;
 use crate::state::StateStore;
 use crate::{
     feature_recipe_hash, Event, EventRole, LastFeatureSentimentSignal, ParseEventError,

@@ -9,6 +9,7 @@
 
 #[allow(missing_docs)]
 pub mod bench;
+pub(crate) mod catalog;
 #[allow(missing_docs)]
 pub mod checks;
 /// Event model and pipe-record parsing.
