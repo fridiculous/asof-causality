@@ -750,12 +750,7 @@ l1|640|640|8|outcome|AAPL|return_bps=12
     }
 
     fn assert_check_result(result: CheckResult) -> Result<(), TestCaseError> {
-        prop_assert!(
-            result.passed,
-            "{} failed: {}",
-            result.name,
-            result.detail
-        );
+        prop_assert!(result.passed, "{} failed: {}", result.name, result.detail);
         Ok(())
     }
 

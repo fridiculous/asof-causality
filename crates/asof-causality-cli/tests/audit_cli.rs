@@ -207,9 +207,7 @@ p1|110|110|2|prediction|XYZ|
         .args(["check", fixture.to_str().unwrap(), "--exhaustive"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains(
-            "[FAIL]  on_time_vs_late_contrast",
-        ))
+        .stdout(predicate::str::contains("[FAIL]  on_time_vs_late_contrast"))
         .stderr(predicate::str::contains(
             "error: one or more adversarial checks failed",
         ));
