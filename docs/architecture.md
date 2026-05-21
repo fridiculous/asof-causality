@@ -104,6 +104,29 @@ causality invariant is defined on replay order, not calendar semantics. If a
 production dataset forbids that relationship, enforce it in the upstream
 adapter or add an explicit validation pass before replay.
 
+## The Root Of Trust
+
+The current bitemporal engine enforces causality from the `received_time`
+provided in the event schema. That is enough for deterministic fixtures,
+negative controls, and local regression tests, but it is not a production
+security boundary. If a researcher can freely write the event file, they can
+also forge historical availability by backdating `received_time`.
+
+In a deployed system, `received_time` should be bound to an infrastructural root
+of trust rather than self-reported by the payload. Examples include a Kafka
+append timestamp, warehouse ingestion metadata, an S3 object creation or object
+lock timestamp, or a hardware-stamped packet capture from a market-data packet
+broker. The causality engine should ingest from that authoritative boundary or
+from an adapter that preserves and signs that boundary.
+
+The current `manifest.json` binds the run to input and output hashes, but it
+does not prove that the input timestamps were authentic. A production manifest
+should also bind the replay to the authoritative timestamp source, adapter
+version, and source object/message commitments. With that additional root of
+trust, the audit can argue not only that the signal respected the provided
+timeline, but that the timeline itself was not successfully forged by the
+signal author or research pipeline.
+
 The current `feature_recipe_hash` is intentionally an input-set commitment. It
 commits to the signal name, signal configuration descriptor, and ordered input
 event keys. It does not separately commit to event payload values or replay

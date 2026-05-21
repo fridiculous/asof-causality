@@ -43,17 +43,29 @@ input event keys, not the input payload values. Later it can commit to value
 hashes, a feature recipe, or snapshot manifest without changing the core
 causality invariant.
 
-## Parquet Adapter
+## Arrow/Parquet I/O Boundary
 
-Parquet is a good downstream adapter, not the first submission surface. It would
-improve Polars, Pandas, DuckDB, and Jupyter workflows by carrying an embedded
-schema and columnar layout. It also adds Arrow/Parquet dependency weight and
-compile-time surface area. The intended sequence is:
+Pipe fixtures and JSONL audit output are the reference interface because they
+keep the repository easy to inspect and keep the dependency tree small. They are
+not the production-scale I/O boundary. For real quant research workloads,
+Parquet is not just an export format; it is the required ingestion and querying
+boundary.
+
+The production architecture should move toward Arrow-native memory and Parquet
+storage. Arrow batches allow the causality engine to exchange data with Polars,
+DuckDB, Pandas, and Python strategy tooling without repeatedly parsing text.
+Parquet gives durable columnar audit artifacts with schema metadata, predicate
+pushdown, and column projection, so researchers can scan millions of audited
+`PredictionRecord`s without paying JSONL deserialization cost.
+
+The intended sequence is:
 
 1. Keep JSONL plus JSON Schema as the canonical audit contract.
 2. Add a Parquet writer that adapts the same audit records.
-3. Treat Parquet files as ergonomic exports, with JSONL remaining the simplest
-   review and diff format.
+3. Add Arrow/Parquet ingestion for event streams once the audit export schema is
+   stable.
+4. Treat JSONL as the small-fixture review/debug surface and Parquet as the
+   production artifact surface.
 
 The first Arrow/Parquet PR should make this strong claim:
 
@@ -72,6 +84,7 @@ Parquet file metadata should include:
 - `asof.schema`
 - `asof.hash_algorithm`
 - `asof.tool`
+- `asof.input_commitment`
 
 `feature_recipe_hash` remains a per-row column, not file metadata. The metadata
 names describe the contract and hashing/tool context; they do not replace the
@@ -79,7 +92,9 @@ row-level provenance digest.
 
 The typed schema should avoid treating the export as only JSONL-in-Parquet:
 
-- `sentiment`: `Dictionary<Int32, Utf8>` for the low-cardinality sentiment
+- `symbol_id`: fixed-width integer identity for joins and audit records.
+- `symbol`: dictionary-encoded UTF-8 label for display and analyst queries.
+- `sentiment`: dictionary-encoded UTF-8 for the low-cardinality sentiment
   domain, including generated mutation markers if they appear in fixtures.
 - `return_bps`: current audit JSONL stores this as a JSON number. A typed
   Parquet adapter should prefer integer basis points (`Int64`) or an Arrow
@@ -92,3 +107,29 @@ first if typed feature columns would expand the scope too far, then promote to
 typed feature columns in a follow-up. Do not bundle storing parsed
 `FeatureValues` on `Event` into the Arrow work; that is a separate
 architectural cleanup.
+
+## Strategy Layer Handoff: Python Bindings And IPC
+
+This repository stops at the signal layer and emits audited
+`PredictionRecord`s. Downstream strategies are a different system: they consume
+signal streams, maintain portfolio state, apply risk controls, size orders, and
+score fills. In most quant teams, that downstream research and strategy work is
+Python-first.
+
+The Rust kernel should therefore expose a stable handoff boundary rather than
+forcing strategy authors to work inside the CLI. Two evolution paths are
+compatible with the current crate split:
+
+- Zero-copy FFI: package the replay engine as a Python wheel with PyO3 and
+  Arrow/Polars-compatible buffers. Researchers should be able to pass
+  Arrow-backed historical data from Python into Rust replay and receive an
+  audited Polars DataFrame or Arrow table back with minimal serialization.
+- Operational IPC: for live, paper-trading, or batch platform integration, run
+  the Rust causality cage as a separate process upstream of Python strategy
+  daemons. Unix domain sockets, gRPC over TCP, or another small framed protocol
+  can stream evaluated `SignalEvaluation`s or finalized `PredictionRecord`s
+  while keeping the strict as-of boundary in Rust.
+
+The strategic split is intentional: Rust owns deterministic replay and
+causality enforcement; Python owns rapid research iteration, portfolio logic,
+and strategy analytics over the certified prediction stream.

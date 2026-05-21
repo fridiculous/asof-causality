@@ -211,6 +211,21 @@ decimal literals.
   instead of trying to place every input key in the prediction record. See
   [Recipe Hashes](docs/roadmap.md#recipe-hashes).
 
+## Scale And I/O
+
+The current reference implementation uses pipe-delimited events and JSONL audit
+records to keep the repository easy to inspect, diff, and grade without a heavy
+dependency tree. That is the right surface for fixtures and small reviews, but
+it is not the intended high-throughput research boundary.
+
+Production-scale signal validation should use the Apache Arrow ecosystem:
+Arrow-backed in-memory batches for replay inputs and Parquet for durable audit
+artifacts. JSONL text deserialization becomes a bottleneck once strategy
+pipelines need to scan millions of `PredictionRecord`s, join outcomes, and feed
+Polars, DuckDB, or Pandas workflows. See
+[docs/roadmap.md](docs/roadmap.md#arrowparquet-io-boundary) for the planned
+Arrow/Parquet boundary.
+
 ## Current Commands
 
 ```sh
