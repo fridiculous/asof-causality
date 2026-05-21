@@ -1,0 +1,25 @@
+# Real-data fixture derived from public ALFRED/FRED daily data.
+# Feature: DGS10 daily yield change from ALFRED vintages.
+# Prediction: daily SP500 risk-on/risk-off stance before the next DGS10 vintage is available.
+# Outcome: next trading-day SP500 return from FRED.
+# Times use YYYYMMDDHHMM integers. DGS10 observations are dated at 15:00 on
+# the observation date, before a naive 16:00 close prediction, and received at
+# 09:00 on the next ALFRED vintage date.
+# SP500 predictions are emitted at 16:00. Outcomes are attached after the next
+# close so they cannot affect prediction state.
+# event_id|observed_time|received_time|sequence|role|symbol|payload
+dgs10_20200311_v20200312|202003111500|202003120900|1|feature|SP500|score=0.06,series=DGS10,value=0.82,previous=0.76,source=ALFRED
+dgs10_20200312_v20200313|202003121500|202003130900|2|feature|SP500|score=0.06,series=DGS10,value=0.88,previous=0.82,source=ALFRED
+dgs10_20200313_v20200316|202003131500|202003160900|3|feature|SP500|score=0.06,series=DGS10,value=0.94,previous=0.88,source=ALFRED
+p_20200316_close|202003161600|202003161600|4|prediction|SP500|
+dgs10_20200316_v20200317|202003161500|202003170900|5|feature|SP500|score=-0.21,series=DGS10,value=0.73,previous=0.94,source=ALFRED
+p_20200317_close|202003171600|202003171600|6|prediction|SP500|
+dgs10_20200317_v20200318|202003171500|202003180900|7|feature|SP500|score=0.29,series=DGS10,value=1.02,previous=0.73,source=ALFRED
+p_20200318_close_before_vintage|202003181600|202003181600|8|prediction|SP500|
+dgs10_20200318_v20200319|202003181500|202003190900|9|feature|SP500|score=0.16,series=DGS10,value=1.18,previous=1.02,source=ALFRED
+p_20200319_close|202003191600|202003191600|10|prediction|SP500|
+dgs10_20200319_v20200320|202003191500|202003200900|11|feature|SP500|score=-0.06,series=DGS10,value=1.12,previous=1.18,source=ALFRED
+sp500_outcome_20200317|202003171600|202003171700|12|outcome|SP500|return_bps=599.55,prediction_replay_key=202003161600:4:p_20200316_close
+sp500_outcome_20200318|202003181600|202003181700|13|outcome|SP500|return_bps=-518.31,prediction_replay_key=202003171600:6:p_20200317_close
+sp500_outcome_20200319|202003191600|202003191700|14|outcome|SP500|return_bps=47.08,prediction_replay_key=202003181600:8:p_20200318_close_before_vintage
+sp500_outcome_20200320|202003201600|202003201700|15|outcome|SP500|return_bps=-433.60,prediction_replay_key=202003191600:10:p_20200319_close

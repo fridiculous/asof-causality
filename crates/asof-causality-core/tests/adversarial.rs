@@ -18,6 +18,10 @@ fn zscore_events() -> Vec<asof_causality_core::Event> {
     parse_pipe_events(include_str!("../../../examples/zscore-lookahead.pipe")).unwrap()
 }
 
+fn alfred_events() -> Vec<asof_causality_core::Event> {
+    parse_pipe_events(include_str!("../../../examples/alfred-dgs10-sp500.pipe")).unwrap()
+}
+
 fn assert_check_passes(name: &str) {
     let events = fixture_events();
     let report = run_adversarial_checks(&events);
@@ -206,4 +210,63 @@ fn observed_time_baseline_leaks_numeric_zscore_input() {
     assert_eq!(leaked.signal_value, 1);
     assert_eq!(leaked.max_input_received_time, 120);
     assert_eq!(output.predictions.impossible_predictions().len(), 1);
+}
+
+#[test]
+fn alfred_fixture_blocks_same_day_vintage_until_received() {
+    let events = alfred_events();
+    let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+        .replay_with_order(&events, ReplayOptions::default(), ReplayOrder::ReceivedTime)
+        .unwrap();
+    let blocked_input = events
+        .iter()
+        .find(|event| event.event_id == "dgs10_20200318_v20200319")
+        .expect("ALFRED fixture should contain the next-day DGS10 vintage")
+        .event_key;
+    let prediction_event_key = events
+        .iter()
+        .find(|event| event.event_id == "p_20200318_close_before_vintage")
+        .expect("ALFRED fixture should contain the 2020-03-18 close prediction")
+        .event_key;
+
+    let prediction = output
+        .predictions
+        .records()
+        .iter()
+        .find(|record| record.prediction_event_key == prediction_event_key)
+        .expect("received-time replay should emit the 2020-03-18 prediction");
+
+    assert_eq!(prediction.prediction_time, 202003181600);
+    assert_eq!(prediction.max_input_received_time, 202003180900);
+    assert_eq!(prediction.max_input_sequence, 7);
+    assert!(!prediction.input_event_ids_used.contains_key(blocked_input));
+}
+
+#[test]
+fn observed_time_baseline_leaks_alfred_same_day_vintage() {
+    let events = alfred_events();
+    let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+        .replay_with_order(
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ObservedTimeLeaky,
+        )
+        .unwrap();
+    let same_day_vintage = events
+        .iter()
+        .find(|event| event.event_id == "dgs10_20200318_v20200319")
+        .expect("ALFRED fixture should contain the same-day DGS10 vintage")
+        .event_key;
+
+    let leaked = output
+        .predictions
+        .records()
+        .iter()
+        .find(|record| record.prediction_time == 202003181600)
+        .expect("ALFRED fixture should emit the 2020-03-18 prediction");
+
+    assert_eq!(leaked.max_input_received_time, 202003190900);
+    assert_eq!(leaked.max_input_sequence, 9);
+    assert!(leaked.input_event_ids_used.contains_key(same_day_vintage));
+    assert!(leaked.max_input_received_time > leaked.prediction_time);
 }

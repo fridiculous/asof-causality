@@ -232,6 +232,7 @@ fn parse_audit_args(args: &[String]) -> Result<AuditArgs, Box<dyn Error>> {
     let mut positional = Vec::new();
     let mut signal = SignalChoice::default();
     let mut out = None;
+    let mut outcomes_path = None;
     let mut allow_missing_recipe_hash = false;
     let mut index = 0;
 
@@ -243,6 +244,10 @@ fn parse_audit_args(args: &[String]) -> Result<AuditArgs, Box<dyn Error>> {
             }
             "--out" => {
                 out = Some(PathBuf::from(required_arg(args, index, "--out")?));
+                index += 2;
+            }
+            "--outcomes" => {
+                outcomes_path = Some(PathBuf::from(required_arg(args, index, "--outcomes")?));
                 index += 2;
             }
             "--allow-missing-recipe-hash" => {
@@ -262,6 +267,10 @@ fn parse_audit_args(args: &[String]) -> Result<AuditArgs, Box<dyn Error>> {
     if positional.len() > 3 {
         return Err("audit accepts at most events, stored predictions, and outcomes paths".into());
     }
+    let positional_outcomes_path = positional.get(2).map(PathBuf::from);
+    if outcomes_path.is_some() && positional_outcomes_path.is_some() {
+        return Err("--outcomes cannot be combined with a positional outcomes path".into());
+    }
 
     Ok(AuditArgs {
         events_path: positional
@@ -269,7 +278,7 @@ fn parse_audit_args(args: &[String]) -> Result<AuditArgs, Box<dyn Error>> {
             .cloned()
             .unwrap_or_else(|| "examples/late-arrival.pipe".to_string()),
         stored_predictions_path: positional.get(1).map(PathBuf::from),
-        outcomes_path: positional.get(2).map(PathBuf::from),
+        outcomes_path: outcomes_path.or(positional_outcomes_path),
         signal,
         out,
         allow_missing_recipe_hash,
@@ -1981,7 +1990,8 @@ fn print_help() {
     println!("usage:");
     println!("  asof-causality replay [path] [--signal name]");
     println!("  asof-causality check [path] [--signal name] [--max-cutoffs N|--exhaustive]");
-    println!("  asof-causality audit [events] [stored_predictions.jsonl] [outcomes] [--signal name] [--out path] [--allow-missing-recipe-hash]");
+    println!("  asof-causality audit [events] [stored_predictions.jsonl] [legacy_outcomes] [--signal name] [--out path] [--outcomes path] [--allow-missing-recipe-hash]");
+    println!("      prefer --outcomes path when attaching outcomes without stored predictions");
     println!("  asof-causality negative-control [path] [--signal name]");
     println!("  asof-causality generate [--scenario late-heavy] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out path]");
     println!("  asof-causality run-suite [--scenario late-heavy] [--signal name] [--events N] [--symbols N] [--late-rate R] [--feature-correction-rate R] [--outcome-rate R] [--seed N] [--out dir]");
@@ -2133,6 +2143,23 @@ mod tests {
         assert_eq!(parsed.signal, SignalChoice::WindowedFeatureSentiment);
         assert_eq!(parsed.out, Some(PathBuf::from("runs/audit.jsonl")));
         assert!(parsed.allow_missing_recipe_hash);
+    }
+
+    #[test]
+    fn parses_audit_outcomes_flag() {
+        let parsed = parse_audit_args(&args(&[
+            "examples/alfred-dgs10-sp500.pipe",
+            "--outcomes",
+            "examples/alfred-dgs10-sp500.pipe",
+        ]))
+        .unwrap();
+
+        assert_eq!(parsed.events_path, "examples/alfred-dgs10-sp500.pipe");
+        assert_eq!(parsed.stored_predictions_path, None);
+        assert_eq!(
+            parsed.outcomes_path,
+            Some(PathBuf::from("examples/alfred-dgs10-sp500.pipe"))
+        );
     }
 
     #[test]
