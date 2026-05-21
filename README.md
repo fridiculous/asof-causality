@@ -127,7 +127,7 @@ case study showing macro lookahead bias.
   an infrastructural timestamp root of trust.
 
 See [docs/roadmap.md](docs/roadmap.md) for the planned production path:
-long-window provenance, Arrow/Parquet I/O, outcome joins, out-of-core replay,
+long-window provenance, Arrow/Parquet production I/O, outcome joins, out-of-core replay,
 and Python/IPC strategy handoff.
 
 ## Documentation Map

@@ -62,7 +62,7 @@ input event keys, not the input payload values. Later it can commit to value
 hashes, a feature recipe, or snapshot manifest without changing the core
 causality invariant.
 
-## Arrow/Parquet I/O Boundary
+## Arrow/Parquet Production Boundary
 
 Pipe fixtures and JSONL audit output are the reference interface because they
 keep the repository easy to inspect and keep the dependency tree small. They are
@@ -70,28 +70,33 @@ not the production-scale I/O boundary. For real quant research workloads,
 Parquet is not just an export format; it is the required ingestion and querying
 boundary.
 
-The production architecture should move toward Arrow-native memory and Parquet
-storage. Arrow batches allow the causality engine to exchange data with Polars,
-DuckDB, Pandas, and Python strategy tooling without repeatedly parsing text.
-Parquet gives durable columnar audit artifacts with schema metadata, predicate
-pushdown, and column projection, so researchers can scan millions of audited
-`PredictionRecord`s without paying JSONL deserialization cost.
+The production architecture should be Arrow-native at the adapter boundary and
+Parquet-backed at the durable audit/query boundary. Arrow IPC is the natural
+ingestion format for typed event batches. Parquet is the storage format for
+audited predictions. Together they let the causality engine exchange data with
+Polars, DuckDB, Pandas, and Python strategy tooling without repeatedly parsing
+text. They also provide schema metadata, predicate pushdown, and column
+projection, so researchers can scan millions of audited `PredictionRecord`s
+without paying JSONL deserialization cost.
 
 The intended sequence is:
 
-1. Keep JSONL plus JSON Schema as the canonical audit contract.
-2. Add a Parquet writer that adapts the same audit records.
-3. Add Arrow/Parquet ingestion for event streams once the audit export schema is
-   stable.
-4. Treat JSONL as the small-fixture review/debug surface and Parquet as the
-   production artifact surface.
+1. Keep pipe text and JSONL plus JSON Schema as the canonical review/debug
+   surface.
+2. Add typed Arrow IPC ingestion for event batches and prove transcript-hash
+   equality against the same pipe fixtures.
+3. Add a Parquet audit writer that emits the same `PredictionRecord` contract
+   through Arrow `RecordBatch`es.
+4. Treat Arrow/Parquet as the production I/O boundary, with JSONL remaining the
+   simplest diff and submission format.
 
 The first Arrow/Parquet PR should make this strong claim:
 
-> This PR makes the strong claim that the audit export is no longer just JSONL
-> reshaped into Parquet: it is a typed, columnar audit contract with explicit
-> schema metadata, stable provenance columns, and compression chosen
-> deliberately rather than inherited from parquet-rs defaults.
+> This PR makes the strong claim that columnar I/O is a first-class production
+> boundary, not JSONL reshaped into Parquet: event ingestion uses a typed Arrow
+> schema, audit output uses a typed Parquet schema, metadata is explicit, and
+> compression is chosen deliberately rather than inherited from parquet-rs
+> defaults.
 
 The writer should set compression explicitly. Snappy is the lower-surprise first
 choice for interoperability and fast reads. Zstd level 3 is also defensible for
@@ -102,8 +107,10 @@ Parquet file metadata should include:
 
 - `asof.schema`
 - `asof.hash_algorithm`
+- `asof.hash_encoding`
 - `asof.tool`
 - `asof.input_commitment`
+- fixed-point scale metadata, such as `asof.score_scale` and `asof.bps_scale`
 
 `feature_recipe_hash` remains a per-row column, not file metadata. The metadata
 names describe the contract and hashing/tool context; they do not replace the
@@ -122,8 +129,12 @@ The typed schema should avoid treating the export as only JSONL-in-Parquet:
 - `return_bps`: current audit JSONL stores this as a JSON number. A typed
   Parquet adapter should prefer integer basis points (`Int64`) or an Arrow
   decimal type over `Float64`.
-- `payload`: only keep this as `Utf8` for a thin first adapter if the typed
-  feature schema is blocked.
+- `feature_recipe_hash`: reviewer-friendly hex `Utf8` first, with
+  `asof.hash_encoding = "hex"`. Production pipelines may prefer
+  `FixedSizeBinary(32)` for the same BLAKE3 bytes.
+- `payload`: only keep this as an optional compatibility column. If typed
+  columns exist, they should be the adapter contract and the pipe payload should
+  be reconstructed at the boundary rather than treated as the source of truth.
 
 Sequencing should stay explicit. Land a thin payload-`Utf8` Parquet adapter
 first if typed feature columns would expand the scope too far, then promote to
