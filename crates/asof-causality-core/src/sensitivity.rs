@@ -40,6 +40,12 @@ pub enum PolicyKind {
         max_lag_exclusive: Option<u64>,
         pct_bps: u16,
     },
+    ReceivedTimeLagCumulativeLookahead {
+        roles_affected: Vec<EventRole>,
+        max_lag_inclusive: Option<u64>,
+        threshold_pct_bps: u16,
+        pct_bps: u16,
+    },
     ReplayOrderOverride {
         order: ReplayOrder,
     },
@@ -96,6 +102,24 @@ impl PolicyPoint {
                 roles_affected: vec![EventRole::Feature, EventRole::FeatureCorrection],
                 min_lag,
                 max_lag_exclusive,
+                pct_bps: pct_bps.min(10_000),
+            },
+        }
+    }
+
+    pub fn leak_feature_lag_cumulative(
+        name: impl Into<String>,
+        max_lag_inclusive: Option<u64>,
+        threshold_pct_bps: u16,
+        pct_bps: u16,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            category: PolicyCategory::SyntheticStress,
+            kind: PolicyKind::ReceivedTimeLagCumulativeLookahead {
+                roles_affected: vec![EventRole::Feature, EventRole::FeatureCorrection],
+                max_lag_inclusive,
+                threshold_pct_bps: threshold_pct_bps.min(10_000),
                 pct_bps: pct_bps.min(10_000),
             },
         }
@@ -268,6 +292,39 @@ pub fn transform_events_for_policy(
 
             Ok((transformed, events_transformed, ReplayOrder::ReceivedTime))
         }
+        PolicyKind::ReceivedTimeLagCumulativeLookahead {
+            roles_affected,
+            max_lag_inclusive,
+            pct_bps,
+            ..
+        } => {
+            let mut transformed = Vec::with_capacity(events.len());
+            let mut events_transformed = 0;
+
+            for event in events {
+                let mut event = event.clone();
+                if roles_affected.contains(&event.role)
+                    && event.received_time > event.observed_time
+                    && lag_is_at_or_below_threshold(
+                        event.received_time - event.observed_time,
+                        *max_lag_inclusive,
+                    )
+                {
+                    let shifted = leak_received_time_toward_observed_time(
+                        event.observed_time,
+                        event.received_time,
+                        *pct_bps,
+                    );
+                    if shifted != event.received_time {
+                        event.received_time = shifted;
+                        events_transformed += 1;
+                    }
+                }
+                transformed.push(event);
+            }
+
+            Ok((transformed, events_transformed, ReplayOrder::ReceivedTime))
+        }
     }
 }
 
@@ -348,6 +405,12 @@ fn lag_is_in_bucket(lag: u64, min_lag: u64, max_lag_exclusive: Option<u64>) -> b
             Some(max_lag) => lag < max_lag,
             None => true,
         }
+}
+
+fn lag_is_at_or_below_threshold(lag: u64, max_lag_inclusive: Option<u64>) -> bool {
+    max_lag_inclusive
+        .map(|threshold| lag <= threshold)
+        .unwrap_or(true)
 }
 
 fn diff_against_baseline(
@@ -625,6 +688,34 @@ p1|250|250|4|prediction|XYZ|
         assert_eq!(order, ReplayOrder::ReceivedTime);
         assert_eq!(events_transformed, 1);
         assert_eq!(transformed[0].received_time, 120);
+        assert_eq!(transformed[1].received_time, 100);
+        assert_eq!(transformed[2].received_time, 240);
+        assert_eq!(transformed[3].received_time, 250);
+    }
+
+    #[test]
+    fn cumulative_lag_lookahead_moves_all_events_up_to_threshold() {
+        let events = parse_pipe_events(
+            "\
+f1|100|120|1|feature|XYZ|sentiment=positive
+f2|100|175|2|feature|XYZ|sentiment=negative
+f3|100|240|3|feature|XYZ|sentiment=positive
+p1|250|250|4|prediction|XYZ|
+",
+        )
+        .unwrap();
+        let policy = PolicyPoint::leak_feature_lag_cumulative(
+            "late_arrivals_cumulative_50pct",
+            Some(75),
+            5_000,
+            10_000,
+        );
+        let (transformed, events_transformed, order) =
+            transform_events_for_policy(&events, &policy).unwrap();
+
+        assert_eq!(order, ReplayOrder::ReceivedTime);
+        assert_eq!(events_transformed, 2);
+        assert_eq!(transformed[0].received_time, 100);
         assert_eq!(transformed[1].received_time, 100);
         assert_eq!(transformed[2].received_time, 240);
         assert_eq!(transformed[3].received_time, 250);

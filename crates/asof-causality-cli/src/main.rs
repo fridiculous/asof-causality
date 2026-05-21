@@ -242,6 +242,7 @@ struct SensitivityArgs {
     details: bool,
     scenario: SensitivityScenario,
     late_arrival_buckets: Option<LateArrivalBucketSpec>,
+    late_arrival_steps: usize,
     policies: Vec<PolicyPoint>,
 }
 
@@ -509,7 +510,9 @@ fn parse_sensitivity_args(args: &[String]) -> Result<SensitivityArgs, Box<dyn Er
             .position(|policy| policy.name == "observed_time_leaky")
             .unwrap_or(policies.len());
         policies.splice(insert_at..insert_at, generated_policies);
-    } else if args.iter().any(|arg| arg == "--steps") {
+    } else if args.iter().any(|arg| arg == "--steps")
+        && scenario != SensitivityScenario::LateArrivals
+    {
         return Err(
             "sensitivity --steps requires --lookahead-range or --scenario lookahead".into(),
         );
@@ -529,6 +532,7 @@ fn parse_sensitivity_args(args: &[String]) -> Result<SensitivityArgs, Box<dyn Er
         details,
         scenario,
         late_arrival_buckets,
+        late_arrival_steps: lookahead_steps,
         policies,
     })
 }
@@ -647,7 +651,7 @@ fn append_late_arrival_policies(
         return Ok(());
     }
 
-    let generated = late_arrival_bucket_policies(events)?;
+    let generated = cumulative_late_arrival_policies(events, args.late_arrival_steps)?;
     let insert_at = args
         .policies
         .iter()
@@ -657,7 +661,10 @@ fn append_late_arrival_policies(
     Ok(())
 }
 
-fn late_arrival_bucket_policies(events: &[Event]) -> Result<Vec<PolicyPoint>, Box<dyn Error>> {
+fn cumulative_late_arrival_policies(
+    events: &[Event],
+    steps: usize,
+) -> Result<Vec<PolicyPoint>, Box<dyn Error>> {
     let mut lags = events
         .iter()
         .filter(|event| {
@@ -674,34 +681,45 @@ fn late_arrival_bucket_policies(events: &[Event]) -> Result<Vec<PolicyPoint>, Bo
 
     lags.sort_unstable();
     lags.dedup();
-    let bucket_count = lags.len().min(4);
-    let mut edges = Vec::with_capacity(bucket_count);
-    for bucket_index in 0..bucket_count {
-        let lag_index = (lags.len() * bucket_index) / bucket_count;
-        edges.push(lags[lag_index]);
-    }
-    edges.dedup();
+    let steps = steps.max(1);
+    let sample_count = lags.len().min(steps);
+    let mut policies = Vec::with_capacity(sample_count);
+    let mut seen_thresholds = BTreeSet::new();
 
-    Ok(edges
-        .iter()
-        .enumerate()
-        .map(|(index, min_lag)| {
-            let max_lag_exclusive = edges.get(index + 1).copied();
-            let name = format!(
-                "late_arrivals_{}",
-                late_arrival_bucket_name(*min_lag, max_lag_exclusive)
-            );
-            PolicyPoint::leak_feature_lag_bucket(name, *min_lag, max_lag_exclusive, 10_000)
-        })
-        .collect())
-}
+    for sample_index in 0..sample_count {
+        let lag_index = if sample_count == 1 {
+            lags.len() - 1
+        } else {
+            ((lags.len() - 1) * sample_index) / (sample_count - 1)
+        };
+        let max_lag_inclusive = lags[lag_index];
+        if !seen_thresholds.insert(max_lag_inclusive) {
+            continue;
+        }
 
-fn late_arrival_bucket_name(min_lag: u64, max_lag_exclusive: Option<u64>) -> String {
-    match max_lag_exclusive {
-        Some(max) if max == min_lag + 1 => format!("lag_{min_lag}"),
-        Some(max) => format!("lag_{min_lag}_to_{}", max - 1),
-        None => format!("lag_{min_lag}_plus"),
+        let threshold_pct_bps = if sample_count == 1 {
+            10_000
+        } else {
+            (((sample_index + 1) * 10_000) / sample_count) as u16
+        };
+        let threshold = if lag_index == lags.len() - 1 {
+            None
+        } else {
+            Some(max_lag_inclusive)
+        };
+        let name = format!(
+            "late_arrivals_cumulative_{}pct",
+            format_percent_bps_for_name(threshold_pct_bps)
+        );
+        policies.push(PolicyPoint::leak_feature_lag_cumulative(
+            name,
+            threshold,
+            threshold_pct_bps,
+            10_000,
+        ));
     }
+
+    Ok(policies)
 }
 
 fn format_percent_bps_for_name(pct_bps: u16) -> String {
@@ -1550,7 +1568,9 @@ fn format_sensitivity_details_jsonl(sweep: &SensitivitySweep) -> String {
 
 fn format_sensitivity_flip_rate_svg(sweep: &SensitivitySweep) -> String {
     let rows = sensitivity_chart_rows(sweep);
-    let subtitle = if sweep_has_late_arrival_bucket_policies(sweep) {
+    let subtitle = if sweep_has_cumulative_late_arrival_policies(sweep) {
+        "cumulative flip rate as the late-arrival threshold increases"
+    } else if sweep_has_marginal_late_arrival_bucket_policies(sweep) {
         "marginal flip rate: one lag band moved at a time; not cumulative"
     } else {
         "share of predictions whose signal value changed"
@@ -1575,7 +1595,9 @@ fn format_sensitivity_flip_rate_svg(sweep: &SensitivitySweep) -> String {
 
 fn format_sensitivity_input_change_svg(sweep: &SensitivitySweep) -> String {
     let rows = sensitivity_chart_rows(sweep);
-    let subtitle = if sweep_has_late_arrival_bucket_policies(sweep) {
+    let subtitle = if sweep_has_cumulative_late_arrival_policies(sweep) {
+        "cumulative new input-event uses as the late-arrival threshold increases"
+    } else if sweep_has_marginal_late_arrival_bucket_policies(sweep) {
         "marginal new input-event uses: one lag band moved at a time"
     } else {
         "new input-event uses admitted by each comparison policy"
@@ -1604,27 +1626,47 @@ fn format_sensitivity_input_change_svg(sweep: &SensitivitySweep) -> String {
 }
 
 fn sweep_has_late_arrival_bucket_policies(sweep: &SensitivitySweep) -> bool {
+    sweep_has_cumulative_late_arrival_policies(sweep)
+        || sweep_has_marginal_late_arrival_bucket_policies(sweep)
+}
+
+fn sweep_has_marginal_late_arrival_bucket_policies(sweep: &SensitivitySweep) -> bool {
     sweep
         .results
         .iter()
-        .any(|result| is_late_arrival_bucket_policy(&result.run.policy.kind))
+        .any(|result| is_marginal_late_arrival_bucket_policy(&result.run.policy.kind))
 }
 
-fn is_late_arrival_bucket_policy(kind: &PolicyKind) -> bool {
+fn sweep_has_cumulative_late_arrival_policies(sweep: &SensitivitySweep) -> bool {
+    sweep
+        .results
+        .iter()
+        .any(|result| is_cumulative_late_arrival_policy(&result.run.policy.kind))
+}
+
+fn is_marginal_late_arrival_bucket_policy(kind: &PolicyKind) -> bool {
     matches!(kind, PolicyKind::ReceivedTimeLagBucketLookahead { .. })
 }
 
+fn is_cumulative_late_arrival_policy(kind: &PolicyKind) -> bool {
+    matches!(kind, PolicyKind::ReceivedTimeLagCumulativeLookahead { .. })
+}
+
 fn format_late_arrival_impact_svg(sweep: &SensitivitySweep) -> String {
+    if sweep_has_cumulative_late_arrival_policies(sweep) {
+        return format_cumulative_late_arrival_curve_svg(sweep);
+    }
+
     let late_bucket_total = sweep
         .results
         .iter()
-        .filter(|result| is_late_arrival_bucket_policy(&result.run.policy.kind))
+        .filter(|result| is_marginal_late_arrival_bucket_policy(&result.run.policy.kind))
         .count();
     let mut late_bucket_index = 0;
     let rows = sweep
         .results
         .iter()
-        .filter(|result| is_late_arrival_bucket_policy(&result.run.policy.kind))
+        .filter(|result| is_marginal_late_arrival_bucket_policy(&result.run.policy.kind))
         .map(|result| {
             late_bucket_index += 1;
             let chart_text = policy_chart_text(
@@ -1652,6 +1694,206 @@ fn format_late_arrival_impact_svg(sweep: &SensitivitySweep) -> String {
         &rows,
         1.0,
     )
+}
+
+fn format_cumulative_late_arrival_curve_svg(sweep: &SensitivitySweep) -> String {
+    #[derive(Debug)]
+    struct Point {
+        x_bps: u16,
+        y: f64,
+        label: String,
+        tooltip: String,
+    }
+
+    let max_new_input_uses = sweep
+        .results
+        .iter()
+        .filter(|result| is_cumulative_late_arrival_policy(&result.run.policy.kind))
+        .map(|result| result.summary.new_input_uses)
+        .max()
+        .unwrap_or(0)
+        .max(1);
+
+    let mut points = vec![Point {
+        x_bps: 0,
+        y: 0.0,
+        label: "baseline".to_string(),
+        tooltip: "baseline: no late arrivals moved".to_string(),
+    }];
+
+    for result in &sweep.results {
+        if let PolicyKind::ReceivedTimeLagCumulativeLookahead {
+            max_lag_inclusive,
+            threshold_pct_bps,
+            ..
+        } = result.run.policy.kind
+        {
+            let threshold_label = max_lag_inclusive
+                .map(|lag| format!("raw lag <= {}", format_u64_grouped(lag)))
+                .unwrap_or_else(|| "all late arrivals".to_string());
+            points.push(Point {
+                x_bps: threshold_pct_bps,
+                y: result.summary.new_input_uses as f64 / max_new_input_uses as f64,
+                label: format_percent_bps_for_display(threshold_pct_bps),
+                tooltip: format!(
+                    "{}: {}; {} new input uses; {} changed; {} flip",
+                    format_percent_bps_for_display(threshold_pct_bps),
+                    threshold_label,
+                    result.summary.new_input_uses,
+                    result.summary.predictions_with_signal_change,
+                    format_percent(result.summary.flip_rate)
+                ),
+            });
+        }
+    }
+
+    points.sort_by_key(|point| point.x_bps);
+    let y_max = 1.0_f64;
+
+    let width = 900_f64;
+    let height = 520_f64;
+    let left = 82_f64;
+    let right = 44_f64;
+    let top = 126_f64;
+    let bottom = 94_f64;
+    let plot_width = width - left - right;
+    let plot_height = height - top - bottom;
+    let x_to_px = |x_bps: u16| left + (f64::from(x_bps) / 10_000.0) * plot_width;
+    let y_to_px = |y: f64| top + ((y_max - y) / y_max) * plot_height;
+
+    let mut svg = String::new();
+    let _ = writeln!(
+        svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" viewBox="0 0 {width:.0} {height:.0}">"#
+    );
+    let _ = writeln!(
+        svg,
+        "<title id=\"title\">Cumulative Late Arrival Exposure</title><desc id=\"desc\">x is cumulative late-arrival lag threshold; y is cumulative new input exposure</desc>"
+    );
+    svg.push_str(
+        r##"<rect width="100%" height="100%" fill="#ffffff"/>
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+  .title { font-size: 22px; font-weight: 700; }
+  .subtitle { font-size: 13px; fill: #64748b; }
+  .note { font-size: 11px; fill: #475569; }
+  .axis-label { font-size: 12px; font-weight: 650; fill: #334155; }
+  .tick { font-size: 11px; fill: #64748b; }
+  .grid { stroke: #e2e8f0; stroke-width: 1; }
+  .axis { stroke: #94a3b8; stroke-width: 1.25; }
+  .curve { fill: none; stroke: #2563eb; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  .point { fill: #2563eb; stroke: #ffffff; stroke-width: 1.5; }
+  .point-label { font-size: 10px; fill: #334155; }
+</style>
+"##,
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="34" class="title">Cumulative Late Arrival Exposure</text>"#
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="56" class="subtitle">x = cumulative late-arrival threshold; y = new input uses admitted</text>"#
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="78" class="note">Each point replays all late feature/correction events up to that threshold.</text>"#
+    );
+
+    for tick in 0..=4 {
+        let y_value = y_max * f64::from(tick) / 4.0;
+        let y = y_to_px(y_value);
+        let _ = writeln!(
+            svg,
+            r#"<line x1="{left:.2}" y1="{y:.2}" x2="{:.2}" y2="{y:.2}" class="grid"/>"#,
+            width - right
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{:.2}" y="{:.2}" class="tick" text-anchor="end">{}</text>"#,
+            left - 10.0,
+            y + 4.0,
+            format_percent(y_value)
+        );
+    }
+
+    for tick in [0_u16, 2500, 5000, 7500, 10000] {
+        let x = x_to_px(tick);
+        let _ = writeln!(
+            svg,
+            r#"<line x1="{x:.2}" y1="{top:.2}" x2="{x:.2}" y2="{:.2}" class="grid"/>"#,
+            height - bottom
+        );
+        let _ = writeln!(
+            svg,
+            r#"<text x="{x:.2}" y="{:.2}" class="tick" text-anchor="middle">{}</text>"#,
+            height - bottom + 24.0,
+            format_percent_bps_for_display(tick)
+        );
+    }
+
+    let _ = writeln!(
+        svg,
+        r#"<line x1="{left:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" class="axis"/>"#,
+        height - bottom,
+        width - right,
+        height - bottom
+    );
+    let _ = writeln!(
+        svg,
+        r#"<line x1="{left:.2}" y1="{top:.2}" x2="{left:.2}" y2="{:.2}" class="axis"/>"#,
+        height - bottom
+    );
+
+    let polyline = points
+        .iter()
+        .map(|point| format!("{:.2},{:.2}", x_to_px(point.x_bps), y_to_px(point.y)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let _ = writeln!(svg, r#"<polyline points="{polyline}" class="curve"/>"#);
+
+    for (index, point) in points.iter().enumerate() {
+        let x = x_to_px(point.x_bps);
+        let y = y_to_px(point.y);
+        let _ = writeln!(svg, "<g>");
+        let _ = writeln!(svg, "<title>{}</title>", xml_escape(&point.tooltip));
+        let _ = writeln!(
+            svg,
+            r#"<circle cx="{x:.2}" cy="{y:.2}" r="4" class="point"/>"#
+        );
+        let previous_y = index
+            .checked_sub(1)
+            .and_then(|previous_index| points.get(previous_index))
+            .map(|previous| previous.y)
+            .unwrap_or(point.y);
+        let exposure_changed = index == 0 || (point.y - previous_y).abs() > 0.0001;
+        if point.x_bps == 0 || point.x_bps == 10_000 || exposure_changed {
+            let _ = writeln!(
+                svg,
+                r#"<text x="{:.2}" y="{:.2}" class="point-label" text-anchor="middle">{} {}</text>"#,
+                x,
+                y - 10.0,
+                xml_escape(&point.label),
+                format_percent(point.y)
+            );
+        }
+        let _ = writeln!(svg, "</g>");
+    }
+
+    let _ = writeln!(
+        svg,
+        r#"<text x="{:.2}" y="{:.2}" class="axis-label" text-anchor="middle">cumulative late-arrival threshold</text>"#,
+        left + plot_width / 2.0,
+        height - 20.0
+    );
+    let _ = writeln!(
+        svg,
+        r#"<text x="18" y="{:.2}" class="axis-label" transform="rotate(-90 18 {:.2})" text-anchor="middle">new input exposure</text>"#,
+        top + plot_height / 2.0,
+        top + plot_height / 2.0
+    );
+    svg.push_str("</svg>\n");
+    svg
 }
 
 fn sweep_has_sensitivity_curve_points(sweep: &SensitivitySweep) -> bool {
@@ -2029,18 +2271,28 @@ fn sensitivity_chart_rows(sweep: &SensitivitySweep) -> Vec<SensitivityChartRow> 
     let late_bucket_total = sweep
         .results
         .iter()
-        .filter(|result| is_late_arrival_bucket_policy(&result.run.policy.kind))
+        .filter(|result| is_marginal_late_arrival_bucket_policy(&result.run.policy.kind))
+        .count();
+    let late_cumulative_total = sweep
+        .results
+        .iter()
+        .filter(|result| is_cumulative_late_arrival_policy(&result.run.policy.kind))
         .count();
     let mut late_bucket_index = 0;
+    let mut late_cumulative_index = 0;
     let mut rows = Vec::with_capacity(sweep.results.len());
 
     for result in &sweep.results {
-        let late_bucket_position = if is_late_arrival_bucket_policy(&result.run.policy.kind) {
-            late_bucket_index += 1;
-            Some((late_bucket_index, late_bucket_total))
-        } else {
-            None
-        };
+        let late_bucket_position =
+            if is_marginal_late_arrival_bucket_policy(&result.run.policy.kind) {
+                late_bucket_index += 1;
+                Some((late_bucket_index, late_bucket_total))
+            } else if is_cumulative_late_arrival_policy(&result.run.policy.kind) {
+                late_cumulative_index += 1;
+                Some((late_cumulative_index, late_cumulative_total))
+            } else {
+                None
+            };
         let chart_text = policy_chart_text(&result.run.policy, late_bucket_position);
         rows.push(SensitivityChartRow {
             label: chart_text.label,
@@ -2081,6 +2333,29 @@ fn policy_chart_text(
                     "{label}: raw fixture lag {}",
                     format_lag_range(*min_lag, *max_lag_exclusive)
                 ),
+            }
+        }
+        PolicyKind::ReceivedTimeLagCumulativeLookahead {
+            max_lag_inclusive,
+            threshold_pct_bps,
+            ..
+        } => {
+            let (index, total) = late_bucket_position.unwrap_or((1, 1));
+            let label = if *threshold_pct_bps == 10_000 {
+                "All late arrivals included".to_string()
+            } else {
+                format!(
+                    "Up to {} lateness threshold",
+                    format_percent_bps_for_display(*threshold_pct_bps)
+                )
+            };
+            let threshold = max_lag_inclusive
+                .map(|lag| format!("raw lag <= {}", format_u64_grouped(lag)))
+                .unwrap_or_else(|| "all late arrivals".to_string());
+            PolicyChartText {
+                label: label.clone(),
+                detail: format!("cumulative sample {index} of {total}"),
+                tooltip: format!("{label}: {threshold}"),
             }
         }
         PolicyKind::ReceivedTimeLagFraction { pct_bps, .. } => {
@@ -2488,6 +2763,30 @@ fn policy_json(policy: &PolicyPoint) -> Value {
                 .collect::<Vec<_>>(),
             "min_lag": min_lag,
             "max_lag_exclusive": max_lag_exclusive,
+            "lag_fraction_bps": pct_bps,
+            "lag_fraction_percent": f64::from(*pct_bps) / 100.0,
+            "preserve": ["event_id", "observed_time", "sequence", "symbol", "payload"],
+        }),
+        PolicyKind::ReceivedTimeLagCumulativeLookahead {
+            roles_affected,
+            max_lag_inclusive,
+            threshold_pct_bps,
+            pct_bps,
+        } => json!({
+            "name": policy.name.as_str(),
+            "category": policy.category.as_str(),
+            "kind": "received_time_lag_cumulative_lookahead",
+            "time_axis": "event_lag_fixture_native_integer",
+            "shift_units": "percent_of_each_event_lag",
+            "calendar_aware": false,
+            "bounded_by_observed_time": true,
+            "roles_affected": roles_affected
+                .iter()
+                .map(|role| role.as_str())
+                .collect::<Vec<_>>(),
+            "max_lag_inclusive": max_lag_inclusive,
+            "threshold_percent_bps": threshold_pct_bps,
+            "threshold_percent": f64::from(*threshold_pct_bps) / 100.0,
             "lag_fraction_bps": pct_bps,
             "lag_fraction_percent": f64::from(*pct_bps) / 100.0,
             "preserve": ["event_id", "observed_time", "sequence", "symbol", "payload"],
@@ -3847,16 +4146,16 @@ mod tests {
     }
 
     #[test]
-    fn auto_late_arrival_bucket_policies_cover_unique_lag_ranges() {
-        let policies = late_arrival_bucket_policies(&negative_control_events()).unwrap();
+    fn auto_late_arrival_policies_cover_cumulative_lag_thresholds() {
+        let policies = cumulative_late_arrival_policies(&negative_control_events(), 4).unwrap();
 
         assert!(!policies.is_empty());
         assert!(policies
             .iter()
-            .any(|policy| policy.name.starts_with("late_arrivals_lag_")));
+            .any(|policy| policy.name.starts_with("late_arrivals_cumulative_")));
         assert!(matches!(
             policies[0].kind,
-            PolicyKind::ReceivedTimeLagBucketLookahead {
+            PolicyKind::ReceivedTimeLagCumulativeLookahead {
                 pct_bps: 10_000,
                 ..
             }

@@ -99,7 +99,10 @@ hand-inspection. It spans ALFRED monthly vintages from `2020-02-01` through
 That gives 133 actual events: 34 features, 76 feature corrections, and 23
 predictions. A strict received-time check passes; the observed-time negative
 control surfaces many impossible predictions because it can see future
-corrections by observation date.
+corrections by observation date. The late-arrival sensitivity output uses a
+cumulative exposure curve: each sampled point moves all late feature and
+correction events up to that lateness threshold and reports admitted new input
+uses as the y-axis.
 
 ## Commands
 

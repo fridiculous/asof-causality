@@ -297,12 +297,13 @@ Late-arrival attribution is a separate sensitivity scenario:
 cargo run -p asof-causality-cli -- sensitivity examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment --scenario late-arrivals --out runs/late-arrival-sensitivity
 ```
 
-This builds automatic fixture-native lag buckets from late feature arrivals and
-fully moves one bucket at a time to observed time. The output adds
-`late-arrival-impact.svg`, which shows which lateness band accounts for changed
-predictions. V1 still accepts raw `--shift-features` integer offsets as an
-expert mode, but typed durations such as `-1d` are deferred until timestamp
-semantics are first-class. Sensitivity descriptors and the manifest record
+This builds automatic cumulative fixture-native lag thresholds from late
+feature arrivals. The output adds `late-arrival-impact.svg`, a cumulative
+exposure curve: x is the late-arrival threshold percentile and y is admitted new
+input uses as a share of the maximum sampled exposure. V1 still accepts raw
+`--shift-features` integer offsets as an expert mode, but typed durations such
+as `-1d` are deferred until timestamp semantics are first-class. Sensitivity
+descriptors and the manifest record
 `calendar_aware: false`; on `YYYYMMDDHHMM` fixtures like ALFRED, intermediate
 lookahead percentages are synthetic ordered-integer stresses, not calendar
 durations.
@@ -328,8 +329,8 @@ cargo run -p asof-causality-cli -- sensitivity examples/alfred-payems-revisions-
 ```
 
 This larger fixture has 133 actual events, 76 feature corrections, and 23
-predictions. It is useful for seeing late-arrival bucket attribution instead of
-a single hand-inspectable correction case.
+predictions. It is useful for seeing a cumulative late-arrival sensitivity
+curve instead of a single hand-inspectable correction case.
 
 ```sh
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024

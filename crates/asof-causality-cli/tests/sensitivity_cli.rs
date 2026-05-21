@@ -278,7 +278,7 @@ fn sensitivity_cli_accepts_late_arrival_scenario() {
     assert!(rows
         .iter()
         .skip(1)
-        .all(|row| row["policy"]["kind"] == "received_time_lag_bucket_lookahead"));
+        .all(|row| row["policy"]["kind"] == "received_time_lag_cumulative_lookahead"));
 
     let summary_schema = repo_root.join("docs/sensitivity.summary.schema.json");
     for row in &rows {
@@ -308,9 +308,9 @@ fn sensitivity_cli_accepts_late_arrival_scenario() {
     );
 
     let late_svg = fs::read_to_string(&late_svg_path).expect("late svg should be readable");
-    assert!(late_svg.contains("Marginal Late Arrival Impact"));
-    assert!(late_svg.contains("Shortest late arrivals"));
-    assert!(late_svg.contains("not cumulative"));
+    assert!(late_svg.contains("Cumulative Late Arrival Exposure"));
+    assert!(late_svg.contains("cumulative late-arrival threshold"));
+    assert!(late_svg.contains("Each point replays all late feature/correction events"));
     assert!(!late_svg.contains(">late_arrivals_lag_"));
 
     let _ = fs::remove_dir_all(out_dir);
