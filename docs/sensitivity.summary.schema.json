@@ -95,7 +95,8 @@
       "enum": [
         "last-feature-sentiment",
         "windowed-feature-sentiment",
-        "windowed-zscore"
+        "windowed-zscore",
+        "vol-adjusted-momentum"
       ]
     },
     "policy_descriptor": {
