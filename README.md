@@ -26,7 +26,7 @@ ENGINE B: observed-time replay (deliberately broken baseline)
 
 The broken engine sorts by `observed_time`, so late data leaks into earlier predictions. The correct engine sorts by `(received_time, received_sequence_number, event_id)` and emits zero impossible `PredictionRecord`s.
 
-Installed binary usage is `asof check examples/late-arrival.pipe`; development usage is `cargo run -p asof-cli -- check examples/late-arrival.pipe`.
+When installed, the binary is `asof`; during development, use `cargo run -p asof-cli --` as the prefix.
 
 ## Run It On Your Signal
 
@@ -38,17 +38,19 @@ cargo run -p asof-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowe
 
 Then run `replay`, `audit`, and `sensitivity` for the same `--signal`.
 
-For your own signal, write it in Rust today:
+For your own signal, write it in Rust:
 
-1. Implement `asof_causality::Signal` using the opaque `AsOfView`.
-2. Register it in `asof-signals` with a stable name and config descriptor.
+1. Implement [`asof_causality::Signal`](crates/asof-causality/src/signal.rs) using the opaque `AsOfView`.
+2. Register it in [`asof-signals`](crates/asof-signals/src/lib.rs) with a stable name and config descriptor.
 3. Run the CLI with `--signal your-signal-name`.
 
 The Rust boundary is intentional: the signal can inspect only the as-of view, not the full event stream. Python strategy and backtest code consume audited artifacts downstream.
 
+Built-ins are validation fixtures, not alpha claims: `last-feature-sentiment`, `windowed-feature-sentiment`, `windowed-zscore`, and `vol-adjusted-momentum`.
+
 ## What A Green Run Proves
 
-A green run proves that each emitted `PredictionRecord` is causal with respect to the event history provided: no recorded input arrived after the prediction's replay key, and adversarial checks did not find prefix, future-mutation, late-arrival, correction, outcome, replay, or audit-invariant failures.
+A green run proves that each emitted `PredictionRecord` is causal with respect to the event history provided: no recorded input arrived after the prediction's replay key, and adversarial checks did not find prefix, future-mutation, late-arrival, on-time-vs-late contrast, correction, outcome, replay, or audit-invariant failures.
 
 It does not prove alpha, data authenticity, survivorship correctness, fill realism, portfolio correctness, or PnL.
 
@@ -59,13 +61,12 @@ It does not prove alpha, data authenticity, survivorship correctness, fill reali
 - Checks rerun prefixes, mutate future rows, and use negative controls.
 - Audit JSONL and manifests bind signal identity, inputs, hashes, and tool context.
 
-Built-ins are validation fixtures, not alpha claims: `last-feature-sentiment`, `windowed-feature-sentiment`, `windowed-zscore`, and `vol-adjusted-momentum`.
-
 ## Where Next
 
 - [docs/demo.md](docs/demo.md): quant-facing workflow
 - [docs/cli.md](docs/cli.md): commands
 - [docs/audit-artifacts.md](docs/audit-artifacts.md): JSONL, manifests, schemas
+- [docs/success-criteria.md](docs/success-criteria.md): check list and pass criteria
 - [docs/architecture.md](docs/architecture.md): bitemporal kernel design
 - [docs/roadmap.md](docs/roadmap.md): limitations and production path
 - [docs/measurements.md](docs/measurements.md): benchmark methodology
