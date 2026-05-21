@@ -301,6 +301,11 @@ This builds automatic cumulative percent-of-lag samples from late feature
 arrivals. The output adds `late-arrival-impact.svg`, a cumulative exposure
 curve: x is the percent of each late-arrival lag removed and y is admitted new
 input admissions as a share of the maximum sampled cumulative exposure.
+The y-axis tick labels include absolute admission counts, the chart note gives
+the 100% replay's changed-prediction count, and point tooltips include
+min/median/p90/max lag removed. When event timestamps parse as `YYYYMMDDHHMM`,
+those tooltip lag amounts are shown as calendar durations; otherwise they stay
+in fixture-native units.
 `--steps N` controls the sample grain, so `--steps 20` samples 5%, 10%, ...,
 100%. V1 still accepts raw
 `--shift-features` integer offsets as an expert mode, but typed durations such

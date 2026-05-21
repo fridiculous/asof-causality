@@ -102,7 +102,10 @@ control surfaces many impossible predictions because it can see future
 corrections by observation date. The late-arrival sensitivity output uses a
 cumulative exposure curve: each sampled point moves all late feature and
 correction events by that percentage of their own observed-to-received lag and
-reports cumulative unique new input admissions as the y-axis.
+reports cumulative unique new input admissions as the y-axis. The chart's
+visible y-axis includes absolute admission counts; point tooltips summarize the
+effective lag removed as min/median/p90/max calendar durations when timestamps
+parse as `YYYYMMDDHHMM`.
 
 ## Commands
 

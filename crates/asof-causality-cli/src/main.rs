@@ -311,7 +311,7 @@ fn sensitivity(args: &[String]) -> Result<(), Box<dyn Error>> {
     let input_change_svg = format_sensitivity_input_change_svg(&sweep);
     write_file(&input_change_svg_path, &input_change_svg)?;
     let late_arrival_impact_svg = if sweep_has_late_arrival_bucket_policies(&sweep) {
-        let svg = format_late_arrival_impact_svg(&sweep);
+        let svg = format_late_arrival_impact_svg(&sweep, &events);
         write_file(&late_arrival_impact_svg_path, &svg)?;
         Some(svg)
     } else {
@@ -1641,9 +1641,22 @@ fn is_cumulative_late_arrival_policy(policy: &PolicyPoint) -> bool {
         )
 }
 
-fn format_late_arrival_impact_svg(sweep: &SensitivitySweep) -> String {
+fn cumulative_late_arrival_policy_pct_bps(policy: &PolicyPoint) -> Option<u16> {
+    if !is_cumulative_late_arrival_policy(policy) {
+        return None;
+    }
+    match policy.kind {
+        PolicyKind::ReceivedTimeLagFraction { pct_bps, .. } => Some(pct_bps),
+        PolicyKind::ReceivedTimeLagCumulativeLookahead {
+            threshold_pct_bps, ..
+        } => Some(threshold_pct_bps),
+        _ => None,
+    }
+}
+
+fn format_late_arrival_impact_svg(sweep: &SensitivitySweep, events: &[Event]) -> String {
     if sweep_has_cumulative_late_arrival_policies(sweep) {
-        return format_cumulative_late_arrival_curve_svg(sweep);
+        return format_cumulative_late_arrival_curve_svg(sweep, events);
     }
 
     let late_bucket_total = sweep
@@ -1685,7 +1698,7 @@ fn format_late_arrival_impact_svg(sweep: &SensitivitySweep) -> String {
     )
 }
 
-fn format_cumulative_late_arrival_curve_svg(sweep: &SensitivitySweep) -> String {
+fn format_cumulative_late_arrival_curve_svg(sweep: &SensitivitySweep, events: &[Event]) -> String {
     #[derive(Debug)]
     struct PendingPoint {
         x_bps: u16,
@@ -1700,6 +1713,7 @@ fn format_cumulative_late_arrival_curve_svg(sweep: &SensitivitySweep) -> String 
         y: f64,
         label: String,
         tooltip: String,
+        cumulative_admissions: usize,
     }
 
     let mut pending_points = vec![PendingPoint {
@@ -1725,13 +1739,17 @@ fn format_cumulative_late_arrival_curve_svg(sweep: &SensitivitySweep) -> String 
             .collect::<Vec<_>>();
         match result.run.policy.kind {
             PolicyKind::ReceivedTimeLagFraction { pct_bps, .. } => {
+                let shift_stats = late_arrival_shift_stats(events, &result.run.policy)
+                    .map(|stats| format!("; {}", stats.tooltip_label()))
+                    .unwrap_or_default();
                 pending_points.push(PendingPoint {
                     x_bps: pct_bps,
                     label: format_percent_bps_for_display(pct_bps),
                     tooltip: format!(
-                        "{}: moves each late event {} of its own lag toward observed_time; {} new input uses in this replay; {} changed; {} flip",
+                        "{}: moves each late event {} of its own lag toward observed_time{}; {} new input uses in this replay; {} changed predictions; {} flip",
                         format_percent_bps_for_display(pct_bps),
                         format_percent_bps_for_display(pct_bps),
+                        shift_stats,
                         result.summary.new_input_uses,
                         result.summary.predictions_with_signal_change,
                         format_percent(result.summary.flip_rate)
@@ -1786,14 +1804,55 @@ fn format_cumulative_late_arrival_curve_svg(sweep: &SensitivitySweep) -> String 
                 "{}; {} cumulative unique new input admissions",
                 point.tooltip, cumulative_admissions
             ),
+            cumulative_admissions,
         })
         .collect::<Vec<_>>();
     points.sort_by_key(|point| point.x_bps);
+    let endpoint_note = sweep
+        .results
+        .iter()
+        .filter(|result| is_cumulative_late_arrival_policy(&result.run.policy))
+        .filter_map(|result| {
+            cumulative_late_arrival_policy_pct_bps(&result.run.policy).map(|pct_bps| {
+                (
+                    pct_bps,
+                    result.summary.predictions_with_signal_change,
+                    result.summary.predictions,
+                )
+            })
+        })
+        .max_by_key(|(pct_bps, _, _)| *pct_bps)
+        .map(|(_, changed, predictions)| {
+            format!(
+                "100% exposure = {max_cumulative_admissions} unique prediction/input admissions; 100% replay changed {changed}/{predictions} predictions."
+            )
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "100% exposure = {max_cumulative_admissions} unique prediction/input admissions."
+            )
+        });
+    let mut label_indexes = BTreeSet::new();
+    if !points.is_empty() {
+        label_indexes.insert(0_usize);
+        label_indexes.insert(points.len() - 1);
+        if let Some(index) = points
+            .iter()
+            .position(|point| point.cumulative_admissions > 0)
+        {
+            label_indexes.insert(index);
+        }
+        for target in [0.25_f64, 0.5, 0.75] {
+            if let Some(index) = points.iter().position(|point| point.y >= target) {
+                label_indexes.insert(index);
+            }
+        }
+    }
     let y_max = 1.0_f64;
 
     let width = 900_f64;
     let height = 520_f64;
-    let left = 82_f64;
+    let left = 118_f64;
     let right = 44_f64;
     let top = 126_f64;
     let bottom = 94_f64;
@@ -1840,10 +1899,16 @@ fn format_cumulative_late_arrival_curve_svg(sweep: &SensitivitySweep) -> String 
         svg,
         r#"<text x="28" y="78" class="note">Each point replays all late feature/correction events shifted by that fraction of their own lag.</text>"#
     );
+    let _ = writeln!(
+        svg,
+        r#"<text x="28" y="98" class="note">{}</text>"#,
+        xml_escape(&endpoint_note)
+    );
 
     for tick in 0..=4 {
         let y_value = y_max * f64::from(tick) / 4.0;
         let y = y_to_px(y_value);
+        let y_count = (y_value * max_cumulative_admissions as f64).round() as usize;
         let _ = writeln!(
             svg,
             r#"<line x1="{left:.2}" y1="{y:.2}" x2="{:.2}" y2="{y:.2}" class="grid"/>"#,
@@ -1854,7 +1919,7 @@ fn format_cumulative_late_arrival_curve_svg(sweep: &SensitivitySweep) -> String 
             r#"<text x="{:.2}" y="{:.2}" class="tick" text-anchor="end">{}</text>"#,
             left - 10.0,
             y + 4.0,
-            format_percent(y_value)
+            xml_escape(&format!("{} ({})", y_count, format_percent(y_value)))
         );
     }
 
@@ -1902,20 +1967,18 @@ fn format_cumulative_late_arrival_curve_svg(sweep: &SensitivitySweep) -> String 
             svg,
             r#"<circle cx="{x:.2}" cy="{y:.2}" r="4" class="point"/>"#
         );
-        let previous_y = index
-            .checked_sub(1)
-            .and_then(|previous_index| points.get(previous_index))
-            .map(|previous| previous.y)
-            .unwrap_or(point.y);
-        let exposure_changed = index == 0 || (point.y - previous_y).abs() > 0.0001;
-        if point.x_bps == 0 || point.x_bps == 10_000 || exposure_changed {
+        if label_indexes.contains(&index) {
+            let label = if point.x_bps == 0 {
+                "baseline: 0".to_string()
+            } else {
+                format!("{}: {}", point.label, point.cumulative_admissions)
+            };
             let _ = writeln!(
                 svg,
-                r#"<text x="{:.2}" y="{:.2}" class="point-label" text-anchor="middle">{} {}</text>"#,
+                r#"<text x="{:.2}" y="{:.2}" class="point-label" text-anchor="middle">{}</text>"#,
                 x,
                 y - 10.0,
-                xml_escape(&point.label),
-                format_percent(point.y)
+                xml_escape(&label)
             );
         }
         let _ = writeln!(svg, "</g>");
@@ -1935,6 +1998,181 @@ fn format_cumulative_late_arrival_curve_svg(sweep: &SensitivitySweep) -> String 
     );
     svg.push_str("</svg>\n");
     svg
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LateArrivalShiftUnit {
+    CalendarMinutes,
+    FixtureNativeInteger,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LateArrivalShiftStats {
+    unit: LateArrivalShiftUnit,
+    event_count: usize,
+    min: u64,
+    median: u64,
+    p90: u64,
+    max: u64,
+}
+
+impl LateArrivalShiftStats {
+    fn tooltip_label(&self) -> String {
+        format!(
+            "effective lag removed across {} late events: min {}, median {}, p90 {}, max {}",
+            self.event_count,
+            format_late_arrival_shift_amount(self.min, self.unit),
+            format_late_arrival_shift_amount(self.median, self.unit),
+            format_late_arrival_shift_amount(self.p90, self.unit),
+            format_late_arrival_shift_amount(self.max, self.unit)
+        )
+    }
+}
+
+fn late_arrival_shift_stats(
+    events: &[Event],
+    policy: &PolicyPoint,
+) -> Option<LateArrivalShiftStats> {
+    let pct_bps = cumulative_late_arrival_policy_pct_bps(policy)?;
+    let roles_affected = match &policy.kind {
+        PolicyKind::ReceivedTimeLagFraction { roles_affected, .. }
+        | PolicyKind::ReceivedTimeLagCumulativeLookahead { roles_affected, .. } => roles_affected,
+        _ => return None,
+    };
+    let late_events = events
+        .iter()
+        .filter(|event| {
+            roles_affected.contains(&event.role) && event.received_time > event.observed_time
+        })
+        .collect::<Vec<_>>();
+    if late_events.is_empty() {
+        return None;
+    }
+
+    let calendar_pairs = late_events
+        .iter()
+        .map(|event| {
+            Some((
+                parse_yyyymmddhhmm_to_minutes(event.observed_time)?,
+                parse_yyyymmddhhmm_to_minutes(event.received_time)?,
+            ))
+        })
+        .collect::<Option<Vec<_>>>();
+
+    let (unit, mut shifts) = if let Some(calendar_pairs) = calendar_pairs {
+        let shifts = calendar_pairs
+            .into_iter()
+            .filter_map(|(observed, received)| {
+                let lag = received.checked_sub(observed)? as u64;
+                Some(lag_fraction_amount(lag, pct_bps))
+            })
+            .collect::<Vec<_>>();
+        (LateArrivalShiftUnit::CalendarMinutes, shifts)
+    } else {
+        let shifts = late_events
+            .iter()
+            .map(|event| lag_fraction_amount(event.received_time - event.observed_time, pct_bps))
+            .collect::<Vec<_>>();
+        (LateArrivalShiftUnit::FixtureNativeInteger, shifts)
+    };
+
+    if shifts.is_empty() {
+        return None;
+    }
+    shifts.sort_unstable();
+    let min = shifts[0];
+    let median = percentile_nearest_rank(&shifts, 50);
+    let p90 = percentile_nearest_rank(&shifts, 90);
+    let max = *shifts.last().unwrap_or(&0);
+    Some(LateArrivalShiftStats {
+        unit,
+        event_count: shifts.len(),
+        min,
+        median,
+        p90,
+        max,
+    })
+}
+
+fn lag_fraction_amount(lag: u64, pct_bps: u16) -> u64 {
+    (((u128::from(lag) * u128::from(pct_bps.min(10_000))) + 5_000) / 10_000) as u64
+}
+
+fn percentile_nearest_rank(sorted_values: &[u64], percentile: usize) -> u64 {
+    if sorted_values.is_empty() {
+        return 0;
+    }
+    let index = (((sorted_values.len() - 1) * percentile) + 50) / 100;
+    sorted_values[index]
+}
+
+fn format_late_arrival_shift_amount(amount: u64, unit: LateArrivalShiftUnit) -> String {
+    match unit {
+        LateArrivalShiftUnit::CalendarMinutes => format_duration_minutes(amount),
+        LateArrivalShiftUnit::FixtureNativeInteger => {
+            format!("{} raw units", format_u64_grouped(amount))
+        }
+    }
+}
+
+fn format_duration_minutes(minutes: u64) -> String {
+    let days = minutes / 1_440;
+    let hours = (minutes % 1_440) / 60;
+    let mins = minutes % 60;
+    if days > 0 && hours > 0 {
+        format!("{days}d {hours}h")
+    } else if days > 0 {
+        format!("{days}d")
+    } else if hours > 0 && mins > 0 {
+        format!("{hours}h {mins}m")
+    } else if hours > 0 {
+        format!("{hours}h")
+    } else {
+        format!("{mins}m")
+    }
+}
+
+fn parse_yyyymmddhhmm_to_minutes(value: u64) -> Option<i64> {
+    let minute = (value % 100) as u32;
+    let hour = ((value / 100) % 100) as u32;
+    let day = ((value / 10_000) % 100) as u32;
+    let month = ((value / 1_000_000) % 100) as u32;
+    let year = (value / 100_000_000) as i64;
+    if !(1900..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || hour >= 24
+        || minute >= 60
+        || day == 0
+        || day > days_in_month(year, month)
+    {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 1_440 + i64::from(hour) * 60 + i64::from(minute))
+}
+
+fn days_in_month(year: i64, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month = i64::from(month);
+    let day = i64::from(day);
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 fn sweep_has_sensitivity_curve_points(sweep: &SensitivitySweep) -> bool {
