@@ -39,3 +39,10 @@ is a reference replay engine plus adversarial test suite for receipt-time
 causality. If a production research platform already tracks receipt-time
 semantics internally, the `asof` CLI is the executable fixture and negative
 control that make those semantics independently inspectable.
+
+Bitemporal and as-of semantics are not new. kdb+/Q, time-series databases,
+SQL/warehouse point-in-time feature pipelines, and engines with as-of joins
+already model variations of "known as of time." The differentiation here is
+narrower: a Rust type boundary for signal evaluation, an adversarial harness
+with negative controls, and standalone hash-linked artifacts that can be
+reviewed outside the production research platform.

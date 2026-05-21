@@ -100,7 +100,8 @@ printed by `replay`, `check`, `negative-control`, `sensitivity`, and
 
 The manifest is a linkage proof for one run. It proves the artifacts belong
 together; it does not prove that user-supplied `received_time` values were
-authentic. Production deployments need the root-of-trust boundary described in
+authentic. BLAKE3 proves byte commitment, not timestamp truth. Production
+deployments need the root-of-trust boundary described in
 [architecture.md](architecture.md#the-root-of-trust).
 
 ## Sensitivity Artifacts

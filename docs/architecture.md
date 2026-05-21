@@ -29,8 +29,10 @@ generator or pipe fixture
 
 `StateStore` and `StateWriter` are crate-private. Signal authors receive a
 replay-local `SymbolSlot` and can query `AsOfView`, but cannot construct it,
-mutate it, or access the full event list through the signal API. The kernel has
-no built-in default signal. `Signal::evaluate` also receives the
+mutate it, or access the full event list through the signal API. This prevents
+mechanical lookahead through the kernel surface; it does not detect semantic or
+out-of-band knowledge encoded by the signal author or upstream data. The kernel
+has no built-in default signal. `Signal::evaluate` also receives the
 `as_of_timestamp` for the replay event being evaluated; the view contains only
 state received by that replay key.
 
@@ -67,6 +69,11 @@ ALFRED/FRED source data, see [demo.md](demo.md).
 it keeps `PredictionRecord`s fixed-size and allocation-free in the replay path.
 Signals that need larger provenance should use a separate compact recipe hash or
 snapshot manifest rather than growing per-prediction heap state.
+
+That larger-window path is not proven by the current inline provenance cage. The
+checked-in demo covers bounded built-in signals over text and fixed-decimal
+payloads; recipe-hash-backed snapshots, larger input sets, and richer numeric
+representations are roadmap items.
 
 The CLI `audit` command renders those records as JSONL. The public shape is
 documented in `schemas/audit.schema.json`. The JSONL audit record includes a
@@ -122,12 +129,13 @@ broker. The causality engine should ingest from that authoritative boundary or
 from an adapter that preserves and signs that boundary.
 
 The current `manifest.json` binds the run to input and output hashes, but it
-does not prove that the input timestamps were authentic. A production manifest
-should also bind the replay to the authoritative timestamp source, adapter
-version, and source object/message commitments. With that additional root of
-trust, the audit can argue not only that the signal respected the provided
-timeline, but that the timeline itself was not successfully forged by the
-signal author or research pipeline.
+does not prove that the input timestamps were authentic. BLAKE3 commits the
+artifacts to each other; it is not evidence that a user-provided
+`received_time` is real. A production manifest should also bind the replay to
+the authoritative timestamp source, adapter version, and source object/message
+commitments. With that additional root of trust, the audit can argue not only
+that the signal respected the provided timeline, but that the timeline itself
+was not successfully forged by the signal author or research pipeline.
 
 The current `feature_recipe_hash` is intentionally an input-set commitment. It
 commits to the signal name, signal configuration descriptor, and ordered input
@@ -219,7 +227,7 @@ behavior.
 GenerateConfig(seed, scenario, late_rate, feature_correction_rate)
   -> GeneratedStream(events.pipe)
   -> ReplayEngine(PredictionRecords in predictions.pipe)
-  -> adversarial checks(checks.txt)
+  -> causality check methods(checks.txt)
   -> summary.md with transcript hash and check results
   -> manifest.json run certificate with hash-linked run identity
 ```

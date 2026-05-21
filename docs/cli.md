@@ -51,8 +51,8 @@ asof check examples/late-arrival.pipe --exhaustive
 asof check examples/late-arrival.pipe --max-cutoffs 64
 ```
 
-These are alternative check invocations. They run adversarial checks against the
-fixture. Large inputs sample deterministic
+These are alternative check invocations. They run causality check methods
+against the fixture. Large inputs sample deterministic
 received-time cutoffs by default; `--exhaustive` is intended for small fixtures.
 
 ## audit

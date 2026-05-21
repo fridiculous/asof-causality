@@ -91,7 +91,7 @@ fn check(args: &[String]) -> Result<(), Box<dyn Error>> {
     if report.passed() {
         Ok(())
     } else {
-        Err("one or more adversarial checks failed".into())
+        Err("one or more causality check methods failed".into())
     }
 }
 
@@ -952,7 +952,7 @@ fn run_suite(args: &[String]) -> Result<(), Box<dyn Error>> {
     if report.passed() {
         Ok(())
     } else {
-        Err("one or more adversarial checks failed".into())
+        Err("one or more causality check methods failed".into())
     }
 }
 
@@ -3499,7 +3499,7 @@ fn print_check_section(report: &CheckReport, include_details: bool) {
     let total = report.results.len();
     println!(
         "{:<58} {}/{} {}",
-        "ADVERSARIAL CHECKS",
+        "CHECK METHODS",
         passed,
         total,
         overall_status(report)

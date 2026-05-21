@@ -50,7 +50,7 @@ Built-ins are validation fixtures, not alpha claims: `last-feature-sentiment`, `
 
 ## What A Green Run Proves
 
-A green run proves that each emitted `PredictionRecord` is causal with respect to the event history provided: no recorded input arrived after the prediction's replay key, and adversarial checks did not find prefix, future-mutation, late-arrival, on-time-vs-late contrast, correction, outcome, replay, or audit-invariant failures.
+A green run proves that each emitted `PredictionRecord` is causal with respect to the event history provided. It exercises five properties through eight check methods: receipt-time causality, on-time-vs-late contrast, correction handling, outcome separation, and deterministic replay.
 
 It does not prove alpha, data authenticity, survivorship correctness, fill realism, portfolio correctness, or PnL.
 
@@ -60,6 +60,8 @@ It does not prove alpha, data authenticity, survivorship correctness, fill reali
 - Short-window provenance is fixed-size and allocation-free in replay.
 - Checks rerun prefixes, mutate future rows, and use negative controls.
 - Audit JSONL and manifests bind signal identity, inputs, hashes, and tool context.
+
+The cage prevents mechanical lookahead through the replay API; it does not prevent a signal author or upstream data feed from encoding out-of-band knowledge.
 
 ## Where Next
 

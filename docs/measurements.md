@@ -62,7 +62,7 @@ asof check
   signal     last-feature-sentiment
   cutoffs    all 4 (max 32)
 
-ADVERSARIAL CHECKS                                         8/8 PASS
+CHECK METHODS                                              8/8 PASS
   [PASS]  prefix_equivalence               all received-time prefixes matched full replay
   [PASS]  future_mutation                  mutating future rows did not change prior PredictionRecords
   [PASS]  late_arrival                     late events were not used before their replay key
@@ -78,10 +78,10 @@ PROVENANCE
   outcomes_separated   1
 ```
 
-The most important contrast is `on_time_vs_late_contrast`: moving event `n1`
-from received-after to received-before changes the 580 `SignalEvaluation` from
-`0` to `1`. That proves the engine is using received-time knowledge, not merely
-ignoring late events.
+The contrast method is `on_time_vs_late_contrast`: moving event `n1` from
+received-after to received-before changes the 580 `SignalEvaluation` from `0`
+to `1`. That shows this fixture contains a non-vacuous late-arrival case; it is
+one of five properties exercised by the eight methods above.
 
 ## Generated Scenario
 
@@ -99,11 +99,11 @@ generated path=runs/late-heavy.pipe scenario=late-heavy seed=42 data_events=1000
 
 The generated file is deterministic for seed `42` and physically shuffled by
 default in this scenario. It also includes a fixed sentinel late-arrival
-received sequence before the random body, so the on-time-vs-late contrast check has a
-known adversarial case. Running `check runs/late-heavy.pipe` samples 32
-received-time cutoffs for the expensive prefix and future-mutation checks and
-still exercises the direct late-arrival, feature-correction, outcome, replay, and audit
-checks across the full generated file.
+received sequence before the random body, so the on-time-vs-late contrast method
+has a known adversarial case. Running `check runs/late-heavy.pipe` samples 32
+received-time cutoffs for the expensive prefix and future-mutation methods and
+still exercises late-arrival, feature-correction, outcome, replay, and audit
+methods across the full generated file.
 
 ## Leaky Baseline
 

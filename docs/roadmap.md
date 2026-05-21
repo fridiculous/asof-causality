@@ -62,6 +62,12 @@ input event keys, not the input payload values. Later it can commit to value
 hashes, a feature recipe, or snapshot manifest without changing the core
 causality invariant.
 
+That extension is not proven by the current artifact. The checked-in signals
+exercise short-window inline provenance, text fixture payloads, and fixed-point
+numeric payloads. Signals requiring more than eight cited inputs,
+non-fixed-point numeric representations, or recipe-hash-backed snapshots need a
+follow-up design and tests before they should be treated as covered by the cage.
+
 ## Arrow/Parquet Production Boundary
 
 Pipe fixtures and JSONL audit output are the reference interface because they
@@ -156,13 +162,13 @@ watermark policy instead of a global in-memory sort. Physical row shuffling
 should remain a regression test for determinism, not the expected production
 layout.
 
-The same distinction applies to adversarial checks. The replay state update path
-is fast, but prefix-equivalence and future-mutation checks intentionally rerun
-or mutate multiple prefixes. The default 32-cutoff sample is a deterministic
-large-input guardrail, not a claim that the falsification harness is fully
-incremental. A production checker should reuse prefix transcripts, avoid deep
-whole-log clones, and turn these checks into incremental commitments over
-sorted input partitions.
+The same distinction applies to the causality check methods. The replay state
+update path is fast, but prefix-equivalence and future-mutation methods
+intentionally rerun or mutate multiple prefixes. The default 32-cutoff sample is
+a deterministic large-input guardrail, not a claim that the falsification
+harness is fully incremental. A production checker should reuse prefix
+transcripts, avoid deep whole-log clones, and turn these methods into
+incremental commitments over sorted input partitions.
 
 ## Strategy Layer Handoff: Python Bindings And IPC
 

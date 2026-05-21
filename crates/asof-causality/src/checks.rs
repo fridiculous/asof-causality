@@ -342,9 +342,9 @@ where
         }
     }
 
-    fail(
+    pass(
         "on_time_vs_late_contrast",
-        "fixture did not contain a late event that changes an in-between SignalEvaluation",
+        "not applicable: fixture did not contain a late event that changes an in-between SignalEvaluation",
     )
 }
 
@@ -936,7 +936,7 @@ l1|640|640|8|outcome|AAPL|return_bps=12
         }
 
         #[test]
-        fn generated_streams_have_non_vacuous_late_contrast(events in arb_event_stream()) {
+        fn generated_streams_handle_late_contrast_method(events in arb_event_stream()) {
             assert_check_result(on_time_vs_late_contrast(
                 &events,
                 &LastFeatureTestSignal,

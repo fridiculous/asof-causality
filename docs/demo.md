@@ -29,13 +29,14 @@ examples/alfred-dgs10-sp500.pipe
 ```
 
 It contains feature rows, prediction rows, and outcome rows for a small
-end-to-end signal-validation run.
+end-to-end signal-validation run. The trap is deliberately curated from real
+ALFRED/FRED vintages; it is not presented as a broad historical discovery.
 
 ## Workflow
 
 1. The quant creates or modifies a Rust signal.
 2. The platform replays that signal over a point-in-time dataset.
-3. The platform runs adversarial checks.
+3. The platform runs causality check methods.
 4. The platform writes audit and sensitivity artifacts.
 5. The quant analyzes the certified signal stream.
 6. Strategy backtests consume the artifacts downstream.
@@ -93,7 +94,7 @@ When installed, replace `cargo run -p asof-cli --` with `asof`.
 The received-time engine should pass:
 
 ```text
-ADVERSARIAL CHECKS ... PASS
+CHECK METHODS ... PASS
 ```
 
 The negative control should fail for the deliberately broken observed-time
@@ -106,7 +107,8 @@ leaked row: dgs10_20200318_v20200319 received at 202003190900
 
 A naive replay ordered by observation date can see the same-day DGS10 vintage at
 the SP500 close. The received-time replay cannot, because the vintage was not
-available until the next morning.
+available until the next morning. The fixture is hand-constructed to make that
+failure mode visible in a small demo.
 
 That failure is a signal-construction problem, not a strategy problem. The
 quant should fix the feature join, availability timestamp, or provenance

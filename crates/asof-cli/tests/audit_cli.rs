@@ -222,7 +222,7 @@ fn negative_control_reports_four_leaks_for_alfred_fixture() -> TestResult {
 }
 
 #[test]
-fn check_exits_nonzero_when_invariant_fails() -> TestResult {
+fn check_allows_fixtures_without_late_contrast_case() -> TestResult {
     let temp = TempDir::new()?;
     let fixture = temp.path().join("no-contrast.pipe");
     fs::write(
@@ -236,10 +236,35 @@ p1|110|110|2|prediction|XYZ|
     cli()?
         .args(["check", fixture.to_str().unwrap(), "--exhaustive"])
         .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "[PASS]  on_time_vs_late_contrast         not applicable:",
+        ))
+        .stderr(predicate::str::is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn check_exits_nonzero_when_replay_order_is_invalid() -> TestResult {
+    let temp = TempDir::new()?;
+    let fixture = temp.path().join("duplicate-receipt.pipe");
+    fs::write(
+        &fixture,
+        "\
+f1|100|100|1|feature|XYZ|sentiment=positive
+f2|101|100|1|feature|XYZ|sentiment=negative
+p1|110|110|2|prediction|XYZ|
+",
+    )?;
+
+    cli()?
+        .args(["check", fixture.to_str().unwrap(), "--exhaustive"])
+        .assert()
         .failure()
-        .stdout(predicate::str::contains("[FAIL]  on_time_vs_late_contrast"))
+        .stdout(predicate::str::contains("[FAIL]  prefix_equivalence"))
         .stderr(predicate::str::contains(
-            "error: one or more adversarial checks failed",
+            "error: one or more causality check methods failed",
         ));
 
     Ok(())
@@ -374,7 +399,7 @@ asof check
   signal     last-feature-sentiment
   cutoffs    exhaustive (4)
 
-ADVERSARIAL CHECKS                                         8/8 PASS
+CHECK METHODS                                              8/8 PASS
   [PASS]  prefix_equivalence               all received-time prefixes matched full replay
   [PASS]  future_mutation                  mutating future rows did not change prior PredictionRecords
   [PASS]  late_arrival                     late events were not used before their replay key

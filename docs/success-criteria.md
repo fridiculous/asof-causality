@@ -3,28 +3,33 @@
 asof-causality succeeds when it can prove that identical received-event prefixes
 produce identical `PredictionRecord` transcripts.
 
-## Required Checks
+## Required Properties
 
-- Prefix equivalence: full replay and `received_time <= T` replay produce the
-  same `PredictionRecord`s at or before `T`.
-- Future mutation: mutating every event after `T` cannot change
-  `PredictionRecord`s at or before `T`.
-- Late arrival: an event observed before prediction time but received after it
-  is not used by that record's `SignalEvaluation`.
-- On-time vs late contrast: moving the same event from received-before to
-  received-after prediction time can change the resulting `SignalEvaluation`.
+- Receipt-time causality: full replay and `received_time <= T` replay agree at
+  each prefix, future-row mutations do not change prior records, late events are
+  not used early, and every record satisfies
+  `max_input_replay_key <= prediction_replay_key`.
+- On-time vs late contrast: when a fixture plants a late event that can affect
+  an in-between prediction, moving that event from received-after to
+  received-before prediction time can change the resulting `SignalEvaluation`.
 - Feature-correction handling: feature corrections are append-only and cannot
   rewrite old `PredictionRecord`s.
 - Outcome separation: removing outcome computation does not change
   `PredictionRecord`s.
 - Deterministic replay: shuffled physical input produces the same transcript
   hash.
-- Audit invariant: every `PredictionRecord` has
-  `max_input_replay_key <= prediction_replay_key`.
 
-The core test suite runs these checks exhaustively against the small adversarial
-fixture. The CLI uses deterministic cutoff sampling for large generated files so
-the same checks remain practical on six-figure event streams; `--exhaustive`
+The implementation exercises those five properties through eight check methods:
+`prefix_equivalence`, `future_mutation`, `late_arrival`,
+`on_time_vs_late_contrast`, `feature_correction_append_only`,
+`outcome_separation`, `deterministic_replay`, and `audit_invariant`. The
+contrast method is a fixture-sensitivity check: if the fixture does not contain
+a planted late event that changes an in-between prediction, it reports that case
+as not applicable rather than treating the signal as invalid.
+
+The core test suite runs these methods exhaustively against small adversarial
+fixtures. The CLI uses deterministic cutoff sampling for large generated files
+so the methods remain practical on six-figure event streams; `--exhaustive`
 keeps the full sweep available when the input size is appropriate.
 
 ## End-To-End Evidence
