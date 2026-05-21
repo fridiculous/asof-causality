@@ -4,6 +4,10 @@ This file records the measured result shipped with the artifact. These numbers
 are local to the machine and build profile below; they are evidence for this
 implementation shape, not universal constants.
 
+The command names in this file are current for the `asof-cli` package and the
+installed `asof` binary. The throughput table is a recorded single-run
+microbenchmark; rerun `make bench` before using it as a fresh performance claim.
+
 ## Machine
 
 ```text
@@ -103,7 +107,7 @@ checks across the full generated file.
 Command:
 
 ```text
-cargo run -p asof-cli -- negative-control examples/lookahead-negative-control.pipe
+cargo run -p asof-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 ```
 
 Expected interpretation:
@@ -112,24 +116,24 @@ Expected interpretation:
 asof negative-control
   fixture  examples/lookahead-negative-control.pipe
   events   12
-  signal   last-feature-sentiment
+  signal   windowed-feature-sentiment
 
 ENGINE A: received-time replay (correct)
   ordering             (received_time, received_sequence_number, event_id)
-  transcript_hash      643d89a73fb1a868
+  transcript_hash      ed03706f6f79c31f
   impossible           0
   VERDICT              PASS
 
 ENGINE B: observed-time replay (deliberately broken baseline)
   ordering             (observed_time, received_sequence_number, event_id)
-  transcript_hash      5e2b2c91fab15484
+  transcript_hash      f7b67d321cac694e
   impossible           3
   VERDICT              FAIL
 
 LEAKED PREDICTION RECORDS (engine B)
 
   p_before_same_time_sequence at (95, 4, p_before_same_time_sequence)
-    signal_value     1
+    signal_value     0
     leaked_input     n_same_time_later  at (95, 5, n_same_time_later)
     violation        input received_sequence_number > prediction received_sequence_number at same received_time
     interpretation   prediction at t=95 used same-timestamp event that sorts after it
@@ -141,7 +145,7 @@ LEAKED PREDICTION RECORDS (engine B)
     interpretation   prediction at t=120 used event that arrived at t=150
 
   p_before_correction at (170, 10, p_before_correction)
-    signal_value     -1
+    signal_value     1
     leaked_input     c_late_negative    at (180, 9, c_late_negative)
     violation        input replay key > prediction replay key by delta=10
     interpretation   prediction at t=170 used correction received at t=180
@@ -158,20 +162,6 @@ use `n_same_time_later`, which has the same `received_time` but a later received
 It also lets later predictions use records received at `150` and `180`. Those
 predictions are impossible in live replay, and the audit invariant catches them
 as `max_input_replay_key > prediction_replay_key`.
-
-The same fixture also exercises the bounded multi-input signal:
-
-```text
-cargo run -p asof-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
-```
-
-The leaky baseline then renders multi-input provenance directly:
-
-```text
-95:4:p_before_same_time_sequence|XYZ|0|n_seed_negative,n_seed_positive,n_seed_negative_2,n_same_time_later|95:5:n_same_time_later
-120:6:p_before_late_feature|XYZ|1|n_seed_negative,n_seed_positive,n_seed_negative_2,n_same_time_later,n_late_positive|150:7:n_late_positive
-170:10:p_before_correction|XYZ|1|n_seed_positive,n_seed_negative_2,n_same_time_later,n_late_positive,c_late_negative|180:9:c_late_negative
-```
 
 ## Throughput
 

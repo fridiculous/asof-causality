@@ -2892,7 +2892,7 @@ fn format_sensitivity_manifest_json(inputs: SensitivityManifestInputs<'_>) -> St
         .map(policy_run_manifest_json)
         .collect::<Vec<_>>();
     let manifest = json!({
-        "schema_version": "sensitivity-v1",
+        "schema_version": "sensitivity-v2",
         "tool": "asof",
         "hash_algorithm": "blake3",
         "run_started_utc": system_time_to_utc_iso8601(SystemTime::now()),
@@ -3905,7 +3905,7 @@ impl RunManifest {
         rust_toolchain: Option<String>,
     ) -> Self {
         Self {
-            schema_version: 3,
+            schema_version: 4,
             tool: "asof",
             hash_algorithm: "blake3",
             run_started_utc: system_time_to_utc_iso8601(run_started),
@@ -4520,11 +4520,11 @@ mod tests {
     }
 
     #[test]
-    fn manifest_v3_contains_required_fields() {
+    fn manifest_v4_contains_required_fields() {
         let manifest = sample_manifest();
         let json = format_run_manifest(&manifest);
 
-        assert!(json.contains("\"schema_version\": 3"));
+        assert!(json.contains("\"schema_version\": 4"));
         assert!(json.contains("\"tool\": \"asof\""));
         assert!(json.contains("\"hash_algorithm\": \"blake3\""));
         assert!(json.contains("\"run_started_utc\": \"2024-01-01T00:00:00Z\""));

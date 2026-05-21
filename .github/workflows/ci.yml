@@ -47,13 +47,13 @@ jobs:
         run: cargo doc --workspace --no-deps --locked
       - name: Replay smoke test
         if: matrix.os == 'ubuntu-latest'
-        run: target/release/asof-causality replay examples/late-arrival.pipe
+        run: target/release/asof replay examples/late-arrival.pipe
       - name: Causality checks on release binary
         if: matrix.os == 'ubuntu-latest'
-        run: target/release/asof-causality check examples/late-arrival.pipe
+        run: target/release/asof check examples/late-arrival.pipe
       - name: Negative-control leakage check on release binary
         if: matrix.os == 'ubuntu-latest'
-        run: target/release/asof-causality negative-control examples/lookahead-negative-control.pipe
+        run: target/release/asof negative-control examples/lookahead-negative-control.pipe
       - name: Core package dry run
         if: matrix.os == 'ubuntu-latest'
-        run: cargo package --locked --allow-dirty -p asof-causality-core
+        run: cargo package --locked --allow-dirty -p asof-causality

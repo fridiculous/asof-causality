@@ -348,14 +348,14 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
     assert!(rows[1].get("new_inputs_admitted").is_none());
     assert!(rows[1].get("feature_recipe_hashes_changed").is_none());
 
-    let summary_schema = repo_root.join("docs/schemas/sensitivity.summary.schema.json");
+    let summary_schema = repo_root.join("schemas/sensitivity.summary.schema.json");
     for row in &rows {
         validate_json(&summary_schema, row);
     }
 
     let details = fs::read_to_string(&details_path).expect("details should be readable");
     assert!(!details.trim().is_empty());
-    let detail_schema = repo_root.join("docs/schemas/sensitivity.detail.schema.json");
+    let detail_schema = repo_root.join("schemas/sensitivity.detail.schema.json");
     for line in details.lines() {
         let detail: Value = serde_json::from_str(line).expect("detail row should parse");
         validate_json(&detail_schema, &detail);
@@ -365,7 +365,7 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
         &fs::read_to_string(&manifest_path).expect("manifest should be readable"),
     )
     .expect("manifest should parse");
-    assert_eq!(manifest["schema_version"], "sensitivity-v1");
+    assert_eq!(manifest["schema_version"], "sensitivity-v2");
     assert_eq!(manifest["signal"], "windowed-zscore");
     assert_eq!(
         manifest["timestamp_shift_time_axis"],
@@ -401,7 +401,7 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
     assert!(manifest["flip_rate_svg_hash"].as_str().unwrap().len() == 64);
     assert!(manifest["input_change_svg_hash"].as_str().unwrap().len() == 64);
     validate_json(
-        &repo_root.join("docs/schemas/sensitivity.manifest.schema.json"),
+        &repo_root.join("schemas/sensitivity.manifest.schema.json"),
         &manifest,
     );
 
@@ -456,7 +456,7 @@ fn sensitivity_cli_accepts_normalized_lookahead_range() {
     let summary_path = out_dir.join("summary.jsonl");
     let manifest_path = out_dir.join("manifest.json");
     let curve_path = out_dir.join("sensitivity-curve.svg");
-    let summary_schema = repo_root.join("docs/schemas/sensitivity.summary.schema.json");
+    let summary_schema = repo_root.join("schemas/sensitivity.summary.schema.json");
     let rows: Vec<Value> = fs::read_to_string(&summary_path)
         .expect("summary should be readable")
         .lines()
@@ -483,7 +483,7 @@ fn sensitivity_cli_accepts_normalized_lookahead_range() {
     )
     .expect("manifest should parse");
     validate_json(
-        &repo_root.join("docs/schemas/sensitivity.manifest.schema.json"),
+        &repo_root.join("schemas/sensitivity.manifest.schema.json"),
         &manifest,
     );
 
@@ -540,7 +540,7 @@ fn sensitivity_cli_accepts_late_arrival_scenario() {
         .skip(1)
         .all(|row| row["policy"]["kind"] == "received_time_lag_fraction"));
 
-    let summary_schema = repo_root.join("docs/schemas/sensitivity.summary.schema.json");
+    let summary_schema = repo_root.join("schemas/sensitivity.summary.schema.json");
     for row in &rows {
         validate_json(&summary_schema, row);
     }
@@ -563,7 +563,7 @@ fn sensitivity_cli_accepts_late_arrival_scenario() {
             == 64
     );
     validate_json(
-        &repo_root.join("docs/schemas/sensitivity.manifest.schema.json"),
+        &repo_root.join("schemas/sensitivity.manifest.schema.json"),
         &manifest,
     );
 
@@ -970,8 +970,8 @@ fn sensitivity_svgs_have_expected_semantic_content() {
 fn sensitivity_schemas_cover_all_supported_signals() {
     let repo_root = repo_root();
     let temp = TempDir::new().expect("tempdir should create");
-    let summary_schema = repo_root.join("docs/schemas/sensitivity.summary.schema.json");
-    let manifest_schema = repo_root.join("docs/schemas/sensitivity.manifest.schema.json");
+    let summary_schema = repo_root.join("schemas/sensitivity.summary.schema.json");
+    let manifest_schema = repo_root.join("schemas/sensitivity.manifest.schema.json");
     let cases = [
         (
             "last-feature-sentiment",

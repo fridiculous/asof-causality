@@ -1,87 +1,171 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/fridiculous/asof-causality/docs/schemas/sensitivity.summary.schema.json",
-  "title": "asof-causality sensitivity summary record",
+  "$id": "https://github.com/fridiculous/asof-causality/schemas/sensitivity.manifest.schema.json",
+  "title": "asof sensitivity manifest",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
-    "policy",
-    "policy_name",
-    "category",
-    "vs_baseline",
-    "events_transformed",
-    "predictions",
-    "predictions_with_signal_change",
-    "predictions_with_recipe_change",
-    "predictions_with_new_inputs",
-    "new_input_uses",
-    "unique_new_inputs",
-    "flip_rate",
-    "transcript_hash",
-    "transformed_fixture_hash",
-    "signal_name"
+    "tool",
+    "hash_algorithm",
+    "run_started_utc",
+    "invocation",
+    "invocation_args",
+    "source_commit",
+    "workspace_dirty",
+    "rust_toolchain",
+    "timestamp_shift_time_axis",
+    "timestamp_shift_semantics",
+    "fixture_path",
+    "fixture_hash",
+    "signal",
+    "signal_config_descriptor",
+    "baseline_policy",
+    "baseline_transcript_hash",
+    "policies",
+    "summary_path",
+    "summary_hash",
+    "sensitivity_curve_svg_path",
+    "sensitivity_curve_svg_hash",
+    "flip_rate_svg_path",
+    "flip_rate_svg_hash",
+    "input_change_svg_path",
+    "input_change_svg_hash",
+    "late_arrival_impact_svg_path",
+    "late_arrival_impact_svg_hash",
+    "details_path",
+    "details_hash"
   ],
   "properties": {
     "schema_version": {
-      "const": 1
+      "const": "sensitivity-v2"
     },
-    "policy": {
-      "$ref": "#/$defs/policy_descriptor"
+    "tool": {
+      "const": "asof"
     },
-    "policy_name": {
+    "hash_algorithm": {
+      "const": "blake3"
+    },
+    "run_started_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "invocation": {
       "type": "string",
       "minLength": 1
     },
-    "category": {
-      "$ref": "#/$defs/category"
+    "invocation_args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
     },
-    "vs_baseline": {
+    "source_commit": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{7,40}$"
+    },
+    "workspace_dirty": {
+      "type": ["boolean", "null"]
+    },
+    "rust_toolchain": {
       "type": ["string", "null"],
       "minLength": 1
     },
-    "events_transformed": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "Number of event rows whose received_time actually changed after applying this policy."
+    "timestamp_shift_time_axis": {
+      "const": "fixture_native_integer"
     },
-    "predictions": {
-      "type": "integer",
-      "minimum": 0
+    "timestamp_shift_semantics": {
+      "const": "raw signed integer arithmetic on received_time; no calendar validation"
     },
-    "predictions_with_signal_change": {
-      "type": "integer",
-      "minimum": 0
+    "fixture_path": {
+      "type": "string",
+      "minLength": 1
     },
-    "predictions_with_recipe_change": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "predictions_with_new_inputs": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "new_input_uses": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "unique_new_inputs": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "flip_rate": {
-      "type": "number",
-      "minimum": 0,
-      "maximum": 1
-    },
-    "transcript_hash": {
+    "fixture_hash": {
       "$ref": "#/$defs/blake3"
     },
-    "transformed_fixture_hash": {
-      "$ref": "#/$defs/blake3"
-    },
-    "signal_name": {
+    "signal": {
       "$ref": "#/$defs/signal"
+    },
+    "signal_config_descriptor": {
+      "type": "string"
+    },
+    "baseline_policy": {
+      "const": "strict_received_time"
+    },
+    "baseline_transcript_hash": {
+      "$ref": "#/$defs/blake3"
+    },
+    "policies": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/policy_run"
+      },
+      "minItems": 1
+    },
+    "summary_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "summary_hash": {
+      "$ref": "#/$defs/blake3"
+    },
+    "sensitivity_curve_svg_path": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "sensitivity_curve_svg_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/blake3"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "flip_rate_svg_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "flip_rate_svg_hash": {
+      "$ref": "#/$defs/blake3"
+    },
+    "input_change_svg_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input_change_svg_hash": {
+      "$ref": "#/$defs/blake3"
+    },
+    "late_arrival_impact_svg_path": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "late_arrival_impact_svg_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/blake3"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "details_path": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "details_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/blake3"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "$defs": {
@@ -99,6 +183,41 @@
         "windowed-zscore",
         "vol-adjusted-momentum"
       ]
+    },
+    "policy_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "category",
+        "descriptor",
+        "events_transformed",
+        "transformed_fixture_hash",
+        "transcript_hash"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "$ref": "#/$defs/category"
+        },
+        "descriptor": {
+          "$ref": "#/$defs/policy_descriptor"
+        },
+        "events_transformed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of event rows whose received_time actually changed after applying this policy."
+        },
+        "transformed_fixture_hash": {
+          "$ref": "#/$defs/blake3"
+        },
+        "transcript_hash": {
+          "$ref": "#/$defs/blake3"
+        }
+      }
     },
     "policy_descriptor": {
       "oneOf": [

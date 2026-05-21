@@ -26,7 +26,7 @@ Each record includes:
 - optional `matched_stored_prediction`
 - optional `outcome`
 
-The schema is [schemas/audit.schema.json](schemas/audit.schema.json).
+The schema is [schemas/audit.schema.json](../schemas/audit.schema.json).
 
 ## Feature Recipe Hash
 
@@ -91,7 +91,9 @@ The manifest records:
 - fixture, prediction output, checks output, and transcript hashes
 - check pass/fail counts
 
-The schema is [schemas/manifest.schema.json](schemas/manifest.schema.json).
+The current run-suite manifest schema is version `4`; the version was bumped
+when the executable tool identity changed to `asof`. The schema is
+[schemas/manifest.schema.json](../schemas/manifest.schema.json).
 
 The manifest is a linkage proof for one run. It proves the artifacts belong
 together; it does not prove that user-supplied `received_time` values were
@@ -110,9 +112,12 @@ authentic. Production deployments need the root-of-trust boundary described in
 
 Schemas:
 
-- [schemas/sensitivity.summary.schema.json](schemas/sensitivity.summary.schema.json)
-- [schemas/sensitivity.detail.schema.json](schemas/sensitivity.detail.schema.json)
-- [schemas/sensitivity.manifest.schema.json](schemas/sensitivity.manifest.schema.json)
+- [schemas/sensitivity.summary.schema.json](../schemas/sensitivity.summary.schema.json)
+- [schemas/sensitivity.detail.schema.json](../schemas/sensitivity.detail.schema.json)
+- [schemas/sensitivity.manifest.schema.json](../schemas/sensitivity.manifest.schema.json)
+
+The current sensitivity manifest schema version is `sensitivity-v2`; it uses
+`tool: "asof"` for the executable runner.
 
 Sensitivity is a stability analysis outside the strict kernel. It asks how much
 signal output changes under controlled timestamp perturbations; it does not

@@ -38,17 +38,13 @@ predictions. The correct engine sorts by
 When installed, the binary is `asof`:
 
 ```sh
-asof replay examples/late-arrival.pipe
 asof check examples/late-arrival.pipe
-asof audit examples/late-arrival.pipe
 ```
 
-During development, use:
+During development, use the package name:
 
 ```sh
-cargo run -p asof-cli -- replay examples/late-arrival.pipe
 cargo run -p asof-cli -- check examples/late-arrival.pipe
-cargo run -p asof-cli -- audit examples/late-arrival.pipe
 ```
 
 See [docs/cli.md](docs/cli.md) for the full command reference.
@@ -61,8 +57,7 @@ See [docs/cli.md](docs/cli.md) for the full command reference.
 - deterministic replay over a two-clock event model:
   `observed_time` and `received_time`
 - immutable `PredictionRecord`s with input-event provenance
-- JSONL audit output and run manifests with schemas in
-  [docs/schemas](docs/schemas)
+- JSONL audit output and run manifests with schemas in [schemas](schemas)
 - adversarial checks for prefix equivalence, future mutation, late arrivals,
   feature corrections, outcome separation, deterministic replay, and audit
   invariants
@@ -98,15 +93,8 @@ and the benchmark methodology lives in
 5. Strategies/backtests consume the artifacts downstream.
 ```
 
-The runnable wrapper demonstrates this shape:
-
-```sh
-uv run --script scripts/quant_workflow_demo.py --dataset macro-research-v1 --signal windowed-zscore
-```
-
-See [docs/demo.md](docs/demo.md) for the quant workflow and
-[docs/real-data-demo.md](docs/real-data-demo.md) for the ALFRED/FRED
-case study showing macro lookahead bias.
+See [docs/demo.md](docs/demo.md) for the single quant-facing demo flow,
+including the ALFRED/FRED case study showing macro lookahead bias.
 
 ## Known Limitations
 
@@ -137,9 +125,8 @@ and Python/IPC strategy handoff.
 - [docs/cli.md](docs/cli.md): command reference
 - [docs/audit-artifacts.md](docs/audit-artifacts.md): audit JSONL, manifests,
   hashes, and schema contracts
-- [docs/demo.md](docs/demo.md): quant-facing signal validation workflow
-- [docs/real-data-demo.md](docs/real-data-demo.md): ALFRED/FRED and PAYEMS
-  fixtures
+- [docs/demo.md](docs/demo.md): quant-facing signal validation workflow and
+  ALFRED/FRED fixture details
 - [docs/measurements.md](docs/measurements.md): benchmark methodology and
   throughput notes
 - [docs/problem.md](docs/problem.md): domain problem and relation to

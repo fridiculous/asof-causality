@@ -37,21 +37,21 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }} -p asof-causality-cli
+        run: cargo build --release --locked --target ${{ matrix.target }} -p asof-cli
       - name: Smoke test native binary
         if: matrix.smoke
         run: |
-          target/${{ matrix.target }}/release/asof-causality replay examples/late-arrival.pipe
-          target/${{ matrix.target }}/release/asof-causality check examples/late-arrival.pipe
-          target/${{ matrix.target }}/release/asof-causality negative-control examples/lookahead-negative-control.pipe
+          target/${{ matrix.target }}/release/asof replay examples/late-arrival.pipe
+          target/${{ matrix.target }}/release/asof check examples/late-arrival.pipe
+          target/${{ matrix.target }}/release/asof negative-control examples/lookahead-negative-control.pipe
       - name: Package tarball
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist/pkg
-          cp target/${{ matrix.target }}/release/asof-causality dist/pkg/asof-causality-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/asof dist/pkg/asof-${{ matrix.target }}
           cp README.md LICENSE dist/pkg/
-          tar -C dist/pkg -czf dist/asof-causality-${{ matrix.target }}.tar.gz asof-causality-${{ matrix.target }} README.md LICENSE
+          tar -C dist/pkg -czf dist/asof-causality-${{ matrix.target }}.tar.gz asof-${{ matrix.target }} README.md LICENSE
           (cd dist && shasum -a 256 asof-causality-${{ matrix.target }}.tar.gz > asof-causality-${{ matrix.target }}.tar.gz.sha256)
       - uses: actions/upload-artifact@v4
         with:

@@ -22,7 +22,7 @@ max_input_replay_key <= prediction_replay_key
 ## Audit Surface
 
 The submission-facing surface is JSONL audit output plus
-`docs/schemas/audit.schema.json`. JSONL keeps the dependency tree small, works with
+`schemas/audit.schema.json`. JSONL keeps the dependency tree small, works with
 basic shell tools, and makes every prediction independently inspectable. The
 audit command can run in replay-only mode or compare replay-derived predictions
 against stored prediction JSONL, with optional explicit outcome attribution.

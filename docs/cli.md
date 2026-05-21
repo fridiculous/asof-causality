@@ -3,6 +3,9 @@
 The installed binary is `asof`. During development, prefix commands with
 `cargo run -p asof-cli --`.
 
+Run examples one at a time. Multi-line examples with trailing backslashes are a
+single command; stacked one-line examples are alternatives.
+
 ```sh
 asof replay examples/late-arrival.pipe
 cargo run -p asof-cli -- replay examples/late-arrival.pipe
@@ -17,7 +20,8 @@ The CLI resolves built-ins through `asof-signals`:
 - `windowed-zscore`
 - `vol-adjusted-momentum`
 
-Use `--signal name` on replay-like commands:
+Use `--signal name` on commands that evaluate a signal: `replay`, `check`,
+`audit`, `negative-control`, `run-suite`, and `sensitivity`.
 
 ```sh
 asof check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
@@ -47,7 +51,8 @@ asof check examples/late-arrival.pipe --exhaustive
 asof check examples/late-arrival.pipe --max-cutoffs 64
 ```
 
-Runs adversarial checks against the fixture. Large inputs sample deterministic
+These are alternative check invocations. They run adversarial checks against the
+fixture. Large inputs sample deterministic
 received-time cutoffs by default; `--exhaustive` is intended for small fixtures.
 
 ## audit
@@ -57,8 +62,9 @@ asof audit examples/late-arrival.pipe --signal windowed-feature-sentiment
 asof audit examples/late-arrival.pipe --out runs/audit.jsonl
 ```
 
-Emits one JSON object per replay-derived `PredictionRecord`. The schema is
-[docs/schemas/audit.schema.json](schemas/audit.schema.json).
+These are alternative audit invocations. Without `--out`, audit JSONL is printed
+to stdout. With `--out`, it is written to the given path. The schema is
+[schemas/audit.schema.json](../schemas/audit.schema.json).
 
 Stored prediction comparison:
 
@@ -90,9 +96,10 @@ asof negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
 asof negative-control examples/zscore-lookahead.pipe --signal vol-adjusted-momentum
 ```
 
-Runs the same fixture through the correct received-time engine and a deliberately
-broken observed-time baseline. The observed-time baseline is not a production
-mode; it exists to show the impossible records a naive replay would emit.
+These are alternative negative-control invocations. Each runs one fixture
+through the correct received-time engine and a deliberately broken observed-time
+baseline. The observed-time baseline is not a production mode; it exists to show
+the impossible records a naive replay would emit.
 
 ## generate
 
@@ -155,7 +162,7 @@ asof sensitivity examples/lookahead-negative-control.pipe \
 ```
 
 Outputs include `summary.jsonl`, SVG charts, optional `details.jsonl`, and
-`manifest.json`. Sensitivity schemas live in [docs/schemas](schemas).
+`manifest.json`. Sensitivity schemas live in [schemas](../schemas).
 
 ## bench
 
@@ -177,21 +184,6 @@ make verify-real-data-demo
 make verify-real-revision-demo
 ```
 
-These rebuild the checked-in ALFRED/FRED fixtures from public CSV endpoints.
-They require internet access but no API key.
-
-## Quant Workflow Demo
-
-```sh
-uv run --script scripts/quant_workflow_demo.py \
-  --dataset macro-research-v1 \
-  --signal windowed-zscore
-
-uv run --script scripts/quant_workflow_demo.py \
-  --dataset macro-research-v1 \
-  --signal windowed-zscore \
-  --simulate-leak
-```
-
-The Python script is orchestration only: it resolves a named fixture, calls the
-Rust CLI, and prints a quant-facing signal-validation summary.
+These are helper alternatives. The `make` targets wrap the `uv run --script`
+commands. They rebuild the checked-in ALFRED/FRED fixtures from public CSV
+endpoints and require internet access but no API key.

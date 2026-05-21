@@ -1,232 +1,169 @@
-# Signal Validation Demo
+# Demo: Signal Validation Workflow
 
-This demo frames `asof-causality` as one step in validating a quant signal. It
-does not backtest a strategy, choose positions, or certify PnL. It checks the
-first thing a researcher needs to know before trusting any signal analytics:
-
-```text
-Was each signal value computed only from data available at that time?
-```
-
-The Python script is a thin platform-layer wrapper, not a Python binding. It
-resolves a named dataset, invokes the Rust CLI as a subprocess, reads the audit
-JSONL, and prints the signal-validation summary a quant would expect during
-research.
-
-## The Signal Story
-
-A quant wants to test a daily macro signal:
+This is the single demo flow for the repo. It shows where `asof-causality`
+sits in a quant research system:
 
 ```text
-DGS10 Treasury-rate vintage history -> SP500 risk-on/risk-off score
+signal implementation -> replay/check/audit/sensitivity -> signal analysis -> strategy backtest
 ```
 
-The signal idea is simple: use recent DGS10 changes from ALFRED vintages to emit
-a daily SP500 score. Before asking whether that score predicts returns, the
-quant needs to verify that the score does not use DGS10 rows that were not yet
-available.
+The demo validates a signal. It does not backtest a strategy, choose positions,
+or certify PnL.
 
-The demo uses:
+## Scenario
+
+A quant is developing a daily macro signal:
+
+```text
+ALFRED DGS10 Treasury-rate vintages -> SP500 risk-on/risk-off score
+```
+
+The signal idea is not the point of the demo. The point is to verify that each
+SP500 prediction used only Treasury-rate observations that were available in
+the ALFRED vintage stream at prediction time.
+
+The main fixture is:
 
 ```text
 examples/alfred-dgs10-sp500.pipe
 ```
 
-That fixture includes the data, prediction points, and outcomes for a tiny
-signal-validation run.
+It contains feature rows, prediction rows, and outcome rows for a small
+end-to-end signal-validation run.
 
-## Where This Fits
+## Workflow
 
-A complete signal research loop is:
+1. The quant creates or modifies a Rust signal.
+2. The platform replays that signal over a point-in-time dataset.
+3. The platform runs adversarial checks.
+4. The platform writes audit and sensitivity artifacts.
+5. The quant analyzes the certified signal stream.
+6. Strategy backtests consume the artifacts downstream.
 
-```text
-1. Define signal idea and feature inputs
-2. Generate signal values over a universe and time window
-3. Run `asof` as the temporal-validity gate
-4. Attach outcomes after the fact
-5. Analyze predictive quality: IC, hit rate, decay, coverage, stability
-6. If useful, pass the signal to a strategy/backtester
-```
+For this demo, the signal is the built-in `windowed-zscore` from
+`asof-signals`.
 
-This demo covers step 3 and shows how outcomes can be attached for later
-analysis. It does not do steps 5 or 6.
+## Commands
 
-## Envisioned Systems Workflow
+Run these one at a time. The first command is the main demo gate.
 
-The workflow is signal-first:
-
-```text
-1. Quant creates or modifies a Rust signal.
-2. Platform runs replay, check, audit, and sensitivity for that signal.
-3. Platform stores the resulting artifacts.
-4. Quants analyze the signal artifacts directly.
-5. Strategies and backtests consume the certified prediction stream.
-6. If the signal fails or looks weak, the quant iterates.
-```
-
-The platform command sequence is:
+Run the causality gate:
 
 ```sh
-asof replay DATASET --signal SIGNAL --out runs/SIGNAL/predictions.pipe
-asof check DATASET --signal SIGNAL --out runs/SIGNAL/checks.txt
-asof audit DATASET --signal SIGNAL --out runs/SIGNAL/audit.jsonl
-asof sensitivity DATASET --signal SIGNAL --out runs/SIGNAL/sensitivity.jsonl
+cargo run -p asof-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 ```
 
-The important boundary is simple: `asof` validates and packages signal outputs.
-Analysis notebooks and strategy backtests consume those artifacts later. If a
-run fails, the quant fixes the signal or its data assumptions and reruns the
-same workflow.
-
-## Happy Path
-
-Run the signal-validation wrapper:
+Inspect replayed predictions if you want to see the emitted signal stream:
 
 ```sh
-uv run --script scripts/quant_workflow_demo.py \
-  --dataset macro-research-v1 \
-  --signal windowed-zscore
+cargo run -p asof-cli -- replay examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
 ```
 
-The script resolves `macro-research-v1` through a tiny in-script dataset
-registry, then runs:
+Write audit JSONL for downstream analysis:
 
 ```sh
-cargo run -p asof-cli -- audit \
-  examples/alfred-dgs10-sp500.pipe \
+cargo run -p asof-cli -- audit examples/alfred-dgs10-sp500.pipe \
   --signal windowed-zscore \
-  --out runs/demo/audit.jsonl \
-  --outcomes examples/alfred-dgs10-sp500.pipe
+  --outcomes examples/alfred-dgs10-sp500.pipe \
+  --out runs/alfred-dgs10-sp500-audit.jsonl
 ```
 
-Expected shape:
-
-```text
-Signal causality check: PASS
-  Predictions audited       4
-  Non-causal                0
-  Outcomes attached         4
-  Stored predictions matched not supplied
-
-Artifacts
-  audit JSONL               runs/demo/audit.jsonl
-  manifest                  runs/demo/manifest.json
-```
-
-The result means the signal stream passed the as-of causality gate. The quant
-can now move to predictive analysis: forward returns, rank IC, decay, coverage,
-and robustness checks.
-
-## Failure Path
-
-The fixture contains a known lookahead trap. The prediction
-`p_20200318_close_before_vintage` is emitted at `202003181600`, while the
-same-day DGS10 vintage `dgs10_20200318_v20200319` is not received until
-`202003190900`. A replay ordered by observed time leaks that macro row into the
-close prediction. A replay ordered by received time does not.
-
-To show the failure mode:
+Run sensitivity over the larger PAYEMS revision fixture:
 
 ```sh
-uv run --script scripts/quant_workflow_demo.py \
-  --dataset macro-research-v1 \
+cargo run -p asof-cli -- sensitivity examples/alfred-payems-revisions-2020.pipe \
   --signal windowed-zscore \
-  --simulate-leak
+  --scenario late-arrivals \
+  --out runs/alfred-payems-large-sensitivity
 ```
 
-The script runs the normal audit and then invokes the existing
-`negative-control` command. The negative control compares the correct
-received-time replay with the deliberately broken observed-time baseline. The
-wrapper parses the impossible predictions and renders them as signal-debugging
-examples:
+Run the negative control to see what a leaky observed-time replay would do:
+
+```sh
+cargo run -p asof-cli -- negative-control examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
+```
+
+The sensitivity command is intentionally separate because it writes a directory
+of analysis artifacts and uses the larger PAYEMS revision fixture.
+
+When installed, replace `cargo run -p asof-cli --` with `asof`.
+
+## Expected Result
+
+The received-time engine should pass:
 
 ```text
-Leak simulation: observed-time baseline
-  Impossible predictions    N
-
-Example 1
-  Prediction
-    event        p_20200318_close_before_vintage
-    replay key   202003181600:8:p_20200318_close_before_vintage
-    symbol       SP500
-  Leaked input
-    event        dgs10_20200318_v20200319
-    observed     202003181500
-    received     202003190900
-  Problem
-    input replay key > prediction replay key ...
-    prediction used event that arrived later ...
-  Likely fix
-    Use received-time/as-of joins and preserve vendor or ingestion availability.
+ADVERSARIAL CHECKS ... PASS
 ```
+
+The negative control should fail for the deliberately broken observed-time
+baseline. The specific trap is:
+
+```text
+prediction: p_20200318_close_before_vintage at 202003181600
+leaked row: dgs10_20200318_v20200319 received at 202003190900
+```
+
+A naive replay ordered by observation date can see the same-day DGS10 vintage at
+the SP500 close. The received-time replay cannot, because the vintage was not
+available until the next morning.
 
 That failure is a signal-construction problem, not a strategy problem. The
-researcher should fix the feature join, availability timestamp, or provenance
-logging before analyzing the signal's predictive quality.
+quant should fix the feature join, availability timestamp, or provenance
+logging before analyzing predictive quality.
 
-## Ownership
+## Data Sources
 
-The quant owns:
+- ALFRED DGS10 vintages:
+  `https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=DGS10&cosd=2020-03-10&coed=2020-03-20&vintage_date=YYYY-MM-DD&revision_date=YYYY-MM-DD`
+  with vintage dates `2020-03-12`, `2020-03-13`, `2020-03-16`,
+  `2020-03-17`, `2020-03-18`, `2020-03-19`, and `2020-03-20`.
+- FRED SP500 closes:
+  `https://fred.stlouisfed.org/graph/fredgraph.csv?id=SP500&cosd=2020-03-16&coed=2020-03-20`
+- ALFRED PAYEMS revision fixtures:
+  `https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=PAYEMS&cosd=2019-01-01&coed=2021-12-01&vintage_date=YYYY-MM-DD&revision_date=YYYY-MM-DD`
 
-- the signal idea
-- feature definitions
-- signal configuration
-- prediction schedule
-- interpretation of signal analytics
+Regenerate the checked-in fixtures:
 
-The platform or data team owns:
-
-- point-in-time dataset construction
-- received-time policy
-- vendor and warehouse adapters
-- feature provenance logging
-- artifact storage and CI integration
-
-`asof-causality` sits between those responsibilities. It validates that the
-signal values produced for a point-in-time dataset are temporally valid.
-
-## What The Platform Layer Is Doing
-
-The script demonstrates the integration contract a real research platform would
-hide behind a more polished API:
-
-- Dataset registry: `macro-research-v1` resolves to the checked-in fixture.
-- Signal selection: `--signal windowed-zscore` resolves through the
-  `asof-signals` registry.
-- Audit runner: the script invokes the Rust CLI as a subprocess.
-- Artifact identity: the wrapper writes `audit.jsonl` and a small manifest with
-  hashes.
-- Human summary: the script turns audit JSONL into a concise signal-validation
-  report.
-
-A production integration would replace the in-script registry with a real
-dataset registry, use Parquet/Arrow adapters, and require upstream prediction
-loggers to emit the same feature-recipe hash contract as the kernel:
-
-```text
-signal name + config descriptor + ordered input event keys
+```sh
+make verify-real-data-demo
+make verify-real-revision-demo
 ```
 
-`--allow-missing-recipe-hash` should be treated as a legacy import escape hatch,
-not the standard path for certifying stored predictions.
+Run these targets one at a time. They require internet access to public
+ALFRED/FRED CSV endpoints, but they do not require an API key.
 
-## What This Does Not Certify
+## Mapping
 
-The green check means:
+- `observed_time`: economic observation timestamp.
+- `received_time`: when the vintage or correction became available to the
+  replay engine.
+- `score`: daily DGS10 or PAYEMS change encoded as fixed-point numeric payload.
+- `prediction`: scheduled signal evaluation point.
+- `outcome`: later return attribution, attached after replay and excluded from
+  signal state.
+
+The DGS10 fixture uses ALFRED vintages for feature availability and FRED closes
+for SP500 outcomes. The PAYEMS fixtures encode real ALFRED revisions as
+`feature_correction` rows.
+
+## What This Proves
+
+A green run proves:
 
 ```text
-The signal stream is causally valid with respect to the event history.
+Every replay-derived prediction used only inputs available at its replay key.
 ```
 
-It does not mean:
+It does not prove:
 
 ```text
 The signal is predictive.
 The strategy is profitable.
 The backtest has realistic fills.
 The universe construction is correct.
-The portfolio simulation is valid.
+The input timestamps are authentic.
 ```
 
-`asof-causality` is the temporal-validity gate for signal research. Predictive
-analysis and strategy backtesting happen downstream.
+`asof-causality` is one signal-validity gate. Predictive analysis and strategy
+backtesting happen downstream.
