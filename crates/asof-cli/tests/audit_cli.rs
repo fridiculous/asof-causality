@@ -357,7 +357,7 @@ prediction_replay_key|symbol|signal_value|input_event_ids|max_input_replay_key
 590:4:p2|AAPL|1|n1|585:2:n1
 610:5:p3|AAPL|1|n1|585:2:n1
 620:7:p4|AAPL|-1|c1|615:6:c1
-transcript_hash=d959650f0492c42e
+transcript_hash=019c2d5a38370ab3dd3b88b4bd14a933907c1c6e9ed7b164977fec1ff52232b7
 outcomes_seen=1
 "###);
 
@@ -385,7 +385,7 @@ ADVERSARIAL CHECKS                                         8/8 PASS
   [PASS]  audit_invariant                  all PredictionRecords satisfy max_input_replay_key <= prediction_replay_key
 
 PROVENANCE
-  transcript_hash      d959650f0492c42e
+  transcript_hash      019c2d5a38370ab3dd3b88b4bd14a933907c1c6e9ed7b164977fec1ff52232b7
   predictions_emitted  4
   outcomes_separated   1
 "###);
@@ -409,13 +409,13 @@ asof negative-control
 
 ENGINE A: received-time replay (correct)
   ordering             (received_time, received_sequence_number, event_id)
-  transcript_hash      ed03706f6f79c31f
+  transcript_hash      7e2a3e7078b03955af6d45364d2921ee59cfecb751292d31957c2da3a28277e2
   impossible           0
   VERDICT              PASS
 
 ENGINE B: observed-time replay (deliberately broken baseline)
   ordering             (observed_time, received_sequence_number, event_id)
-  transcript_hash      f7b67d321cac694e
+  transcript_hash      2a3418748f96dbf80783eaaa5689d67dac4f600034a129d51412fd2a81ac4f31
   impossible           3
   VERDICT              FAIL
 

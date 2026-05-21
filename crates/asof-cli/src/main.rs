@@ -69,10 +69,7 @@ fn replay(args: &[String]) -> Result<(), Box<dyn Error>> {
     );
     println!("prediction_replay_key|symbol|signal_value|input_event_ids|max_input_replay_key");
     print!("{}", output.predictions.transcript());
-    println!(
-        "transcript_hash={:016x}",
-        output.predictions.transcript_hash()
-    );
+    println!("transcript_hash={}", output.predictions.transcript_digest());
     println!("outcomes_seen={}", output.outcomes_seen);
     Ok(())
 }
@@ -1103,8 +1100,8 @@ fn format_prediction_output(output: &ReplayOutput) -> String {
     text.push_str(&output.predictions.transcript());
     let _ = writeln!(
         text,
-        "transcript_hash={:016x}",
-        output.predictions.transcript_hash()
+        "transcript_hash={}",
+        output.predictions.transcript_digest()
     );
     let _ = writeln!(text, "outcomes_seen={}", output.outcomes_seen);
     text
@@ -3302,8 +3299,8 @@ fn print_check_stdout(
     match replay {
         Some(output) => {
             println!(
-                "  transcript_hash      {:016x}",
-                output.predictions.transcript_hash()
+                "  transcript_hash      {}",
+                output.predictions.transcript_digest()
             );
             println!(
                 "  predictions_emitted  {}",
@@ -3360,8 +3357,8 @@ fn print_engine_summary(name: &str, ordering: &str, output: &ReplayOutput) {
     println!("{name}");
     println!("  ordering             {ordering}");
     println!(
-        "  transcript_hash      {:016x}",
-        output.predictions.transcript_hash()
+        "  transcript_hash      {}",
+        output.predictions.transcript_digest()
     );
     println!("  impossible           {}", impossible.len());
     println!("  VERDICT              {verdict}");
@@ -3618,8 +3615,8 @@ fn format_suite_summary(
     let _ = writeln!(text, "- outcomes: {}", stream.stats.outcomes);
     let _ = writeln!(
         text,
-        "- transcript_hash: {:016x}",
-        replay.predictions.transcript_hash()
+        "- transcript_hash: {}",
+        replay.predictions.transcript_digest()
     );
     let _ = writeln!(text);
     let _ = writeln!(text, "## Checks");

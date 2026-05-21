@@ -162,7 +162,10 @@ asof sensitivity examples/lookahead-negative-control.pipe \
 ```
 
 Outputs include `summary.jsonl`, SVG charts, optional `details.jsonl`, and
-`manifest.json`. Sensitivity schemas live in [schemas](../schemas).
+`manifest.json`. In the `late-arrivals` scenario, `flip_rate` is not expected
+to be monotonic across cumulative policies: moving more late inputs earlier can
+change which prior inputs are visible at each prediction cutoff. Sensitivity
+schemas live in [schemas](../schemas).
 
 ## bench
 

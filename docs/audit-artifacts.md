@@ -94,6 +94,9 @@ The manifest records:
 The current run-suite manifest schema is version `4`; the version was bumped
 when the executable tool identity changed to `asof`. The schema is
 [schemas/manifest.schema.json](../schemas/manifest.schema.json).
+The `transcript_hash` field is the same 64-character BLAKE3 transcript digest
+printed by `replay`, `check`, `negative-control`, `sensitivity`, and
+`run-suite`.
 
 The manifest is a linkage proof for one run. It proves the artifacts belong
 together; it does not prove that user-supplied `received_time` values were
