@@ -110,13 +110,15 @@ asof generate \
   --symbols 1024 \
   --late-rate 0.30 \
   --feature-correction-rate 0.05 \
+  --outcome-rate 0.10 \
   --seed 42 \
   --out runs/late-heavy.pipe
 ```
 
 Generates deterministic adversarial pipe fixtures. The `late-heavy` scenario
 shuffles physical file order; replay still sorts by
-`(received_time, received_sequence_number, event_id)`.
+`(received_time, received_sequence_number, event_id)`. Use `--outcome-rate`
+to control generated outcome rows; `--label-rate` is accepted as a legacy alias.
 
 ## run-suite
 
@@ -125,6 +127,7 @@ asof run-suite \
   --scenario late-heavy \
   --events 100000 \
   --symbols 1024 \
+  --outcome-rate 0.10 \
   --seed 42 \
   --out runs/late-heavy
 ```
@@ -175,7 +178,7 @@ asof bench --events 1000000 --symbols 1024
 
 Generates synthetic events and reports replay throughput for string-keyed state
 versus dense symbol-slot state. Methodology and caveats are in
-[docs/measurements.md](measurements.md).
+[measurements.md](measurements.md).
 
 ## Real-Data Helpers
 

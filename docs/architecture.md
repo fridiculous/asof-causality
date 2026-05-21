@@ -61,7 +61,7 @@ may format rates with floats, but prediction transcripts do not depend on
 floating-point arithmetic.
 
 For a public real-data demonstration of the same bitemporal boundary on
-ALFRED/FRED source data, see `docs/demo.md`.
+ALFRED/FRED source data, see [demo.md](demo.md).
 
 `InputSet::Many` stores up to eight event keys inline. That cap is deliberate:
 it keeps `PredictionRecord`s fixed-size and allocation-free in the replay path.

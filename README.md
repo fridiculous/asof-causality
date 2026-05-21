@@ -59,8 +59,8 @@ See [docs/cli.md](docs/cli.md) for the full command reference.
 - immutable `PredictionRecord`s with input-event provenance
 - JSONL audit output and run manifests with schemas in [schemas](schemas)
 - adversarial checks for prefix equivalence, future mutation, late arrivals,
-  feature corrections, outcome separation, deterministic replay, and audit
-  invariants
+  on-time vs late contrast, feature corrections, outcome separation,
+  deterministic replay, and audit invariants
 
 The built-in signals are test fixtures for the replay cage, not alpha claims:
 `last-feature-sentiment`, `windowed-feature-sentiment`, `windowed-zscore`, and
