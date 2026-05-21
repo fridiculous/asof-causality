@@ -69,6 +69,7 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
     assert!(sensitivity_curve_svg_path.is_file());
     assert!(flip_rate_svg_path.is_file());
     assert!(input_change_svg_path.is_file());
+    assert!(!out_dir.join("late-arrival-impact.svg").exists());
 
     let summary = fs::read_to_string(&summary_path).expect("summary should be readable");
     let rows: Vec<Value> = summary
@@ -128,6 +129,8 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
         manifest["input_change_svg_path"],
         input_change_svg_path.display().to_string()
     );
+    assert_eq!(manifest["late_arrival_impact_svg_path"], Value::Null);
+    assert_eq!(manifest["late_arrival_impact_svg_hash"], Value::Null);
     assert!(
         manifest["sensitivity_curve_svg_hash"]
             .as_str()
@@ -159,12 +162,12 @@ fn sensitivity_cli_writes_summary_details_and_manifest() {
 }
 
 #[test]
-fn sensitivity_cli_accepts_normalized_leakage_sweep() {
+fn sensitivity_cli_accepts_normalized_lookahead_range() {
     let bin = env!("CARGO_BIN_EXE_asof-causality");
     let repo_root = repo_root();
     let events = repo_root.join("examples/late-arrival.pipe");
     let out_dir =
-        std::env::temp_dir().join(format!("asof-sensitivity-leakage-{}", std::process::id()));
+        std::env::temp_dir().join(format!("asof-sensitivity-lookahead-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out_dir);
 
     let output = Command::new(bin)
@@ -173,7 +176,7 @@ fn sensitivity_cli_accepts_normalized_leakage_sweep() {
             events.to_str().unwrap(),
             "--signal",
             "last-feature-sentiment",
-            "--leakage-sweep",
+            "--lookahead-range",
             "0..100",
             "--steps",
             "4",
@@ -202,8 +205,8 @@ fn sensitivity_cli_accepts_normalized_leakage_sweep() {
 
     assert_eq!(rows.len(), 6);
     assert_eq!(rows[0]["policy_name"], "strict_received_time");
-    assert_eq!(rows[1]["policy_name"], "leakage_25pct");
-    assert_eq!(rows[4]["policy_name"], "leakage_100pct");
+    assert_eq!(rows[1]["policy_name"], "lookahead_25pct");
+    assert_eq!(rows[4]["policy_name"], "lookahead_100pct");
     assert_eq!(rows[1]["policy"]["kind"], "received_time_lag_fraction");
     assert_eq!(rows[1]["policy"]["lag_fraction_bps"], 2500);
     assert_eq!(
@@ -227,6 +230,81 @@ fn sensitivity_cli_accepts_normalized_leakage_sweep() {
     let curve = fs::read_to_string(&curve_path).expect("curve should be readable");
     assert!(curve.contains("feature publication lag removed (%)"));
     assert!(curve.contains("100%"));
+
+    let _ = fs::remove_dir_all(out_dir);
+}
+
+#[test]
+fn sensitivity_cli_accepts_late_arrival_scenario() {
+    let bin = env!("CARGO_BIN_EXE_asof-causality");
+    let repo_root = repo_root();
+    let events = repo_root.join("examples/lookahead-negative-control.pipe");
+    let out_dir =
+        std::env::temp_dir().join(format!("asof-sensitivity-late-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out_dir);
+
+    let output = Command::new(bin)
+        .args([
+            "sensitivity",
+            events.to_str().unwrap(),
+            "--signal",
+            "windowed-feature-sentiment",
+            "--scenario",
+            "late-arrivals",
+            "--out",
+            out_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("sensitivity command should run");
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let summary_path = out_dir.join("summary.jsonl");
+    let manifest_path = out_dir.join("manifest.json");
+    let late_svg_path = out_dir.join("late-arrival-impact.svg");
+    let rows: Vec<Value> = fs::read_to_string(&summary_path)
+        .expect("summary should be readable")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("summary row should parse"))
+        .collect();
+    assert!(late_svg_path.is_file());
+    assert_eq!(rows[0]["policy_name"], "strict_received_time");
+    assert!(rows
+        .iter()
+        .skip(1)
+        .all(|row| row["policy"]["kind"] == "received_time_lag_bucket_lookahead"));
+
+    let summary_schema = repo_root.join("docs/sensitivity.summary.schema.json");
+    for row in &rows {
+        validate_json(&summary_schema, row);
+    }
+
+    let manifest: Value = serde_json::from_str(
+        &fs::read_to_string(&manifest_path).expect("manifest should be readable"),
+    )
+    .expect("manifest should parse");
+    assert_eq!(
+        manifest["late_arrival_impact_svg_path"],
+        late_svg_path.display().to_string()
+    );
+    assert!(
+        manifest["late_arrival_impact_svg_hash"]
+            .as_str()
+            .unwrap()
+            .len()
+            == 64
+    );
+    validate_json(
+        &repo_root.join("docs/sensitivity.manifest.schema.json"),
+        &manifest,
+    );
+
+    let late_svg = fs::read_to_string(&late_svg_path).expect("late svg should be readable");
+    assert!(late_svg.contains("Late Arrival Impact"));
 
     let _ = fs::remove_dir_all(out_dir);
 }

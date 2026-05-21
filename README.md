@@ -111,7 +111,8 @@ cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-
 cargo run -p asof-causality-cli -- negative-control examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment
 cargo run -p asof-causality-cli -- negative-control examples/zscore-lookahead.pipe --signal windowed-zscore
 cargo run -p asof-causality-cli -- check examples/alfred-dgs10-sp500.pipe --signal windowed-zscore
-cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --leakage-sweep 0..100 --steps 4 --observed-time-leaky --details --out runs/alfred-sensitivity
+cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --scenario lookahead --lookahead-range 0..100 --steps 4 --details --out runs/alfred-sensitivity
+cargo run -p asof-causality-cli -- sensitivity examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment --scenario late-arrivals --out runs/late-arrival-sensitivity
 make verify-real-data-demo
 cargo run -p asof-causality-cli -- generate --scenario late-heavy --events 100000 --symbols 1024 --late-rate 0.30 --feature-correction-rate 0.05 --seed 42 --out runs/late-heavy.pipe
 cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
@@ -271,22 +272,32 @@ next ALFRED vintage. See
 [docs/real-data-demo.md](docs/real-data-demo.md) for source URLs and mapping.
 
 ```sh
-cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --leakage-sweep 0..100 --steps 4 --observed-time-leaky --details --out runs/alfred-sensitivity
+cargo run -p asof-causality-cli -- sensitivity examples/alfred-dgs10-sp500.pipe --signal windowed-zscore --scenario lookahead --lookahead-range 0..100 --steps 4 --details --out runs/alfred-sensitivity
 ```
 
 Runs a stability sweep outside the strict kernel: the baseline uses received
-time, the normalized leakage sweep removes 0% through 100% of each affected
-feature's own `(received_time - observed_time)` lag, and the observed-time
-policy is a reference failure mode. The command writes `summary.jsonl`, a
-primary `sensitivity-curve.svg` with baseline x=0 and sampled leakage
-percentages on the x-axis, secondary static SVG charts (`flip-rate.svg` and
-`input-change.svg`), optional `details.jsonl`, and `manifest.json` with policy
-descriptors and transcript hashes. V1 still accepts raw `--shift-features`
-integer offsets as an expert mode, but typed durations such as `-1d` are
-deferred until timestamp semantics are first-class. Sensitivity descriptors and
-the manifest record `calendar_aware: false`; on `YYYYMMDDHHMM` fixtures like
-ALFRED, intermediate leakage percentages are synthetic ordered-integer stresses,
-not calendar durations.
+time, and the lookahead range removes 0% through 100% of each affected
+feature's own `(received_time - observed_time)` lag. The command writes
+`summary.jsonl`, a primary `sensitivity-curve.svg` with baseline x=0 and
+sampled lookahead percentages on the x-axis, secondary static SVG charts
+(`flip-rate.svg` and `input-change.svg`), optional `details.jsonl`, and
+`manifest.json` with policy descriptors and transcript hashes.
+
+Late-arrival attribution is a separate sensitivity scenario:
+
+```sh
+cargo run -p asof-causality-cli -- sensitivity examples/lookahead-negative-control.pipe --signal windowed-feature-sentiment --scenario late-arrivals --out runs/late-arrival-sensitivity
+```
+
+This builds automatic fixture-native lag buckets from late feature arrivals and
+fully moves one bucket at a time to observed time. The output adds
+`late-arrival-impact.svg`, which shows which lateness band accounts for changed
+predictions. V1 still accepts raw `--shift-features` integer offsets as an
+expert mode, but typed durations such as `-1d` are deferred until timestamp
+semantics are first-class. Sensitivity descriptors and the manifest record
+`calendar_aware: false`; on `YYYYMMDDHHMM` fixtures like ALFRED, intermediate
+lookahead percentages are synthetic ordered-integer stresses, not calendar
+durations.
 
 ```sh
 cargo run -p asof-causality-cli -- bench --events 1000000 --symbols 1024

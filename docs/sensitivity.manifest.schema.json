@@ -31,6 +31,8 @@
     "flip_rate_svg_hash",
     "input_change_svg_path",
     "input_change_svg_hash",
+    "late_arrival_impact_svg_path",
+    "late_arrival_impact_svg_hash",
     "details_path",
     "details_hash"
   ],
@@ -129,6 +131,20 @@
     },
     "input_change_svg_hash": {
       "$ref": "#/$defs/blake3"
+    },
+    "late_arrival_impact_svg_path": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "late_arrival_impact_svg_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/blake3"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "details_path": {
       "type": ["string", "null"],
@@ -309,6 +325,78 @@
               },
               "minItems": 1,
               "uniqueItems": true
+            },
+            "lag_fraction_bps": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "lag_fraction_percent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "preserve": {
+              "const": ["event_id", "observed_time", "sequence", "symbol", "payload"]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "category",
+            "kind",
+            "time_axis",
+            "shift_units",
+            "calendar_aware",
+            "bounded_by_observed_time",
+            "roles_affected",
+            "min_lag",
+            "max_lag_exclusive",
+            "lag_fraction_bps",
+            "lag_fraction_percent",
+            "preserve"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "category": {
+              "const": "synthetic_stress"
+            },
+            "kind": {
+              "const": "received_time_lag_bucket_lookahead"
+            },
+            "time_axis": {
+              "const": "event_lag_fixture_native_integer"
+            },
+            "shift_units": {
+              "const": "percent_of_each_event_lag"
+            },
+            "calendar_aware": {
+              "const": false
+            },
+            "bounded_by_observed_time": {
+              "const": true
+            },
+            "roles_affected": {
+              "type": "array",
+              "items": {
+                "enum": ["feature", "feature_correction", "prediction", "outcome"]
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "min_lag": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_lag_exclusive": {
+              "type": ["integer", "null"],
+              "minimum": 0
             },
             "lag_fraction_bps": {
               "type": "integer",
