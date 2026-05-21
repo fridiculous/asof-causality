@@ -73,8 +73,36 @@ documented in `docs/audit.schema.json`. The JSONL audit record includes a BLAKE3
 `feature_recipe_hash`, `causally_valid`, optional
 `matched_stored_prediction`, and optional outcome attribution. Stored
 predictions are matched by `(symbol, prediction_replay_key)`. Outcomes must
-explicitly name the prediction replay key; the kernel attaches outcome values
-but does not score them.
+explicitly name the prediction replay key; the CLI attaches outcome values to
+audit records but does not score them.
+
+## Ingestion Boundary
+
+The pipe parser is fail-fast, not quarantine-based. Blank lines and `#` comments
+are ignored, but every data row must have exactly seven pipe-delimited fields:
+
+```text
+event_id|observed_time|received_time|received_sequence_number|role|symbol|payload
+```
+
+`event_id` and `symbol` must be non-empty, timestamps and sequence numbers must
+parse as `u64`, and `role` must be recognized. Missing `received_time`, invalid
+numbers, malformed rows, duplicate event IDs, duplicate
+`(received_time, received_sequence_number)` positions, event-key collisions, and
+symbol identity collisions abort the run with an error. The CLI reports the
+error and exits nonzero; the parser does not panic and continue with partial
+data.
+
+Payload parsing is role-dependent. Feature and feature-correction rows must
+contain a supported `sentiment=...` or `score=...` value by the time replay
+applies them. Malformed feature values abort replay. Outcome payloads are opaque
+to the core replay engine; the CLI parses `prediction_replay_key` and numeric
+`return_bps` only when attaching outcomes for `audit`.
+
+The parser does not reject `observed_time > received_time`. The kernel's
+causality invariant is defined on replay order, not calendar semantics. If a
+production dataset forbids that relationship, enforce it in the upstream
+adapter or add an explicit validation pass before replay.
 
 The current `feature_recipe_hash` is intentionally an input-set commitment. It
 commits to the signal name, signal configuration descriptor, and ordered input

@@ -81,22 +81,14 @@ The typed schema should avoid treating the export as only JSONL-in-Parquet:
 
 - `sentiment`: `Dictionary<Int32, Utf8>` for the low-cardinality sentiment
   domain, including generated mutation markers if they appear in fixtures.
-- `return_bps`: revisit before implementation. If PR #11 lands `FixedDecimal`,
-  use the same decimal discipline for outcomes. Otherwise prefer integer basis
-  points (`Int64`) or an Arrow decimal type over `Float64`.
+- `return_bps`: current audit JSONL stores this as a JSON number. A typed
+  Parquet adapter should prefer integer basis points (`Int64`) or an Arrow
+  decimal type over `Float64`.
 - `payload`: only keep this as `Utf8` for a thin first adapter if the typed
   feature schema is blocked.
 
-Sequencing should stay explicit. Block on PR #11 only if it lands quickly and
-its `FeatureDType` shape is stable. If it slips, land a thin payload-`Utf8`
-Parquet adapter first to prove the Arrow boundary, then promote to typed feature
-columns in a follow-up. Do not bundle storing parsed `FeatureValues` on `Event`
-into the Arrow work; that is a separate architectural cleanup.
-
-## Engine State Representation
-
-The benchmark shows that dense symbol-indexed state is the right direction for
-large replay workloads. Production replay now builds a collision-checked symbol
-catalog before the hot loop, keeps stable `SymbolId` values in audit records,
-and uses replay-local `SymbolSlot` values to index a vector-backed
-`StateStore`.
+Sequencing should stay explicit. Land a thin payload-`Utf8` Parquet adapter
+first if typed feature columns would expand the scope too far, then promote to
+typed feature columns in a follow-up. Do not bundle storing parsed
+`FeatureValues` on `Event` into the Arrow work; that is a separate
+architectural cleanup.

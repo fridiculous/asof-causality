@@ -191,6 +191,26 @@ Built-in feature payload fields are:
 | `sentiment` | `Text` | Legacy fixture label parsed as `negative`, `neutral`, or `positive` |
 | `score` | `FixedDecimal { scale: 6 }` | Deterministic numeric value used by fixed-point signals |
 
+Outcome rows are excluded from signal state. Core replay treats their payload as
+opaque and only counts them as outcomes seen. The CLI `audit --outcomes` path
+can attach outcomes when the input is either JSONL with
+`prediction_replay_key`, `symbol`, and numeric `return_bps`, or pipe rows where
+`role=outcome` and the payload contains
+`prediction_replay_key=<replay-key>,return_bps=<number>`. `return_bps` is
+currently serialized as a JSON number; pipe inputs accept integer or finite
+decimal literals.
+
+## Known Limitations And Constraints
+
+- Inline provenance is capped at `MAX_INPUTS_PER_PREDICTION = 8`.
+  `PredictionRecord` stores at most eight input event keys.
+- The built-in as-of state also keeps a bounded recent window of eight feature
+  observations per symbol. The windowed built-ins are examples of bounded
+  provenance, not support for 200-day moving averages.
+- Larger-window signals should use a compact recipe digest or snapshot manifest
+  instead of trying to place every input key in the prediction record. See
+  [Recipe Hashes](docs/roadmap.md#recipe-hashes).
+
 ## Current Commands
 
 ```sh
@@ -432,6 +452,13 @@ asof-causality focuses on a narrower contract: whether a `PredictionRecord`
 could have known every input its `SignalEvaluation` used at prediction time.
 The negative-control fixture is shipped with the repo so that the leak class is
 falsifiable, not just described.
+
+This is also why `asof` does not expose a generic `--safety-lag` knob. A lag
+filter applied after too-fresh events have already entered a bounded as-of
+window can silently evict older eligible inputs and still pass a narrow
+post-hoc audit. Conservative availability lags should be modeled by shifting
+feature `received_time` values before replay, or by adding a first-class delayed
+availability model with cutoff-aware state.
 
 ## Run Certificates
 
