@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/fridiculous/asof-causality/docs/manifest.schema.json",
+  "title": "asof-causality run-suite manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tool",
+    "hash_algorithm",
+    "run_started_utc",
+    "invocation",
+    "invocation_args",
+    "source_commit",
+    "workspace_dirty",
+    "rust_toolchain",
+    "scenario",
+    "signal",
+    "seed",
+    "events_requested",
+    "rows",
+    "symbols",
+    "late_rate",
+    "feature_correction_rate",
+    "outcome_rate",
+    "data_fixture_hash",
+    "prediction_output_hash",
+    "checks_output_hash",
+    "transcript_hash",
+    "checks_passed",
+    "checks"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "tool": {
+      "const": "asof-causality"
+    },
+    "hash_algorithm": {
+      "const": "blake3"
+    },
+    "run_started_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "invocation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "invocation_args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "source_commit": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{7,40}$"
+    },
+    "workspace_dirty": {
+      "type": ["boolean", "null"]
+    },
+    "rust_toolchain": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "scenario": {
+      "enum": ["clean", "late-heavy", "feature-correction-heavy"]
+    },
+    "signal": {
+      "enum": [
+        "last-feature-sentiment",
+        "windowed-feature-sentiment",
+        "windowed-zscore"
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "events_requested": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "rows": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "symbols": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "late_rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "feature_correction_rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "outcome_rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "data_fixture_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "prediction_output_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "checks_output_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "transcript_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "checks_passed": {
+      "type": "boolean"
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "failed", "total"],
+      "properties": {
+        "passed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

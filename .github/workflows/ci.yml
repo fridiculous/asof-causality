@@ -1,15 +1,22 @@
 name: CI
 
 on:
-  push:
   pull_request:
+  push:
+    branches:
+      - main
 
 jobs:
-  rust:
+  test:
     runs-on: ubuntu-latest
+    env:
+      INSTA_UPDATE: no
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release
-      - run: cargo test
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --workspace

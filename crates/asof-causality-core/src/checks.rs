@@ -526,7 +526,10 @@ mod tests {
     use super::*;
     use crate::{
         parse_pipe_events, AsOfView, InputSet, SymbolSnapshot, WindowedFeatureSentimentSignal,
+        WindowedZScoreSignal,
     };
+    use proptest::prelude::*;
+    use proptest::test_runner::TestCaseError;
 
     const FIXTURE: &str = "\
 p1|580|580|3|prediction|AAPL|
@@ -537,6 +540,347 @@ c1|600|615|6|feature_correction|AAPL|sentiment=negative,corrects=n1
 p4|620|620|7|prediction|AAPL|
 l1|640|640|8|outcome|AAPL|return_bps=12
 ";
+
+    fn arb_event_stream() -> impl Strategy<Value = Vec<Event>> {
+        prop::collection::vec(
+            (
+                0_u64..24,
+                0_u64..4,
+                0_u64..8,
+                0_u8..5,
+                0_u8..5,
+                -20_i32..=20,
+                any::<u64>(),
+            ),
+            0..24,
+        )
+        .prop_map(|specs| {
+            let mut random_events = specs
+                .into_iter()
+                .enumerate()
+                .map(
+                    |(
+                        index,
+                        (
+                            observed_bucket,
+                            lag_bucket,
+                            sequence_bucket,
+                            role_code,
+                            symbol_index,
+                            payload_value,
+                            shuffle_key,
+                        ),
+                    )| {
+                        let role = match role_code {
+                            0 | 1 => EventRole::Feature,
+                            2 => EventRole::FeatureCorrection,
+                            3 => EventRole::Prediction,
+                            _ => EventRole::Outcome,
+                        };
+                        let observed_time = 2_000 + observed_bucket * 10;
+                        let received_time = observed_time + lag_bucket * 10;
+                        let sequence = 20 + sequence_bucket;
+                        let symbol = format!("SYM{symbol_index}");
+                        let event_id = format!("r{index}_{observed_bucket}_{sequence_bucket}");
+                        let payload = random_payload(role, payload_value, index);
+
+                        (
+                            shuffle_key,
+                            index,
+                            Event::new(
+                                event_id,
+                                observed_time,
+                                received_time,
+                                sequence,
+                                role,
+                                symbol,
+                                payload,
+                            ),
+                        )
+                    },
+                )
+                .collect::<Vec<_>>();
+            random_events.sort_by_key(|(shuffle_key, index, _)| (*shuffle_key, *index));
+
+            let mut events = sentinel_events();
+            events.extend(random_events.into_iter().map(|(_, _, event)| event));
+            events
+        })
+    }
+
+    fn random_payload(role: EventRole, payload_value: i32, index: usize) -> String {
+        match role {
+            EventRole::Feature | EventRole::FeatureCorrection => {
+                if index % 2 == 0 {
+                    format!("score={payload_value}")
+                } else {
+                    let sentiment = match payload_value.rem_euclid(3) {
+                        0 => "negative",
+                        1 => "neutral",
+                        _ => "positive",
+                    };
+                    format!("sentiment={sentiment},corrects=r{index}")
+                }
+            }
+            EventRole::Prediction => String::new(),
+            EventRole::Outcome => format!("return_bps={payload_value}"),
+        }
+    }
+
+    fn sentinel_events() -> Vec<Event> {
+        vec![
+            Event::new(
+                "p_prop_before",
+                1_000,
+                1_000,
+                1,
+                EventRole::Prediction,
+                "PROP_SENT",
+                "",
+            ),
+            Event::new(
+                "n_prop_late",
+                1_000,
+                1_020,
+                2,
+                EventRole::Feature,
+                "PROP_SENT",
+                "sentiment=positive",
+            ),
+            Event::new(
+                "p_prop_between",
+                1_010,
+                1_010,
+                3,
+                EventRole::Prediction,
+                "PROP_SENT",
+                "",
+            ),
+            Event::new(
+                "p_prop_after",
+                1_030,
+                1_030,
+                4,
+                EventRole::Prediction,
+                "PROP_SENT",
+                "",
+            ),
+            Event::new(
+                "c_prop_late",
+                1_040,
+                1_060,
+                5,
+                EventRole::FeatureCorrection,
+                "PROP_SENT",
+                "sentiment=negative,corrects=n_prop_late",
+            ),
+            Event::new(
+                "p_prop_before_correction",
+                1_050,
+                1_050,
+                6,
+                EventRole::Prediction,
+                "PROP_SENT",
+                "",
+            ),
+            Event::new(
+                "p_prop_after_correction",
+                1_070,
+                1_070,
+                7,
+                EventRole::Prediction,
+                "PROP_SENT",
+                "",
+            ),
+            Event::new(
+                "score_seed_1",
+                1_200,
+                1_200,
+                8,
+                EventRole::Feature,
+                "SCORE_SENT",
+                "score=10",
+            ),
+            Event::new(
+                "score_seed_2",
+                1_210,
+                1_210,
+                9,
+                EventRole::Feature,
+                "SCORE_SENT",
+                "score=10",
+            ),
+            Event::new(
+                "score_seed_3",
+                1_220,
+                1_220,
+                10,
+                EventRole::Feature,
+                "SCORE_SENT",
+                "score=10",
+            ),
+            Event::new(
+                "score_late_spike",
+                1_230,
+                1_250,
+                11,
+                EventRole::Feature,
+                "SCORE_SENT",
+                "score=30",
+            ),
+            Event::new(
+                "p_score_between",
+                1_240,
+                1_240,
+                12,
+                EventRole::Prediction,
+                "SCORE_SENT",
+                "",
+            ),
+            Event::new(
+                "p_score_after",
+                1_260,
+                1_260,
+                13,
+                EventRole::Prediction,
+                "SCORE_SENT",
+                "",
+            ),
+        ]
+    }
+
+    fn assert_check_result(result: CheckResult) -> Result<(), TestCaseError> {
+        prop_assert!(
+            result.passed,
+            "{} failed: {}",
+            result.name,
+            result.detail
+        );
+        Ok(())
+    }
+
+    fn assert_default_transcript_hash_stable(events: &[Event]) -> Result<(), TestCaseError> {
+        let original = ReplayEngine::new()
+            .replay(events, ReplayOptions::default())
+            .map_err(|error| TestCaseError::fail(format!("original replay failed: {error}")))?
+            .predictions
+            .transcript_hash();
+
+        for shuffled in [
+            reversed(events),
+            deterministic_permutation(events, 0x1234_5678_9abc_def0),
+            deterministic_permutation(events, 0x0ddc_0ffe_e15e_f00d),
+        ] {
+            let shuffled_hash = ReplayEngine::new()
+                .replay(&shuffled, ReplayOptions::default())
+                .map_err(|error| TestCaseError::fail(format!("shuffled replay failed: {error}")))?
+                .predictions
+                .transcript_hash();
+            prop_assert_eq!(original, shuffled_hash);
+        }
+
+        Ok(())
+    }
+
+    fn reversed(events: &[Event]) -> Vec<Event> {
+        let mut reversed = events.to_vec();
+        reversed.reverse();
+        reversed
+    }
+
+    fn deterministic_permutation(events: &[Event], seed: u64) -> Vec<Event> {
+        let mut shuffled = events.to_vec();
+        let mut state = seed;
+        for index in (1..shuffled.len()).rev() {
+            state = splitmix64_next(state);
+            let swap_index = (state as usize) % (index + 1);
+            shuffled.swap(index, swap_index);
+        }
+        shuffled
+    }
+
+    fn splitmix64_next(mut state: u64) -> u64 {
+        state = state.wrapping_add(0x9e3779b97f4a7c15);
+        let mut value = state;
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
+        value ^ (value >> 31)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn generated_streams_pass_all_adversarial_checks(events in arb_event_stream()) {
+            let report = run_adversarial_checks(&events);
+            prop_assert!(report.passed(), "{report:?}");
+        }
+
+        #[test]
+        fn generated_streams_pass_windowed_zscore_checks(events in arb_event_stream()) {
+            let report = run_adversarial_checks_with_options_for_signal(
+                &events,
+                CheckOptions::exhaustive(),
+                WindowedZScoreSignal::new(),
+            );
+            prop_assert!(report.passed(), "{report:?}");
+        }
+
+        #[test]
+        fn generated_streams_preserve_prefix_equivalence(events in arb_event_stream()) {
+            assert_check_result(prefix_equivalence(
+                &events,
+                CheckOptions::exhaustive(),
+                &LastFeatureSentimentSignal,
+            ))?;
+        }
+
+        #[test]
+        fn generated_streams_ignore_future_payload_mutations(events in arb_event_stream()) {
+            assert_check_result(future_mutation(
+                &events,
+                CheckOptions::exhaustive(),
+                &LastFeatureSentimentSignal,
+            ))?;
+        }
+
+        #[test]
+        fn generated_streams_never_use_late_inputs_early(events in arb_event_stream()) {
+            assert_check_result(late_arrival(&events, &LastFeatureSentimentSignal))?;
+        }
+
+        #[test]
+        fn generated_streams_have_non_vacuous_late_contrast(events in arb_event_stream()) {
+            assert_check_result(on_time_vs_late_contrast(
+                &events,
+                &LastFeatureSentimentSignal,
+            ))?;
+        }
+
+        #[test]
+        fn generated_streams_keep_feature_corrections_append_only(events in arb_event_stream()) {
+            assert_check_result(feature_correction_append_only(
+                &events,
+                &LastFeatureSentimentSignal,
+            ))?;
+        }
+
+        #[test]
+        fn generated_streams_keep_outcomes_separate(events in arb_event_stream()) {
+            assert_check_result(outcome_separation(&events, &LastFeatureSentimentSignal))?;
+        }
+
+        #[test]
+        fn generated_streams_replay_deterministically(events in arb_event_stream()) {
+            assert_check_result(deterministic_replay(&events, &LastFeatureSentimentSignal))?;
+            assert_default_transcript_hash_stable(&events)?;
+        }
+
+        #[test]
+        fn generated_streams_satisfy_audit_invariant(events in arb_event_stream()) {
+            assert_check_result(audit_invariant(&events, &LastFeatureSentimentSignal))?;
+        }
+    }
 
     #[test]
     fn adversarial_checks_pass_for_fixture() {

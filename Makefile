@@ -1,17 +1,20 @@
-.PHONY: check test replay check-fixture verify-real-data-demo bench
+.PHONY: check test replay check-fixture run-suite-late-heavy verify-real-data-demo bench
 
 check:
 	cargo fmt --check
 	cargo clippy --all-targets -- -D warnings
 
 test:
-	cargo test
+	cargo test --workspace
 
 replay:
 	cargo run -p asof-causality-cli -- replay examples/late-arrival.pipe
 
 check-fixture:
 	cargo run -p asof-causality-cli -- check examples/late-arrival.pipe
+
+run-suite-late-heavy:
+	cargo run -p asof-causality-cli -- run-suite --scenario late-heavy --events 100000 --symbols 1024 --seed 42 --out runs/late-heavy
 
 verify-real-data-demo:
 	uv run --script scripts/rebuild-alfred-example.py --check
