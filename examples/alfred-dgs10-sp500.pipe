@@ -5,9 +5,10 @@
 # Times use YYYYMMDDHHMM integers. DGS10 observations are dated at 15:00 on
 # the observation date, before a naive 16:00 close prediction, and received at
 # 09:00 on the next ALFRED vintage date.
-# SP500 predictions are emitted at 16:00. Outcomes are attached after the next
-# close so they cannot affect prediction state.
-# event_id|observed_time|received_time|sequence|role|symbol|payload
+# SP500 prediction events are scheduled at 16:00; replay records
+# PredictionRecords. Outcomes are attached after the next close so they cannot
+# affect signal evaluation state.
+# event_id|observed_time|received_time|received_sequence_number|role|symbol|payload
 dgs10_20200311_v20200312|202003111500|202003120900|1|feature|SP500|score=0.06,series=DGS10,value=0.82,previous=0.76,source=ALFRED
 dgs10_20200312_v20200313|202003121500|202003130900|2|feature|SP500|score=0.06,series=DGS10,value=0.88,previous=0.82,source=ALFRED
 dgs10_20200313_v20200316|202003131500|202003160900|3|feature|SP500|score=0.06,series=DGS10,value=0.94,previous=0.88,source=ALFRED

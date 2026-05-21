@@ -121,7 +121,7 @@ impl GeneratedStream {
         );
         let _ = writeln!(
             output,
-            "# event_id|observed_time|received_time|sequence|role|symbol|payload"
+            "# event_id|observed_time|received_time|received_sequence_number|role|symbol|payload"
         );
 
         for event in &self.events {
@@ -143,11 +143,11 @@ pub fn generate_events(config: &GenerateConfig) -> GeneratedStream {
 
     let mut rng = SplitMix64::new(config.seed);
     let mut events = Vec::with_capacity(data_events + data_events / prediction_interval + 8);
-    let mut sequence = 1_u64;
+    let mut received_sequence_number = 1_u64;
 
     add_sentinel_events(
         &mut events,
-        &mut sequence,
+        &mut received_sequence_number,
         feature_correction_rate > 0.0
             || matches!(config.scenario, Scenario::FeatureCorrectionHeavy),
     );
@@ -190,7 +190,7 @@ pub fn generate_events(config: &GenerateConfig) -> GeneratedStream {
             format!("n{index}"),
             observed_time,
             received_time,
-            next_sequence(&mut sequence),
+            next_received_sequence_number(&mut received_sequence_number),
             EventRole::Feature,
             symbol.clone(),
             format!("sentiment={sentiment}"),
@@ -205,7 +205,7 @@ pub fn generate_events(config: &GenerateConfig) -> GeneratedStream {
                 format!("p{index}"),
                 observed_time + 1,
                 observed_time + 1,
-                next_sequence(&mut sequence),
+                next_received_sequence_number(&mut received_sequence_number),
                 EventRole::Prediction,
                 symbol.clone(),
                 "",
@@ -220,7 +220,7 @@ pub fn generate_events(config: &GenerateConfig) -> GeneratedStream {
                 format!("c{index}"),
                 observed_time + 2,
                 correction_time,
-                next_sequence(&mut sequence),
+                next_received_sequence_number(&mut received_sequence_number),
                 EventRole::FeatureCorrection,
                 symbol.clone(),
                 format!("sentiment={correction_sentiment},corrects=n{index}"),
@@ -236,7 +236,7 @@ pub fn generate_events(config: &GenerateConfig) -> GeneratedStream {
                 format!("l{index}"),
                 observed_time + max_lag + 1,
                 observed_time + max_lag + 1,
-                next_sequence(&mut sequence),
+                next_received_sequence_number(&mut received_sequence_number),
                 EventRole::Outcome,
                 symbol,
                 format!("return_bps={}", rng.range_i32(401) - 200),
@@ -253,13 +253,17 @@ pub fn generate_events(config: &GenerateConfig) -> GeneratedStream {
     GeneratedStream { events, stats }
 }
 
-fn add_sentinel_events(events: &mut Vec<Event>, sequence: &mut u64, include_correction: bool) {
+fn add_sentinel_events(
+    events: &mut Vec<Event>,
+    received_sequence_number: &mut u64,
+    include_correction: bool,
+) {
     let symbol = symbol_name(0);
     events.push(Event::new(
         "p_sentinel_before",
         1_000,
         1_000,
-        next_sequence(sequence),
+        next_received_sequence_number(received_sequence_number),
         EventRole::Prediction,
         symbol.clone(),
         "",
@@ -268,7 +272,7 @@ fn add_sentinel_events(events: &mut Vec<Event>, sequence: &mut u64, include_corr
         "n_sentinel_late",
         1_000,
         1_020,
-        next_sequence(sequence),
+        next_received_sequence_number(received_sequence_number),
         EventRole::Feature,
         symbol.clone(),
         "sentiment=positive",
@@ -277,7 +281,7 @@ fn add_sentinel_events(events: &mut Vec<Event>, sequence: &mut u64, include_corr
         "p_sentinel_between",
         1_010,
         1_010,
-        next_sequence(sequence),
+        next_received_sequence_number(received_sequence_number),
         EventRole::Prediction,
         symbol.clone(),
         "",
@@ -286,7 +290,7 @@ fn add_sentinel_events(events: &mut Vec<Event>, sequence: &mut u64, include_corr
         "p_sentinel_after",
         1_030,
         1_030,
-        next_sequence(sequence),
+        next_received_sequence_number(received_sequence_number),
         EventRole::Prediction,
         symbol.clone(),
         "",
@@ -297,7 +301,7 @@ fn add_sentinel_events(events: &mut Vec<Event>, sequence: &mut u64, include_corr
             "c_sentinel_late",
             1_040,
             1_060,
-            next_sequence(sequence),
+            next_received_sequence_number(received_sequence_number),
             EventRole::FeatureCorrection,
             symbol.clone(),
             "sentiment=negative,corrects=n_sentinel_late",
@@ -306,7 +310,7 @@ fn add_sentinel_events(events: &mut Vec<Event>, sequence: &mut u64, include_corr
             "p_sentinel_before_correction",
             1_050,
             1_050,
-            next_sequence(sequence),
+            next_received_sequence_number(received_sequence_number),
             EventRole::Prediction,
             symbol.clone(),
             "",
@@ -315,7 +319,7 @@ fn add_sentinel_events(events: &mut Vec<Event>, sequence: &mut u64, include_corr
             "p_sentinel_after_correction",
             1_070,
             1_070,
-            next_sequence(sequence),
+            next_received_sequence_number(received_sequence_number),
             EventRole::Prediction,
             symbol,
             "",
@@ -335,9 +339,9 @@ fn sentiment_payload(index: usize) -> &'static str {
     }
 }
 
-fn next_sequence(sequence: &mut u64) -> u64 {
-    let value = *sequence;
-    *sequence += 1;
+fn next_received_sequence_number(received_sequence_number: &mut u64) -> u64 {
+    let value = *received_sequence_number;
+    *received_sequence_number += 1;
     value
 }
 

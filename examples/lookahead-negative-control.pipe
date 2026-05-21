@@ -3,7 +3,7 @@
 # before p_before_same_time_sequence, n_late_positive before
 # p_before_late_feature, and c_late_negative before p_before_correction.
 # asof-causality must not: each input sorts after the prediction replay key.
-# event_id|observed_time|received_time|sequence|role|symbol|payload
+# event_id|observed_time|received_time|received_sequence_number|role|symbol|payload
 n_seed_negative|80|80|1|feature|XYZ|sentiment=negative
 n_seed_positive|85|85|2|feature|XYZ|sentiment=positive
 n_seed_negative_2|90|90|3|feature|XYZ|sentiment=negative

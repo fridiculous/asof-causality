@@ -1,24 +1,25 @@
 # Success Criteria
 
 asof-causality succeeds when it can prove that identical received-event prefixes
-produce identical predictions.
+produce identical `PredictionRecord` transcripts.
 
 ## Required Checks
 
 - Prefix equivalence: full replay and `received_time <= T` replay produce the
-  same predictions at or before `T`.
-- Future mutation: mutating every event after `T` cannot change predictions at
-  or before `T`.
+  same `PredictionRecord`s at or before `T`.
+- Future mutation: mutating every event after `T` cannot change
+  `PredictionRecord`s at or before `T`.
 - Late arrival: an event observed before prediction time but received after it
-  is not used by that prediction.
+  is not used by that record's `SignalEvaluation`.
 - On-time vs late contrast: moving the same event from received-before to
-  received-after prediction time can change the prediction.
+  received-after prediction time can change the resulting `SignalEvaluation`.
 - Feature-correction handling: feature corrections are append-only and cannot
-  rewrite old prediction records.
-- Outcome separation: removing outcome computation does not change predictions.
+  rewrite old `PredictionRecord`s.
+- Outcome separation: removing outcome computation does not change
+  `PredictionRecord`s.
 - Deterministic replay: shuffled physical input produces the same transcript
   hash.
-- Audit invariant: every prediction has
+- Audit invariant: every `PredictionRecord` has
   `max_input_replay_key <= prediction_replay_key`.
 
 The core test suite runs these checks exhaustively against the small adversarial
@@ -29,7 +30,7 @@ keeps the full sweep available when the input size is appropriate.
 ## End-To-End Evidence
 
 `run-suite` succeeds when it can generate an adversarial fixture from a seed,
-replay it, emit prediction records, run the checks, and write a summary report
+replay it, append `PredictionRecord`s, run the checks, and write a summary report
 with the transcript hash. It also writes a `manifest.json` that links the data
 fixture, signal, check output, toolchain, invocation, UTC run timestamp, source
 commit context, workspace dirty flag, transcript hash, and check counts. This
@@ -46,14 +47,15 @@ downstream exports. A Parquet adapter succeeds only if it is a typed, columnar
 audit contract with explicit schema metadata and deliberately chosen
 compression, not just JSONL reshaped into a columnar container.
 
-`negative-control` succeeds as a demonstration when the received-time engine emits
-zero impossible predictions and the observed-time baseline emits at least one on
-the negative-control fixture. This is the visible proof that the checks catch a
-real class of naive backtest error.
+`negative-control` succeeds as a demonstration when the received-time engine
+produces zero impossible `PredictionRecord`s and the observed-time baseline
+produces at least one on the negative-control fixture. This is the visible
+proof that the checks catch a real class of naive backtest error.
 
-The windowed built-in signal succeeds when a prediction can cite multiple
-feature inputs while still satisfying the same audit invariant. This proves the
-provenance model is signal-shaped rather than a one-row special case.
+The windowed built-in signal succeeds when a replay-derived
+`PredictionRecord` can cite multiple feature inputs while still satisfying the
+same audit invariant. This proves the provenance model is signal-shaped rather
+than a one-row special case.
 
 ## Performance Evidence
 

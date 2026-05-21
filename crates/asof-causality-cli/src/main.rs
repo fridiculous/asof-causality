@@ -2,8 +2,8 @@ use asof_causality_core::{
     generate_events, parse_pipe_events, run_adversarial_checks_with_options_for_signal,
     run_representation_benchmark, CheckOptions, CheckReport, Event, EventKey, EventRole,
     GenerateConfig, GeneratedStream, LastFeatureSentimentSignal, ReplayEngine, ReplayOptions,
-    ReplayOrder, ReplayOutput, Scenario, SymbolId, WindowedFeatureSentimentSignal,
-    WindowedZScoreSignal,
+    ReplayOrder, ReplayOutput, Scenario, SymbolId, VolAdjustedMomentumSignal,
+    WindowedFeatureSentimentSignal, WindowedZScoreSignal,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Number;
@@ -48,6 +48,7 @@ enum SignalChoice {
     LastFeatureSentiment,
     WindowedFeatureSentiment,
     WindowedZScore,
+    VolAdjustedMomentum,
 }
 
 impl SignalChoice {
@@ -56,8 +57,9 @@ impl SignalChoice {
             "last-feature-sentiment" => Ok(Self::LastFeatureSentiment),
             "windowed-feature-sentiment" => Ok(Self::WindowedFeatureSentiment),
             "windowed-zscore" => Ok(Self::WindowedZScore),
+            "vol-adjusted-momentum" => Ok(Self::VolAdjustedMomentum),
             other => Err(format!(
-                "unknown signal {other}; expected last-feature-sentiment, windowed-feature-sentiment, or windowed-zscore"
+                "unknown signal {other}; expected last-feature-sentiment, windowed-feature-sentiment, windowed-zscore, or vol-adjusted-momentum"
             )
             .into()),
         }
@@ -68,6 +70,7 @@ impl SignalChoice {
             Self::LastFeatureSentiment => "last-feature-sentiment",
             Self::WindowedFeatureSentiment => "windowed-feature-sentiment",
             Self::WindowedZScore => "windowed-zscore",
+            Self::VolAdjustedMomentum => "vol-adjusted-momentum",
         }
     }
 }
@@ -212,7 +215,7 @@ fn negative_control(args: &[String]) -> Result<(), Box<dyn Error>> {
     let correct_impossible = received_time.predictions.impossible_predictions();
 
     if !correct_impossible.is_empty() {
-        return Err("received-time replay produced impossible predictions".into());
+        return Err("received-time replay produced impossible PredictionRecords".into());
     }
 
     Ok(())
@@ -335,6 +338,10 @@ fn replay_with_signal(
         }
         SignalChoice::WindowedZScore => ReplayEngine::with_signal(WindowedZScoreSignal::default())
             .replay_with_order(events, options, order),
+        SignalChoice::VolAdjustedMomentum => {
+            ReplayEngine::with_signal(VolAdjustedMomentumSignal::default())
+                .replay_with_order(events, options, order)
+        }
     }
 }
 
@@ -358,6 +365,11 @@ fn run_checks_with_signal(
             events,
             options,
             WindowedZScoreSignal::default(),
+        ),
+        SignalChoice::VolAdjustedMomentum => run_adversarial_checks_with_options_for_signal(
+            events,
+            options,
+            VolAdjustedMomentumSignal::default(),
         ),
     }
 }
@@ -803,7 +815,7 @@ fn format_audit_record_json(
     let prediction_id = output.predictions.event_label(record.prediction_event_key);
     let prediction_replay_key = output.predictions.format_replay_key(
         record.prediction_time,
-        record.prediction_sequence,
+        record.prediction_received_sequence_number,
         record.prediction_event_key,
     );
     let symbol = output.predictions.symbol_label(record.symbol);
@@ -880,7 +892,7 @@ fn summarize_audit(
         .map(|record| {
             let prediction_replay_key = output.predictions.format_replay_key(
                 record.prediction_time,
-                record.prediction_sequence,
+                record.prediction_received_sequence_number,
                 record.prediction_event_key,
             );
             AuditKey {
@@ -897,7 +909,7 @@ fn summarize_audit(
             .filter(|record| {
                 let prediction_replay_key = output.predictions.format_replay_key(
                     record.prediction_time,
-                    record.prediction_sequence,
+                    record.prediction_received_sequence_number,
                     record.prediction_event_key,
                 );
                 let key = AuditKey {
@@ -1178,13 +1190,13 @@ fn print_negative_control_stdout(
     println!();
     print_engine_summary(
         "ENGINE A: received-time replay (correct)",
-        "(received_time, sequence, event_id)",
+        "(received_time, received_sequence_number, event_id)",
         received_time,
     );
     println!();
     print_engine_summary(
         "ENGINE B: observed-time replay (deliberately broken baseline)",
-        "(observed_time, sequence, event_id)",
+        "(observed_time, received_sequence_number, event_id)",
         observed_time,
     );
     println!();
@@ -1212,7 +1224,7 @@ fn print_engine_summary(name: &str, ordering: &str, output: &ReplayOutput) {
 }
 
 fn print_leaked_predictions(output: &ReplayOutput, labels: &EventLabels<'_>) {
-    println!("LEAKED PREDICTIONS (engine B)");
+    println!("LEAKED PREDICTION RECORDS (engine B)");
     let impossible = output.predictions.impossible_predictions();
 
     if impossible.is_empty() {
@@ -1278,28 +1290,31 @@ fn print_negative_control_diagnostic(
 
     println!("DIAGNOSTIC");
     if leaky_impossible.is_empty() {
-        println!("  the broken engine emitted 0 impossible predictions on this fixture");
+        println!("  the broken engine produced 0 impossible PredictionRecords on this fixture");
     } else {
         println!(
-            "  the broken engine emitted {} impossible predictions across {} distinct leak classes",
+            "  the broken engine produced {} impossible PredictionRecords across {} distinct leak classes",
             leaky_impossible.len(),
             leak_classes
         );
     }
-    println!("  the correct engine emitted {}", correct_impossible.len());
+    println!(
+        "  the correct engine produced {} impossible PredictionRecords",
+        correct_impossible.len()
+    );
     println!("  the audit invariant catches the failure mode the engine is designed to prevent");
 }
 
 fn format_replay_key_for_event(event: &Event) -> String {
     format!(
         "({}, {}, {})",
-        event.received_time, event.sequence, event.event_id
+        event.received_time, event.received_sequence_number, event.event_id
     )
 }
 
 fn leak_class(prediction: &Event, input: &Event) -> &'static str {
     if input.received_time == prediction.received_time {
-        "same-timestamp sequence"
+        "same-timestamp received sequence"
     } else if input.role == EventRole::FeatureCorrection {
         "late correction"
     } else {
@@ -1309,7 +1324,8 @@ fn leak_class(prediction: &Event, input: &Event) -> &'static str {
 
 fn leak_violation(prediction: &Event, input: &Event) -> String {
     if input.received_time == prediction.received_time {
-        "input sequence > prediction sequence at same received_time".to_string()
+        "input received_sequence_number > prediction received_sequence_number at same received_time"
+            .to_string()
     } else {
         format!(
             "input replay key > prediction replay key by delta={}",
@@ -1523,7 +1539,7 @@ fn print_run_suite_stdout(inputs: RunSuiteStdout<'_>) {
     );
     println!();
 
-    println!("PHASE 2  REPLAY  ordered by (received_time, sequence, event_id)");
+    println!("PHASE 2  REPLAY  ordered by (received_time, received_sequence_number, event_id)");
     println!("  events_replayed   {}", inputs.replay.replayed_events);
     println!(
         "  predictions       {}",
@@ -2001,6 +2017,7 @@ fn print_help() {
     println!("  last-feature-sentiment (default)");
     println!("  windowed-feature-sentiment");
     println!("  windowed-zscore");
+    println!("  vol-adjusted-momentum");
 }
 
 #[cfg(test)]
@@ -2104,6 +2121,18 @@ mod tests {
         .unwrap();
 
         assert_eq!(signal, SignalChoice::WindowedZScore);
+    }
+
+    #[test]
+    fn parses_vol_adjusted_momentum_signal() {
+        let (_, signal) = parse_path_signal_args(
+            &args(&["--signal", "vol-adjusted-momentum"]),
+            "default.pipe",
+            "replay",
+        )
+        .unwrap();
+
+        assert_eq!(signal, SignalChoice::VolAdjustedMomentum);
     }
 
     #[test]

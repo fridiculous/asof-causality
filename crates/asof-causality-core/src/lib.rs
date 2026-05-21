@@ -32,7 +32,11 @@ pub use checks::{
     run_adversarial_checks, run_adversarial_checks_with_options,
     run_adversarial_checks_with_options_for_signal, CheckOptions, CheckReport, CheckResult,
 };
-pub use event::{Event, EventRole, ParseEventError, Sentiment};
+pub use event::{
+    Event, EventRole, FeatureDType, FeatureSpec, FixedDecimal, ParseEventError, ReplayKey,
+    Sentiment, BUILTIN_FEATURE_SPECS, FIXED_DECIMAL_SCALE, FIXED_DECIMAL_SCALE_DIGITS,
+    SCORE_FEATURE, SENTIMENT_FEATURE,
+};
 pub use generator::{generate_events, GenerateConfig, GeneratedStream, GenerationStats, Scenario};
 pub use ids::{EventKey, InputSet, SymbolId, SymbolSlot, MAX_INPUTS_PER_PREDICTION};
 pub use log::{
@@ -43,6 +47,7 @@ pub use replay::{
     parse_pipe_events, ReplayEngine, ReplayError, ReplayOptions, ReplayOrder, ReplayOutput,
 };
 pub use signal::{
-    LastFeatureSentimentSignal, Signal, WindowedFeatureSentimentSignal, WindowedZScoreSignal,
+    LastFeatureSentimentSignal, Signal, VolAdjustedMomentumSignal, WindowedFeatureSentimentSignal,
+    WindowedZScoreSignal,
 };
-pub use state::{AsOfView, SymbolSnapshot};
+pub use state::{AsOfView, SignalEvaluation};

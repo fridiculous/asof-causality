@@ -2,7 +2,7 @@ use crate::{
     Event, EventKey, EventRole, LastFeatureSentimentSignal, PredictionRecord, ReplayEngine,
     ReplayOptions, Signal,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckResult {
@@ -167,7 +167,7 @@ where
         if predictions_at_or_before(&full, *cutoff) != predictions_at_or_before(&prefix, *cutoff) {
             return fail(
                 "prefix_equivalence",
-                format!("predictions changed for received-time prefix {cutoff}"),
+                format!("PredictionRecords changed for received-time prefix {cutoff}"),
             );
         }
     }
@@ -215,7 +215,7 @@ where
         {
             return fail(
                 "future_mutation",
-                format!("future mutation changed predictions at or before {cutoff}"),
+                format!("future mutation changed PredictionRecords at or before {cutoff}"),
             );
         }
     }
@@ -223,8 +223,8 @@ where
     pass(
         "future_mutation",
         cutoff_detail(
-            "mutating future rows did not change past predictions",
-            "mutating sampled future rows did not change past predictions",
+            "mutating future rows did not change prior PredictionRecords",
+            "mutating sampled future rows did not change prior PredictionRecords",
             cutoffs.len(),
             total_cutoffs,
         ),
@@ -302,10 +302,21 @@ where
         };
 
         let mut on_time = events.to_vec();
+        let moved_received_time = late_event.observed_time;
+        let before_sequence = (moved_received_time == target_prediction.prediction_time)
+            .then_some(target_prediction.prediction_received_sequence_number);
+        let Some(moved_received_sequence_number) = available_received_sequence_number(
+            &on_time,
+            late_event.event_id.as_str(),
+            moved_received_time,
+            before_sequence,
+        ) else {
+            continue;
+        };
         for event in &mut on_time {
             if event.event_id == late_event.event_id {
-                event.received_time = late_event.observed_time;
-                event.sequence = late_event.sequence.saturating_sub(1);
+                event.received_time = moved_received_time;
+                event.received_sequence_number = moved_received_sequence_number;
             }
         }
 
@@ -328,7 +339,7 @@ where
             return pass(
                 "on_time_vs_late_contrast",
                 format!(
-                    "moving {} earlier changed prediction at {} from {} to {}",
+                    "moving {} earlier changed SignalEvaluation at {} from {} to {}",
                     late_event.event_id,
                     target_prediction.prediction_time,
                     target_prediction.signal_value,
@@ -340,7 +351,7 @@ where
 
     fail(
         "on_time_vs_late_contrast",
-        "fixture did not contain a late event that changes an in-between prediction",
+        "fixture did not contain a late event that changes an in-between SignalEvaluation",
     )
 }
 
@@ -367,7 +378,7 @@ where
                 return fail(
                     "feature_correction_append_only",
                     format!(
-                        "prediction at {} used future feature correction {}",
+                        "PredictionRecord at {} used future feature correction {}",
                         prediction.prediction_time, feature_correction.event_id
                     ),
                 );
@@ -377,7 +388,7 @@ where
 
     pass(
         "feature_correction_append_only",
-        "feature corrections did not rewrite predictions emitted before receipt",
+        "feature corrections did not rewrite prior PredictionRecords",
     )
 }
 
@@ -397,12 +408,12 @@ where
     if with_outcomes == without_outcomes {
         pass(
             "outcome_separation",
-            "disabling outcomes did not change predictions",
+            "disabling outcomes did not change PredictionRecords",
         )
     } else {
         fail(
             "outcome_separation",
-            "outcome computation changed emitted predictions",
+            "outcome computation changed PredictionRecords",
         )
     }
 }
@@ -486,7 +497,7 @@ where
 
     pass(
         "audit_invariant",
-        "all predictions satisfy max_input_replay_key <= prediction_replay_key",
+        "all PredictionRecords satisfy max_input_replay_key <= prediction_replay_key",
     )
 }
 
@@ -503,6 +514,30 @@ fn update_event_by_key(events: &[Event]) -> BTreeMap<EventKey, &Event> {
         .filter(|event| event.role.updates_signal_state())
         .map(|event| (event.event_key, event))
         .collect()
+}
+
+fn available_received_sequence_number(
+    events: &[Event],
+    moving_event_id: &str,
+    received_time: u64,
+    before_sequence: Option<u64>,
+) -> Option<u64> {
+    let used = events
+        .iter()
+        .filter(|event| event.event_id != moving_event_id && event.received_time == received_time)
+        .map(|event| event.received_sequence_number)
+        .collect::<BTreeSet<_>>();
+
+    let mut candidate = 0_u64;
+    loop {
+        if before_sequence.is_some_and(|limit| candidate >= limit) {
+            return None;
+        }
+        if !used.contains(&candidate) {
+            return Some(candidate);
+        }
+        candidate = candidate.checked_add(1)?;
+    }
 }
 
 fn pass(name: &'static str, detail: impl Into<String>) -> CheckResult {
@@ -525,7 +560,7 @@ fn fail(name: &'static str, detail: impl Into<String>) -> CheckResult {
 mod tests {
     use super::*;
     use crate::{
-        parse_pipe_events, AsOfView, InputSet, SymbolSnapshot, WindowedFeatureSentimentSignal,
+        parse_pipe_events, AsOfView, InputSet, SignalEvaluation, WindowedFeatureSentimentSignal,
         WindowedZScoreSignal,
     };
     use proptest::prelude::*;
@@ -579,7 +614,7 @@ l1|640|640|8|outcome|AAPL|return_bps=12
                         };
                         let observed_time = 2_000 + observed_bucket * 10;
                         let received_time = observed_time + lag_bucket * 10;
-                        let sequence = 20 + sequence_bucket;
+                        let received_sequence_number = 20 + index as u64;
                         let symbol = format!("SYM{symbol_index}");
                         let event_id = format!("r{index}_{observed_bucket}_{sequence_bucket}");
                         let payload = random_payload(role, payload_value, index);
@@ -591,7 +626,7 @@ l1|640|640|8|outcome|AAPL|return_bps=12
                                 event_id,
                                 observed_time,
                                 received_time,
-                                sequence,
+                                received_sequence_number,
                                 role,
                                 symbol,
                                 payload,
@@ -916,6 +951,40 @@ p1|110|110|2|prediction|XYZ|
     }
 
     #[test]
+    fn available_received_sequence_number_returns_none_when_prefix_is_full() {
+        let events = parse_pipe_events(
+            "\
+f0|100|100|0|feature|XYZ|sentiment=positive
+f1|100|100|1|feature|XYZ|sentiment=negative
+moving|90|110|2|feature|XYZ|sentiment=positive
+",
+        )
+        .unwrap();
+
+        assert_eq!(
+            available_received_sequence_number(&events, "moving", 100, Some(2)),
+            None
+        );
+    }
+
+    #[test]
+    fn available_received_sequence_number_finds_unused_prefix_slot() {
+        let events = parse_pipe_events(
+            "\
+f0|100|100|0|feature|XYZ|sentiment=positive
+f2|100|100|2|feature|XYZ|sentiment=negative
+moving|90|110|3|feature|XYZ|sentiment=positive
+",
+        )
+        .unwrap();
+
+        assert_eq!(
+            available_received_sequence_number(&events, "moving", 100, Some(3)),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn late_arrival_uses_full_replay_key() {
         let events = parse_pipe_events(
             "\
@@ -940,17 +1009,17 @@ f1|90|100|2|feature|XYZ|sentiment=positive
                 "lying-signal"
             }
 
-            fn predict(
+            fn evaluate(
                 &self,
                 _view: AsOfView<'_>,
                 _symbol: crate::SymbolSlot,
-                _prediction_time: u64,
-            ) -> SymbolSnapshot {
-                SymbolSnapshot {
+                _as_of_timestamp: u64,
+            ) -> SignalEvaluation {
+                SignalEvaluation {
                     signal_value: 1,
                     input_event_ids_used: InputSet::one(self.input_key),
                     max_input_received_time: 100,
-                    max_input_sequence: 2,
+                    max_input_received_sequence_number: 2,
                     max_input_event_key: Some(self.input_key),
                     feature_recipe_hash: None,
                 }

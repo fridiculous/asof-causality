@@ -1,6 +1,6 @@
 use asof_causality_core::{
     parse_pipe_events, run_adversarial_checks, ReplayEngine, ReplayOptions, ReplayOrder,
-    WindowedFeatureSentimentSignal, WindowedZScoreSignal,
+    VolAdjustedMomentumSignal, WindowedFeatureSentimentSignal, WindowedZScoreSignal,
 };
 
 fn fixture_events() -> Vec<asof_causality_core::Event> {
@@ -130,8 +130,14 @@ fn observed_time_baseline_leaks_on_negative_control() {
         .expect("negative fixture should emit prediction at 95");
 
     assert_eq!(same_time_sequence_leak.max_input_received_time, 95);
-    assert_eq!(same_time_sequence_leak.prediction_sequence, 4);
-    assert_eq!(same_time_sequence_leak.max_input_sequence, 5);
+    assert_eq!(
+        same_time_sequence_leak.prediction_received_sequence_number,
+        4
+    );
+    assert_eq!(
+        same_time_sequence_leak.max_input_received_sequence_number,
+        5
+    );
 
     let late_feature_leak = output
         .predictions
@@ -174,7 +180,7 @@ fn windowed_signal_records_multi_input_provenance() {
 
     assert_eq!(before_late_feature.input_event_ids_used.len(), 4);
     assert_eq!(before_late_feature.max_input_received_time, 95);
-    assert_eq!(before_late_feature.max_input_sequence, 5);
+    assert_eq!(before_late_feature.max_input_received_sequence_number, 5);
 }
 
 #[test]
@@ -193,6 +199,41 @@ fn zscore_fixture_passes_adversarial_checks() {
 fn observed_time_baseline_leaks_numeric_zscore_input() {
     let events = zscore_events();
     let output = ReplayEngine::with_signal(WindowedZScoreSignal::new())
+        .replay_with_order(
+            &events,
+            ReplayOptions::default(),
+            ReplayOrder::ObservedTimeLeaky,
+        )
+        .unwrap();
+
+    let leaked = output
+        .predictions
+        .records()
+        .iter()
+        .find(|record| record.prediction_time == 100)
+        .expect("zscore fixture should emit prediction at 100");
+
+    assert_eq!(leaked.signal_value, 1);
+    assert_eq!(leaked.max_input_received_time, 120);
+    assert_eq!(output.predictions.impossible_predictions().len(), 1);
+}
+
+#[test]
+fn vol_adjusted_momentum_fixture_passes_adversarial_checks() {
+    let events = zscore_events();
+    let report = asof_causality_core::run_adversarial_checks_with_options_for_signal(
+        &events,
+        asof_causality_core::CheckOptions::exhaustive(),
+        VolAdjustedMomentumSignal::new(),
+    );
+
+    assert!(report.passed(), "{report:?}");
+}
+
+#[test]
+fn observed_time_baseline_leaks_vol_adjusted_momentum_input() {
+    let events = zscore_events();
+    let output = ReplayEngine::with_signal(VolAdjustedMomentumSignal::new())
         .replay_with_order(
             &events,
             ReplayOptions::default(),
@@ -238,7 +279,7 @@ fn alfred_fixture_blocks_same_day_vintage_until_received() {
 
     assert_eq!(prediction.prediction_time, 202003181600);
     assert_eq!(prediction.max_input_received_time, 202003180900);
-    assert_eq!(prediction.max_input_sequence, 7);
+    assert_eq!(prediction.max_input_received_sequence_number, 7);
     assert!(!prediction.input_event_ids_used.contains_key(blocked_input));
 }
 
@@ -266,7 +307,7 @@ fn observed_time_baseline_leaks_alfred_same_day_vintage() {
         .expect("ALFRED fixture should emit the 2020-03-18 prediction");
 
     assert_eq!(leaked.max_input_received_time, 202003190900);
-    assert_eq!(leaked.max_input_sequence, 9);
+    assert_eq!(leaked.max_input_received_sequence_number, 9);
     assert!(leaked.input_event_ids_used.contains_key(same_day_vintage));
     assert!(leaked.max_input_received_time > leaked.prediction_time);
 }
