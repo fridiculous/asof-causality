@@ -8,6 +8,8 @@ The command names in this file are current for the `asof-cli` package and the
 installed `asof` binary. The throughput table is a recorded single-run
 microbenchmark; rerun `make bench` before using it as a fresh performance claim.
 
+Last refreshed: 2026-05-21.
+
 ## Machine
 
 ```text
@@ -176,11 +178,11 @@ Single-run result:
 
 | Representation | Events | Symbols | Elapsed ms | Events/sec |
 |---|---:|---:|---:|---:|
-| string map | 1,000,000 | 1,024 | 55.725 | 17,945,119 |
-| symbol slot vec | 1,000,000 | 1,024 | 0.443 | 2,256,063,170 |
+| string map | 1,000,000 | 1,024 | 60.805 | 16,445,948 |
+| symbol slot vec | 1,000,000 | 1,024 | 0.447 | 2,239,014,833 |
 
-The dense symbol-slot vector representation was about 126x faster on this
-microbenchmark. This does not mean full replay is 126x faster; it isolates one
+The dense symbol-slot vector representation was about 136x faster on this
+microbenchmark. This does not mean full replay is 136x faster; it isolates one
 hot representation decision: map lookup by string versus direct indexed state.
 Production replay still pays for catalog validation and event slotting before
 the hot loop, so its end-to-end speedup should be smaller than this microbench.
