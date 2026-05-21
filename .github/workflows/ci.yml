@@ -6,17 +6,54 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: Rust checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     env:
       INSTA_UPDATE: no
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - name: Check formatting
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --check
+      - name: Clippy
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --locked
+      - name: Build release binary
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo build --release --locked
+      - name: Build API docs
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --no-deps --locked
+      - name: Replay smoke test
+        if: matrix.os == 'ubuntu-latest'
+        run: target/release/asof-causality replay examples/late-arrival.pipe
+      - name: Causality checks on release binary
+        if: matrix.os == 'ubuntu-latest'
+        run: target/release/asof-causality check examples/late-arrival.pipe
+      - name: Negative-control leakage check on release binary
+        if: matrix.os == 'ubuntu-latest'
+        run: target/release/asof-causality negative-control examples/lookahead-negative-control.pipe
+      - name: Core package dry run
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo package --locked --allow-dirty -p asof-causality-core

@@ -8,5 +8,16 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/your-org/asof-causality"
-rust-version = "1.78"
+readme = "README.md"
+repository = "https://github.com/fridiculous/asof-causality"
+rust-version = "1.95"
+keywords = ["causality", "backtesting", "audit", "time-series"]
+categories = ["command-line-utilities", "development-tools", "science"]
+
+# RELEASE: Thin LTO and one codegen unit make distributed binaries closer to the
+# optimized artifact users actually run. This is a build-time/runtime tradeoff,
+# not a substitute for measured hot-path representation work.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

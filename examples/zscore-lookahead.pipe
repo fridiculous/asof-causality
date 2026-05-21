@@ -1,7 +1,7 @@
 # Numeric Z-score fixture for non-trivial signal provenance.
 # A broken engine that replays by observed_time would use px_late_spike before
 # p_before_late_score, even though the spike was received after the prediction.
-# event_id|observed_time|received_time|sequence|role|symbol|payload
+# event_id|observed_time|received_time|received_sequence_number|role|symbol|payload
 px_seed_1|80|80|1|feature|XYZ|score=10
 px_seed_2|85|85|2|feature|XYZ|score=10
 px_seed_3|90|90|3|feature|XYZ|score=10

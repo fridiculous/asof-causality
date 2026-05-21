@@ -66,9 +66,10 @@ HEADER = """# Real-data fixture derived from public ALFRED/FRED daily data.
 # Times use YYYYMMDDHHMM integers. DGS10 observations are dated at 15:00 on
 # the observation date, before a naive 16:00 close prediction, and received at
 # 09:00 on the next ALFRED vintage date.
-# SP500 predictions are emitted at 16:00. Outcomes are attached after the next
-# close so they cannot affect prediction state.
-# event_id|observed_time|received_time|sequence|role|symbol|payload
+# SP500 prediction events are scheduled at 16:00; replay records
+# PredictionRecords. Outcomes are attached after the next close so they cannot
+# affect signal evaluation state.
+# event_id|observed_time|received_time|received_sequence_number|role|symbol|payload
 """
 
 
@@ -83,7 +84,7 @@ class FeatureRow:
 @dataclass(frozen=True)
 class PredictionRow:
     prediction_date: str
-    sequence: int
+    received_sequence_number: int
 
 
 def main() -> int:
@@ -138,7 +139,7 @@ def build_pipe() -> str:
     sp500 = fetch_sp500_closes()
     rows: list[str] = []
     prediction_rows: dict[str, PredictionRow] = {}
-    sequence = 1
+    received_sequence_number = 1
 
     for feature in features:
         while (
@@ -146,26 +147,34 @@ def build_pipe() -> str:
             and next_prediction_date(prediction_rows) < feature.vintage_date
         ):
             prediction_date = next_prediction_date(prediction_rows)
-            prediction = PredictionRow(prediction_date=prediction_date, sequence=sequence)
+            prediction = PredictionRow(
+                prediction_date=prediction_date,
+                received_sequence_number=received_sequence_number,
+            )
             prediction_rows[prediction_date] = prediction
             rows.append(format_prediction(prediction))
-            sequence += 1
+            received_sequence_number += 1
 
-        rows.append(format_feature(feature, sequence))
-        sequence += 1
+        rows.append(format_feature(feature, received_sequence_number))
+        received_sequence_number += 1
 
     while len(prediction_rows) < len(SP500_PREDICTION_DATES):
         prediction_date = next_prediction_date(prediction_rows)
-        prediction = PredictionRow(prediction_date=prediction_date, sequence=sequence)
+        prediction = PredictionRow(
+            prediction_date=prediction_date,
+            received_sequence_number=received_sequence_number,
+        )
         prediction_rows[prediction_date] = prediction
         rows.append(format_prediction(prediction))
-        sequence += 1
+        received_sequence_number += 1
 
     for prediction_date in SP500_PREDICTION_DATES:
         prediction = prediction_rows[prediction_date]
         outcome_date = next_sp500_date(sp500, prediction_date)
-        rows.append(format_outcome(prediction, outcome_date, sp500, sequence))
-        sequence += 1
+        rows.append(
+            format_outcome(prediction, outcome_date, sp500, received_sequence_number)
+        )
+        received_sequence_number += 1
 
     return HEADER + "\n".join(rows) + "\n"
 
@@ -301,7 +310,7 @@ def next_sp500_date(sp500: dict[str, Decimal], prediction_date: str) -> str:
     return later_dates[0]
 
 
-def format_feature(feature: FeatureRow, sequence: int) -> str:
+def format_feature(feature: FeatureRow, received_sequence_number: int) -> str:
     event_id = f"dgs10_{compact_date(feature.observation_date)}_v{compact_date(feature.vintage_date)}"
     observed_time = f"{compact_date(feature.observation_date)}1500"
     received_time = f"{compact_date(feature.vintage_date)}0900"
@@ -311,7 +320,7 @@ def format_feature(feature: FeatureRow, sequence: int) -> str:
         f"value={format_decimal(feature.value)},previous={format_decimal(feature.previous)},"
         "source=ALFRED"
     )
-    return f"{event_id}|{observed_time}|{received_time}|{sequence}|feature|SP500|{payload}"
+    return f"{event_id}|{observed_time}|{received_time}|{received_sequence_number}|feature|SP500|{payload}"
 
 
 def format_prediction(prediction: PredictionRow) -> str:
@@ -320,7 +329,7 @@ def format_prediction(prediction: PredictionRow) -> str:
     prediction_time = f"{compact_date(prediction.prediction_date)}1600"
     return (
         f"{event_id}|{prediction_time}|{prediction_time}|"
-        f"{prediction.sequence}|prediction|SP500|"
+        f"{prediction.received_sequence_number}|prediction|SP500|"
     )
 
 
@@ -328,7 +337,7 @@ def format_outcome(
     prediction: PredictionRow,
     outcome_date: str,
     sp500: dict[str, Decimal],
-    sequence: int,
+    received_sequence_number: int,
 ) -> str:
     event_id = f"sp500_outcome_{compact_date(outcome_date)}"
     observed_time = f"{compact_date(outcome_date)}1600"
@@ -340,10 +349,10 @@ def format_outcome(
         prediction_id += "_before_vintage"
     prediction_key = (
         f"{compact_date(prediction.prediction_date)}1600:"
-        f"{prediction.sequence}:{prediction_id}"
+        f"{prediction.received_sequence_number}:{prediction_id}"
     )
     payload = f"return_bps={format_bps(return_bps)},prediction_replay_key={prediction_key}"
-    return f"{event_id}|{observed_time}|{received_time}|{sequence}|outcome|SP500|{payload}"
+    return f"{event_id}|{observed_time}|{received_time}|{received_sequence_number}|outcome|SP500|{payload}"
 
 
 def parse_date(value: str) -> date:

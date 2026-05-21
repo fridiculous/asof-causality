@@ -57,13 +57,13 @@ asof-causality check
 
 ADVERSARIAL CHECKS                                         8/8 PASS
   [PASS]  prefix_equivalence               all received-time prefixes matched full replay
-  [PASS]  future_mutation                  mutating future rows did not change past predictions
+  [PASS]  future_mutation                  mutating future rows did not change prior PredictionRecords
   [PASS]  late_arrival                     late events were not used before their replay key
-  [PASS]  on_time_vs_late_contrast         moving n1 earlier changed prediction at 580 from 0 to 1
-  [PASS]  feature_correction_append_only   feature corrections did not rewrite predictions emitted before receipt
-  [PASS]  outcome_separation               disabling outcomes did not change predictions
+  [PASS]  on_time_vs_late_contrast         moving n1 earlier changed SignalEvaluation at 580 from 0 to 1
+  [PASS]  feature_correction_append_only   feature corrections did not rewrite prior PredictionRecords
+  [PASS]  outcome_separation               disabling outcomes did not change PredictionRecords
   [PASS]  deterministic_replay             shuffled input produced same transcript hash
-  [PASS]  audit_invariant                  all predictions satisfy max_input_replay_key <= prediction_replay_key
+  [PASS]  audit_invariant                  all PredictionRecords satisfy max_input_replay_key <= prediction_replay_key
 
 PROVENANCE
   transcript_hash      d959650f0492c42e
@@ -72,8 +72,8 @@ PROVENANCE
 ```
 
 The most important contrast is `on_time_vs_late_contrast`: moving event `n1`
-from received-after to received-before changes the 580 prediction from `0` to
-`1`. That proves the engine is using received-time knowledge, not merely
+from received-after to received-before changes the 580 `SignalEvaluation` from
+`0` to `1`. That proves the engine is using received-time knowledge, not merely
 ignoring late events.
 
 ## Generated Scenario
@@ -92,7 +92,7 @@ generated path=runs/late-heavy.pipe scenario=late-heavy seed=42 data_events=1000
 
 The generated file is deterministic for seed `42` and physically shuffled by
 default in this scenario. It also includes a fixed sentinel late-arrival
-sequence before the random body, so the on-time-vs-late contrast check has a
+received sequence before the random body, so the on-time-vs-late contrast check has a
 known adversarial case. Running `check runs/late-heavy.pipe` samples 32
 received-time cutoffs for the expensive prefix and future-mutation checks and
 still exercises the direct late-arrival, feature-correction, outcome, replay, and audit
@@ -115,23 +115,23 @@ asof-causality negative-control
   signal   last-feature-sentiment
 
 ENGINE A: received-time replay (correct)
-  ordering             (received_time, sequence, event_id)
+  ordering             (received_time, received_sequence_number, event_id)
   transcript_hash      643d89a73fb1a868
   impossible           0
   VERDICT              PASS
 
 ENGINE B: observed-time replay (deliberately broken baseline)
-  ordering             (observed_time, sequence, event_id)
+  ordering             (observed_time, received_sequence_number, event_id)
   transcript_hash      5e2b2c91fab15484
   impossible           3
   VERDICT              FAIL
 
-LEAKED PREDICTIONS (engine B)
+LEAKED PREDICTION RECORDS (engine B)
 
   p_before_same_time_sequence at (95, 4, p_before_same_time_sequence)
     signal_value     1
     leaked_input     n_same_time_later  at (95, 5, n_same_time_later)
-    violation        input sequence > prediction sequence at same received_time
+    violation        input received_sequence_number > prediction received_sequence_number at same received_time
     interpretation   prediction at t=95 used same-timestamp event that sorts after it
 
   p_before_late_feature at (120, 6, p_before_late_feature)
@@ -147,14 +147,14 @@ LEAKED PREDICTIONS (engine B)
     interpretation   prediction at t=170 used correction received at t=180
 
 DIAGNOSTIC
-  the broken engine emitted 3 impossible predictions across 3 distinct leak classes
-  the correct engine emitted 0
+  the broken engine produced 3 impossible PredictionRecords across 3 distinct leak classes
+  the correct engine produced 0 impossible PredictionRecords
   the audit invariant catches the failure mode the engine is designed to prevent
 ```
 
 The baseline intentionally sorts by `observed_time`. On the negative-control
 fixture, it lets a prediction at replay key `95:4:p_before_same_time_sequence`
-use `n_same_time_later`, which has the same `received_time` but a later sequence.
+use `n_same_time_later`, which has the same `received_time` but a later received sequence.
 It also lets later predictions use records received at `150` and `180`. Those
 predictions are impossible in live replay, and the audit invariant catches them
 as `max_input_replay_key > prediction_replay_key`.
@@ -186,11 +186,13 @@ Single-run result:
 | Representation | Events | Symbols | Elapsed ms | Events/sec |
 |---|---:|---:|---:|---:|
 | string map | 1,000,000 | 1,024 | 55.725 | 17,945,119 |
-| symbol id vec | 1,000,000 | 1,024 | 0.443 | 2,256,063,170 |
+| symbol slot vec | 1,000,000 | 1,024 | 0.443 | 2,256,063,170 |
 
-The interned-symbol/vector representation was about 126x faster on this
+The dense symbol-slot vector representation was about 126x faster on this
 microbenchmark. This does not mean full replay is 126x faster; it isolates one
 hot representation decision: map lookup by string versus direct indexed state.
+Production replay still pays for catalog validation and event slotting before
+the hot loop, so its end-to-end speedup should be smaller than this microbench.
 
 ## Surprise
 
@@ -201,10 +203,11 @@ project: before moving work to a more complicated architecture, make the
 point-in-time state representation boring and indexed.
 
 The replay implementation now applies that lesson directly. `Event` keeps the
-human symbol string for input and transcript rendering, while `StateStore` and
-`PredictionRecord` use a stable `SymbolId` in the replay path. Prediction
-provenance follows the same shape: input provenance is stored as compact inline
-event keys (`InputSet::Empty`, `InputSet::One`, or fixed-capacity
+human symbol string for input and transcript rendering, replay builds a
+collision-checked symbol catalog once, `StateStore` uses dense `SymbolSlot`
+indexes, and `PredictionRecord` keeps the stable `SymbolId` for audit output.
+Prediction provenance follows the same shape: input provenance is stored as
+compact inline event keys (`InputSet::Empty`, `InputSet::One`, or fixed-capacity
 `InputSet::Many`) and rendered back to human-readable event IDs only when
 producing the transcript. The windowed built-in signal uses that bounded inline
 set so multi-input provenance does not allocate a `Vec` per prediction.

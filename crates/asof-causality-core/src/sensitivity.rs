@@ -605,7 +605,10 @@ o1|130|130|4|outcome|XYZ|return_bps=1
         assert_eq!(order, ReplayOrder::ReceivedTime);
         assert_eq!(transformed[0].event_id, events[0].event_id);
         assert_eq!(transformed[0].observed_time, events[0].observed_time);
-        assert_eq!(transformed[0].sequence, events[0].sequence);
+        assert_eq!(
+            transformed[0].received_sequence_number,
+            events[0].received_sequence_number
+        );
         assert_eq!(transformed[0].symbol, events[0].symbol);
         assert_eq!(transformed[0].payload, events[0].payload);
         assert_eq!(transformed[0].received_time, 90);
